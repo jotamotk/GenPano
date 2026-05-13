@@ -202,6 +202,7 @@ def validate_analyzer_v4_package(
     _drop_unsupported_sentiment_driver_types(raw_package, flags)
     _drop_category_product_features(raw_package, flags)
     _drop_malformed_citations(raw_package, flags)
+    _drop_malformed_relations(raw_package, flags)
     _normalize_or_drop_relation_types(raw_package, flags)
 
     entity_keys: set[str] = set()
@@ -381,16 +382,7 @@ def validate_analyzer_v4_package(
         _validate_confidence(citation, errors, f"citations[{index}]")
         _flag_missing_evidence(flags, citation, "citation", key, response_text=response_text)
         linked = [str(value) for value in citation.get("linked_fact_keys") or [] if value]
-        if not linked:
-            _append_flag(
-                flags,
-                code="citation_unlinked",
-                severity="warning",
-                message="Citation is not linked to a concrete analyzer fact.",
-                target_type="citation",
-                target_key=key,
-                blocks_metric_readiness=True,
-            )
+        valid_linked: list[str] = []
         for linked_key in linked:
             if linked_key not in fact_keys:
                 _append_flag(
@@ -402,6 +394,19 @@ def validate_analyzer_v4_package(
                     target_key=key,
                     blocks_metric_readiness=True,
                 )
+                continue
+            valid_linked.append(linked_key)
+        citation["linked_fact_keys"] = valid_linked
+        if not valid_linked:
+            _append_flag(
+                flags,
+                code="citation_unlinked",
+                severity="warning",
+                message="Citation is not linked to a concrete analyzer fact.",
+                target_type="citation",
+                target_key=key,
+                blocks_metric_readiness=True,
+            )
 
     for item in _objects(raw_package.get("quality_flags") or []):
         _append_flag(
@@ -820,6 +825,24 @@ def _drop_malformed_citations(
     )
 
 
+def _drop_malformed_relations(
+    package: dict[str, Any],
+    flags: list[dict[str, Any]],
+) -> None:
+    _drop_malformed_required_fact_rows(
+        package,
+        flags,
+        collection_key="relations",
+        key_field="relation_key",
+        fallback_prefix="relation",
+        target_type="relation",
+        flag_code="malformed_relation_dropped",
+        label="Relation",
+        required_fields=("confidence",),
+        numeric_fields=("confidence",),
+    )
+
+
 def _drop_malformed_required_fact_rows(
     package: dict[str, Any],
     flags: list[dict[str, Any]],
@@ -850,6 +873,8 @@ def _drop_malformed_required_fact_rows(
             if row.get(field) is not None and not _is_numeric(row.get(field))
         )
         if not invalid_fields:
+            for field in numeric_fields:
+                row[field] = float(row[field])
             kept.append(row)
             continue
 

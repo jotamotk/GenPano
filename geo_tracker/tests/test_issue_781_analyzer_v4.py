@@ -842,6 +842,65 @@ async def test_analyzer_v4_issue_812_drifts_are_not_persisted(
     } <= flag_codes
 
 
+@pytest.mark.asyncio
+async def test_analyzer_v4_malformed_relation_confidence_is_not_persisted(
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target, response = await _seed_response(session)
+    package = _valid_v4_package(response.id, response.query_id)
+    package["relations"].append(
+        {
+            "relation_key": "relation_bad_confidence",
+            "subject_entity_key": "ent_product_calm",
+            "relation_type": "recommended_for",
+            "object_entity_key": "ent_need_sensitive",
+            "direction": "directed",
+            "evidence_quote": "recommended for sensitive skin",
+            "confidence": None,
+            "quality_flags": ["relation_unresolved"],
+        }
+    )
+    package["citations"][0]["linked_fact_keys"].append("relation_bad_confidence")
+    _patch_pipeline(monkeypatch, object.__new__(LLMAnalyzer)._parse_result(package))
+
+    result = await analyzer_cli.analyze_single_response(
+        session,
+        response,
+        target,
+        [],
+        "non_brand",
+    )
+
+    assert result["status"] == "done"
+    relation_keys = (
+        await session.execute(
+            select(ResponseRelationFact.relation_key).where(
+                ResponseRelationFact.response_id == response.id,
+            )
+        )
+    ).scalars().all()
+    assert "relation_bad_confidence" not in relation_keys
+    linked_fact_keys = (
+        await session.execute(
+            select(AnalysisFactLink.linked_fact_key).where(
+                AnalysisFactLink.response_id == response.id,
+            )
+        )
+    ).scalars().all()
+    assert "relation_bad_confidence" not in linked_fact_keys
+    flag_codes = set(
+        (
+            await session.execute(
+                select(AnalyzerQualityFlag.code).where(
+                    AnalyzerQualityFlag.response_id == response.id
+                )
+            )
+        ).scalars().all()
+    )
+    assert "malformed_relation_dropped" in flag_codes
+
+
 def test_analyzer_v4_validator_flags_evidence_quotes_not_in_response_text() -> None:
     package = _valid_v4_package()
     package["mentions"][0]["evidence_quote"] = "a hallucinated quote that is absent"
@@ -1214,6 +1273,79 @@ def test_analyzer_v4_handles_issue_812_schema_drifts_with_quality_flags() -> Non
         "malformed_citation_dropped",
         "citation",
         "citation_bad_confidence",
+    ) in flags
+
+
+def test_analyzer_v4_drops_malformed_relation_confidence_with_quality_flags() -> None:
+    package = _valid_v4_package()
+    package["relations"].extend(
+        [
+            {
+                "relation_key": "relation_numeric_string_confidence",
+                "subject_entity_key": "ent_product_calm",
+                "relation_type": "recommended_for",
+                "object_entity_key": "ent_need_sensitive",
+                "direction": "directed",
+                "evidence_quote": "recommended for sensitive skin",
+                "confidence": "0.81",
+                "quality_flags": ["relation_unresolved"],
+            },
+            {
+                "relation_key": "relation_null_confidence",
+                "subject_entity_key": "ent_product_calm",
+                "relation_type": "recommended_for",
+                "object_entity_key": "ent_need_sensitive",
+                "direction": "directed",
+                "evidence_quote": "recommended for sensitive skin",
+                "confidence": None,
+                "quality_flags": ["relation_unresolved"],
+            },
+            {
+                "relation_key": "relation_nonnumeric_confidence",
+                "subject_entity_key": "ent_product_calm",
+                "relation_type": "recommended_for",
+                "object_entity_key": "ent_need_sensitive",
+                "direction": "directed",
+                "evidence_quote": "recommended for sensitive skin",
+                "confidence": "high",
+                "quality_flags": ["relation_unresolved"],
+            },
+        ]
+    )
+
+    result = validate_analyzer_v4_package(
+        package,
+        response_text=(
+            "AcmeBeauty Calm Serum is recommended for sensitive skin because "
+            "it uses gentle ceramides. Acme official guidance supports the serum."
+        ),
+        response_id=7815,
+        query_id=7814,
+    )
+
+    assert result.is_valid is True
+    assert result.validator_status == "passed_with_flags"
+    assert result.errors == []
+    relation_confidences = {
+        relation["relation_key"]: relation["confidence"]
+        for relation in result.package["relations"]
+    }
+    assert relation_confidences["relation_numeric_string_confidence"] == 0.81
+    assert "relation_null_confidence" not in relation_confidences
+    assert "relation_nonnumeric_confidence" not in relation_confidences
+    flags = {
+        (flag["code"], flag["target_type"], flag["target_key"])
+        for flag in result.quality_flags
+    }
+    assert (
+        "malformed_relation_dropped",
+        "relation",
+        "relation_null_confidence",
+    ) in flags
+    assert (
+        "malformed_relation_dropped",
+        "relation",
+        "relation_nonnumeric_confidence",
     ) in flags
 
 
