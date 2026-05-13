@@ -46,6 +46,69 @@ async def _table_exists(session: AsyncSession, name: str) -> bool:
     return row is not None
 
 
+def _analysis_summary(item: dict[str, Any]) -> dict[str, Any] | None:
+    if item.get("analysis_id") is None:
+        return None
+    return {
+        "geo_score": item.get("geo_score"),
+        "visibility_score": item.get("visibility_score"),
+        "sentiment_score": item.get("sentiment_score"),
+        "sov_score": item.get("sov_score"),
+        "citation_score": item.get("citation_score"),
+        "total_brands_mentioned": item.get("total_brands_mentioned"),
+        "target_brand_mentioned": item.get("target_brand_mentioned"),
+        "target_brand_sentiment": item.get("target_brand_sentiment"),
+        "mentions_count": item.get("mentions_count"),
+        "citations_count": item.get("citations_count"),
+        "features_count": item.get("features_count"),
+    }
+
+
+def format_attempt_analysis_fields(row: dict[str, Any]) -> dict[str, Any]:
+    """Normalize Attempts analyzer fields from currently available tables."""
+    item = dict(row)
+    raw_text = str(item.get("response") or "").strip()
+    response_id = item.get("response_id")
+    analysis_id = item.get("analysis_id")
+    persisted_status = str(item.get("analysis_status") or "").strip().lower()
+
+    item.setdefault("analysis_id", None)
+    item.setdefault("analyzer_model", None)
+    item.setdefault("analyzed_at", None)
+    item.setdefault("analysis_schema_version", None)
+    item.setdefault("analyzer_run_id", None)
+    item.setdefault("task_id", None)
+    item.setdefault("analysis_error", None)
+    item.setdefault("analysis_error_code", None)
+    item.setdefault("analysis_error_message", None)
+    item.setdefault("aggregation_refresh_status", None)
+    item.setdefault("aggregation_refresh_task_id", None)
+    item.setdefault("aggregation_refreshed_at", None)
+    item.setdefault("metric_readiness_status", None)
+    item.setdefault("metric_readiness_reasons", None)
+
+    if response_id is None or not raw_text:
+        item["analysis_status"] = "not_eligible"
+        item["analysis_error_code"] = item.get("analysis_error_code") or "no_response_text"
+        item["analysis_error_message"] = (
+            item.get("analysis_error_message") or "No response text available for analyzer."
+        )
+    elif persisted_status == "pending" and analysis_id is None:
+        item["analysis_status"] = "missing"
+    elif persisted_status:
+        item["analysis_status"] = persisted_status
+    else:
+        item["analysis_status"] = "missing"
+
+    item["analysis_summary"] = _analysis_summary(item)
+    item["analysis_task"] = {
+        "latest_task_id": item.get("task_id"),
+        "latest_batch_id": None,
+        "queue_state": None,
+    }
+    return item
+
+
 async def fetch_status_stats(session: AsyncSession) -> dict[str, Any]:
     """Return ``{total, done, pending, running, failed}`` aggregated from
     ``queries.status``. Empty / zeroed when the table doesn't exist."""
@@ -179,6 +242,63 @@ async def list_queries(
         if pending_legacy:
             by_status["pending"] = pending_legacy
 
+    has_response_analyses = await _table_exists(session, "response_analyses")
+    has_brand_mentions = await _table_exists(session, "brand_mentions")
+    has_citation_sources = await _table_exists(session, "citation_sources")
+    has_product_feature_mentions = await _table_exists(session, "product_feature_mentions")
+
+    analysis_select = (
+        """
+            ra.id as analysis_id,
+            ra.analyzer_model,
+            ra.geo_score,
+            ra.visibility_score,
+            ra.sentiment_score,
+            ra.sov_score,
+            ra.citation_score,
+            ra.total_brands_mentioned,
+            ra.target_brand_mentioned,
+            ra.target_brand_sentiment,
+        """
+        if has_response_analyses
+        else """
+            NULL as analysis_id,
+            NULL as analyzer_model,
+            NULL as geo_score,
+            NULL as visibility_score,
+            NULL as sentiment_score,
+            NULL as sov_score,
+            NULL as citation_score,
+            NULL as total_brands_mentioned,
+            NULL as target_brand_mentioned,
+            NULL as target_brand_sentiment,
+        """
+    )
+    analysis_join = (
+        "LEFT JOIN response_analyses ra ON ra.response_id = r.id"
+        if has_response_analyses
+        else ""
+    )
+    mentions_count_select = (
+        "(SELECT COUNT(*) FROM brand_mentions bm WHERE bm.response_id = r.id) as mentions_count,"
+        if has_brand_mentions
+        else "NULL as mentions_count,"
+    )
+    citations_count_select = (
+        "(SELECT COUNT(*) FROM citation_sources cs WHERE cs.response_id = r.id) as citations_count,"
+        if has_citation_sources
+        else "NULL as citations_count,"
+    )
+    features_count_select = (
+        """
+            (SELECT COUNT(*)
+             FROM product_feature_mentions pfm
+             WHERE pfm.analysis_id = ra.id) as features_count,
+        """
+        if has_product_feature_mentions and has_response_analyses
+        else "NULL as features_count,"
+    )
+
     sql = text(
         f"""
         SELECT
@@ -201,9 +321,16 @@ async def list_queries(
             pr.text as prompt_text,
             t.id as topic_id,
             t.text as topic_text,
+            r.id as response_id,
             r.raw_text as response,
+            r.analysis_status,
+            r.analyzed_at,
             r.llm_version,
             r.citations_json as citations,
+            {analysis_select}
+            {mentions_count_select}
+            {citations_count_select}
+            {features_count_select}
             p.name as profile_name,
             p.location as profile_location,
             p.country_code as profile_country,
@@ -211,6 +338,7 @@ async def list_queries(
             a.llm_name as account_llm
         FROM queries q
         LEFT JOIN llm_responses r ON q.id = r.query_id
+        {analysis_join}
         LEFT JOIN profiles p ON q.profile_id::text = p.id::text
         LEFT JOIN llm_accounts a ON q.account_id = a.id
         LEFT JOIN prompts pr ON q.prompt_id = pr.id
@@ -224,8 +352,16 @@ async def list_queries(
     out: list[dict[str, Any]] = []
     for row in rows:
         item = dict(row)
-        for ts_field in ("created_at", "executed_at", "queued_at", "started_at", "finished_at"):
+        for ts_field in (
+            "created_at",
+            "executed_at",
+            "queued_at",
+            "started_at",
+            "finished_at",
+            "analyzed_at",
+        ):
             item[ts_field] = _isoformat(item.get(ts_field))
+        item = format_attempt_analysis_fields(item)
         out.append(item)
     return out, total, by_status
 
@@ -628,6 +764,7 @@ __all__ = [
     "create_query",
     "ensure_default_prompt",
     "fetch_status_stats",
+    "format_attempt_analysis_fields",
     "list_queries",
     "mark_query_failed",
     "retry_query",

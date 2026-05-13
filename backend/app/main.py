@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.api.admin import router as admin_router
+from app.api.admin.analyzer import router as admin_analyzer_router
 from app.api.admin.auth import router as admin_auth_router
 from app.api.admin.llm_extraction import router as admin_llm_extraction_router
 from app.api.v1._meta.router import router as meta_router
@@ -156,6 +157,7 @@ app.include_router(admin_router, prefix="/api/admin")
 app.include_router(admin_auth_router, prefix="/api/admin/auth")
 app.include_router(admin_router, prefix="/admin/api/admin")
 app.include_router(admin_auth_router, prefix="/admin/api/admin/auth")
+app.include_router(admin_analyzer_router, prefix="/admin/api")
 
 # Legacy alias for the Query Pool sub-router. admin_console served the
 # same Query Pool endpoints both at /api/admin/query-pool/* and at the
