@@ -20,6 +20,9 @@ Included:
 
 - Admin Attempts analyzer visibility and manual trigger semantics.
 - Single-response and batch-response analyze/reanalyze contract.
+- Attempts-oriented Admin analyzer API namespace: new status, dry-run, submit,
+  batch, audit, and run-status endpoints must live under
+  `/admin/api/analyzer/*`.
 - Analyzer v4 one-pass response analysis output package.
 - First-class fact persistence, run history, evidence, quality flags, relation
   facts, and citation/fact links.
@@ -30,7 +33,8 @@ Included:
 Excluded:
 
 - Frontend implementation details beyond required state and copy contract.
-- Backend route implementation details beyond request/response semantics.
+- Backend route implementation details beyond request/response semantics and
+  required namespace ownership.
 - Database migration shape beyond logical persistence requirements.
 - Direct KG approval. Analyzer facts may feed candidate paths, but analyzer
   output must not silently approve canonical KG relations.
@@ -82,6 +86,11 @@ as `no_response_text`. They must not show an enabled analyze action.
 Analyzer trigger semantics are response-scoped, not failed-attempt-scoped.
 Failed attempts with no response must be skipped and should direct the operator
 to retry collection first.
+
+The Attempts API namespace is part of this contract. New Admin Attempts analyzer
+APIs must live under `/admin/api/analyzer/*`. The legacy `/api/analyzer/*`
+namespace is compatibility for Analyzer Quality and older flows only; it must
+not be reused as the new Attempts contract for #782 or #784.
 
 ### Single response analyze/reanalyze
 
@@ -387,9 +396,25 @@ represent a required first-class fact, the implementing issue must add or
 document the necessary schema change with rollback notes.
 
 Reanalysis must be idempotent for a response. It must not duplicate facts, leave
-old current facts mixed with new current facts, or delete run history. A new
-current run may replace current facts only after validation/persistence succeeds
-or records a clear partial/failed state.
+old current facts mixed with new current facts, or delete run history.
+
+Hard preserve-before-replace rule:
+
+- Analyzer reanalysis must validate and stage a complete v4 output package and
+  run result before replacing any current first-class facts or moving the current
+  analysis pointer.
+- The current pointer and prior successful current facts may advance only after
+  validator success and persistence success for the staged replacement.
+- On LLM, parser, validator, or persistence failure, prior successful current
+  facts must remain active. The failed run is recorded in `analyzer_runs` with
+  quality/error state and operator-visible error details, but it must not erase
+  or supersede current facts.
+- If no prior successful current facts exist, a failed analysis leaves the
+  response in `failed` or `needs_attention` state and must not write empty
+  successful facts.
+- Partial or invalid output may be retained as audit/debug run evidence, but it
+  is not a current metric-ready fact set until the PRD-ADM-ANALYZER-005
+  metric-readiness gates pass.
 
 ## PRD-ADM-ANALYZER-005: App Chart Fact Boundary
 
@@ -523,6 +548,8 @@ available.
 | --- | --- | --- | --- |
 | #779 | `frontend-visualization-agent` | `PRD-ADM-ANALYZER-001`, `PRD-ADM-ANALYZER-002`, `PRD-ADM-ANALYZER-007` | Visualize states, drawer, single trigger, batch dry-run/submit preview, skipped/cap/partial states; do not expose prompt/schema internals. |
 | #781 | `pipeline-data-agent` | `PRD-ADM-ANALYZER-003`, `PRD-ADM-ANALYZER-004`, `PRD-ADM-ANALYZER-005` | Audit current analyzer first, then implement one-pass package, validator, idempotent persistence, entities, relation facts, quality flags, and citation/fact links. |
-| #782 | `backend-api-agent` | `PRD-ADM-ANALYZER-001`, `PRD-ADM-ANALYZER-002`, `PRD-ADM-ANALYZER-006`, `PRD-ADM-ANALYZER-007` | Expose Attempts status fields, single/batch dry-run/submit/status APIs, caps, task/run IDs, audit, and aggregation refresh status. |
+| #782 | `backend-api-agent` | `PRD-ADM-ANALYZER-001`, `PRD-ADM-ANALYZER-002`, `PRD-ADM-ANALYZER-006`, `PRD-ADM-ANALYZER-007` | Expose Attempts status fields and `/admin/api/analyzer/*` single/batch dry-run/submit/status APIs, caps, task/run IDs, audit, and aggregation refresh status; keep `/api/analyzer/*` legacy-only. |
 | #783 | `pipeline-data-agent` | `PRD-ADM-ANALYZER-005`, `PRD-ADM-ANALYZER-006`, `PRD-ADM-ANALYZER-008` | Turn first-class analyzer facts into metric-ready App chart facts and aggregations; no raw JSON or fake fallback values. |
 | #784 | `frontend-integration-agent` | `PRD-ADM-ANALYZER-001`, `PRD-ADM-ANALYZER-002`, `PRD-ADM-ANALYZER-007` | Replace visualization state with real APIs, poll task/batch status, surface skipped/cap/partial/error states, and keep copy operator-oriented. |
+| #786 | `release-ci-agent` | `PRD-ADM-ANALYZER-008` | Validate CI/CD gates, coordinate deploy ordering, identify the final deployed `main` SHA, and report release risk before Epic acceptance. |
+| #787 | `qa-e2e-agent` | `PRD-ADM-ANALYZER-008` | Run online Playwright against `http://116.62.36.173/` after merge/deploy and attach evidence for Attempts analyzer status, trigger, batch, and App readiness states. |
