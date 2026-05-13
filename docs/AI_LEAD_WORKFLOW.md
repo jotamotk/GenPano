@@ -319,6 +319,7 @@ Recommended issue labels:
 - `type:bugfix`
 - `type:e2e`
 - `type:prd`
+- `type:human`
 - `status:briefing`
 - `status:ready`
 - `status:in-progress`
@@ -357,3 +358,4 @@ Admin E2E release-gate evidence:
 - Skipped coverage:
 - Incident-specific acceptance claim: yes/no, with required coverage rows named
 ```
+
