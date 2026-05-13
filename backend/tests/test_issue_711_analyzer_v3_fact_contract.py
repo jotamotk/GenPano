@@ -206,4 +206,3 @@ def test_v3_package_marks_target_only_sov_unresolved_citations_and_parse_failure
     assert "unresolved_citation_attribution" in package["citations"]["reason_codes"]
     assert package["geo_pano"]["formula_status"] == "partial"
     assert validate_response_fact_package_v3(package) == []
-
