@@ -385,6 +385,71 @@ describe('TopicsPage live brand override', () => {
     expect(within(row).queryByText('0.0%')).not.toBeInTheDocument()
   })
 
+  it('withholds ok zero topic metrics when numerator denominator proof is absent', () => {
+    topicHooks.useTopicMonitoring.mockReturnValue({
+      data: {
+        summary: {
+          topic_count: 1,
+          prompt_count: 1,
+          query_count: 1,
+          response_count: 1,
+          analyzed_count: 0,
+          citation_count: 0,
+          last_collected: '2026-05-13',
+        },
+        analyzer_coverage: {
+          eligible_response_count: 1,
+          analyzed_response_count: 1,
+          missing_response_count: 0,
+          analyzer_version: 'v3',
+        },
+        formula_status: 'ok',
+        metric_formula_evidence: {
+          visibility: { formula_status: 'ok' },
+          sentiment: { formula_status: 'ok' },
+          citation: { formula_status: 'ok' },
+          pano_geo: { formula_status: 'ok' },
+        },
+        topics: [
+          {
+            topic_id: 101,
+            topic_name: 'Ingredient safety',
+            dimension: 'product',
+            associated_brand: 'BestCoffer',
+            prompt_count: 1,
+            query_count: 1,
+            response_count: 1,
+            visibility_rate: 0,
+            sentiment_distribution: { positive: 0, neutral: 0, negative: 0 },
+            citation_rate: 0,
+            citation_count: 0,
+            last_collected: '2026-05-13',
+            formula_status: 'ok',
+            metric_formula_evidence: {
+              visibility: { formula_status: 'ok' },
+              sentiment: { formula_status: 'ok' },
+              citation: { formula_status: 'ok' },
+            },
+          },
+        ],
+        intent_matrix: [],
+        state: 'ok',
+      },
+      isLoading: false,
+    })
+
+    renderTopicsPage('/brand/topics?brandId=24')
+
+    expect(screen.getAllByText('Valid zero proof missing').length).toBeGreaterThan(0)
+    expect(screen.queryByText('0.0%')).not.toBeInTheDocument()
+    expect(screen.queryByText('0 / 0 / 0')).not.toBeInTheDocument()
+
+    const row = screen.getByText('Ingredient safety').closest('tr') as HTMLElement
+    expect(within(row).getAllByText('Valid zero proof missing').length).toBeGreaterThan(0)
+    expect(within(row).queryByText('0.0%')).not.toBeInTheDocument()
+    expect(within(row).queryByText('Positive 0')).not.toBeInTheDocument()
+  })
+
   it('uses backend visibility_rate ahead of legacy mention or sov fields', () => {
     topicHooks.useTopicMonitoring.mockReturnValue({
       data: {
@@ -1734,6 +1799,118 @@ describe('TopicsPage live brand override', () => {
     expect(within(modal).getByText('Sentiment quote missing')).toBeInTheDocument()
     expect(within(modal).getByText(/Brand #24/)).toBeInTheDocument()
     expect(within(modal).queryByText(/missing_analyzer_rows/)).not.toBeInTheDocument()
+  })
+
+  it('does not invent response detail contract metadata when the backend only returns state and fact arrays', () => {
+    topicHooks.useTopicMonitoring.mockReturnValue({
+      data: {
+        summary: {
+          topic_count: 1,
+          prompt_count: 1,
+          query_count: 1,
+          response_count: 1,
+        },
+        topics: [
+          {
+            topic_id: 101,
+            topic_name: 'Ingredient safety',
+            dimension: 'product',
+            associated_brand: 'BestCoffer',
+            prompt_count: 1,
+            query_count: 1,
+            response_count: 1,
+            sentiment_distribution: { positive: 0, neutral: 0, negative: 0 },
+          },
+        ],
+        intent_matrix: [],
+        state: 'ok',
+      },
+      isLoading: false,
+    })
+    topicHooks.useTopicPrompts.mockReturnValue({
+      data: {
+        items: [
+          {
+            prompt_id: 201,
+            topic_id: 101,
+            prompt_text: 'Which coffee maker has trustworthy citations?',
+            intent: 'informational',
+            language: 'en',
+            query_count: 1,
+            response_count: 1,
+          },
+        ],
+        total: 1,
+        state: 'ok',
+      },
+      isLoading: false,
+    })
+    topicHooks.usePromptQueries.mockReturnValue({
+      data: {
+        items: [
+          {
+            query_id: 900,
+            prompt_id: 201,
+            query_text: 'Which coffee maker has trustworthy citations?',
+            attempt_count: 1,
+            daily_latest: [
+              {
+                date: '2026-05-13',
+                query_id: 301,
+                response_id: 401,
+                query_text: 'Which coffee maker has trustworthy citations?',
+                target_llm: 'chatgpt',
+                profile_name: 'Coffee buyer',
+                finished_at: '2026-05-13T10:02:00Z',
+                citation_count: 0,
+              },
+            ],
+          },
+        ],
+        total: 1,
+        state: 'ok',
+      },
+      isLoading: false,
+    })
+    topicHooks.useQueryResponse.mockReturnValue({
+      data: {
+        query: {
+          query_id: 301,
+          query_text: 'Which coffee maker has trustworthy citations?',
+          profile_name: 'Coffee buyer',
+        },
+        response: {
+          response_id: 401,
+          query_id: 301,
+          raw_text: 'BestCoffer is discussed but scoped analyzer metadata is not in this response.',
+          target_llm: 'chatgpt',
+          created_at: '2026-05-13T10:02:00Z',
+        },
+        analysis: null,
+        analyzer_facts: {
+          citations: [],
+          brands_mentioned: [],
+          products_features_attributes: [],
+          relations: [],
+          sentiment_drivers: [],
+        },
+        attempts: [],
+        state: 'partial',
+      },
+      isLoading: false,
+    })
+
+    renderTopicsPage('/brand/topics?brandId=24')
+
+    fireEvent.click(screen.getByText('Ingredient safety'))
+    fireEvent.click(screen.getByText('Which coffee maker has trustworthy citations?'))
+    fireEvent.click(screen.getByRole('button', { name: /Open response attempts/i }))
+
+    const modal = screen.getByRole('dialog', { name: /Response attempts/i })
+    expect(within(modal).getByText('Limited data')).toBeInTheDocument()
+    expect(within(modal).queryByText('Analysis coverage missing')).not.toBeInTheDocument()
+    expect(within(modal).queryByText('Valid zero proof missing')).not.toBeInTheDocument()
+    expect(within(modal).queryByText(/Brand #24/)).not.toBeInTheDocument()
   })
 
   it('exports the active prompt layer with current filters and visible successful rows', async () => {

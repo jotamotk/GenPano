@@ -276,6 +276,13 @@ function sentimentTotals(rows: LooseRecord[]) {
   )
 }
 
+function sentimentDistributionTotal(value: LooseRecord | null | undefined) {
+  if (!value) return null
+  const parts = [asNumber(value.positive), asNumber(value.neutral), asNumber(value.negative)]
+  if (parts.every((item) => item == null)) return null
+  return parts.reduce((sum, item) => sum + (item || 0), 0)
+}
+
 function SentimentMix({ value }: { value?: LooseRecord }) {
   const sentiment = value || { positive: 0, neutral: 0, negative: 0 }
   return (
@@ -353,12 +360,14 @@ function topicMetricTrustState(
   source: (AnalyticsContractMetadata & LooseRecord) | null | undefined,
   metric: keyof typeof TOPIC_METRIC_ALIASES,
   fallback?: (AnalyticsContractMetadata & LooseRecord) | null,
+  value?: unknown,
 ): MetricTrustState | null {
   const evidence = topicMetricEvidence(source, metric) || topicMetricEvidence(fallback, metric)
   const coverage = evidence?.analyzer_coverage || source?.analyzer_coverage || fallback?.analyzer_coverage
   if (!evidence && !coverage && !source?.formula_status && !fallback?.formula_status) return null
   return buildMetricTrustState({
     metricKey: metric,
+    value,
     formula_status: evidence?.formula_status || source?.formula_status || fallback?.formula_status,
     status: evidence?.status,
     reason_codes: [
@@ -373,6 +382,16 @@ function topicMetricTrustState(
     denominator: evidence?.denominator ?? null,
     analyzer_coverage: coverage,
   })
+}
+
+function hasResponseContractMetadata(source: (AnalyticsContractMetadata & LooseRecord) | null | undefined) {
+  return Boolean(
+    source?.formula_status ||
+      source?.metric_formula_evidence ||
+      source?.analyzer_coverage ||
+      source?.missing_reasons ||
+      source?.missing_inputs,
+  )
 }
 
 function hasAnalyzerFactsContent(facts: LooseRecord | null | undefined) {
@@ -636,12 +655,13 @@ function TopicsView({
   const avgVisibility = averageMetric(rows, ['visibility_rate', 'sov', 'mention_rate'])
   const avgCitationCoverage = averageMetric(rows, ['citation_rate'])
   const sentiment = sentimentTotals(rows)
+  const sentimentTotal = sentimentDistributionTotal(sentiment)
   const isEmpty = !monitoringQ.isLoading && rows.length === 0
   const sevenDayEmpty = isEmpty && isSevenDayWindow(filters)
   const contractSource = monitoringQ.data as (AnalyticsContractMetadata & LooseRecord) | null | undefined
-  const visibilityTrust = topicMetricTrustState(contractSource, 'visibility')
-  const sentimentTrust = topicMetricTrustState(contractSource, 'sentiment')
-  const citationTrust = topicMetricTrustState(contractSource, 'citation')
+  const visibilityTrust = topicMetricTrustState(contractSource, 'visibility', null, avgVisibility)
+  const sentimentTrust = topicMetricTrustState(contractSource, 'sentiment', null, sentimentTotal)
+  const citationTrust = topicMetricTrustState(contractSource, 'citation', null, avgCitationCoverage)
 
   return (
     <div className="space-y-5">
@@ -757,9 +777,24 @@ function TopicsView({
             <tbody>
               {filtered.map((topic) => {
                 const topicSource = topic as AnalyticsContractMetadata & LooseRecord
-                const rowVisibilityTrust = topicMetricTrustState(topicSource, 'visibility', contractSource)
-                const rowSentimentTrust = topicMetricTrustState(topicSource, 'sentiment', contractSource)
-                const rowCitationTrust = topicMetricTrustState(topicSource, 'citation', contractSource)
+                const rowVisibilityTrust = topicMetricTrustState(
+                  topicSource,
+                  'visibility',
+                  contractSource,
+                  visibilityValue(topic),
+                )
+                const rowSentimentTrust = topicMetricTrustState(
+                  topicSource,
+                  'sentiment',
+                  contractSource,
+                  sentimentDistributionTotal(topic.sentiment_distribution),
+                )
+                const rowCitationTrust = topicMetricTrustState(
+                  topicSource,
+                  'citation',
+                  contractSource,
+                  topic.citation_rate,
+                )
                 return (
                   <tr
                     key={topic.topic_id}
@@ -1472,15 +1507,16 @@ function ResponseAttemptsModal({
   const analyzerFactsTrust = hasScopedFacts
     ? null
     : topicMetricTrustState(detailContract, 'analyzer_facts') ||
-      buildMetricTrustState({
-        formula_status: detailContract?.formula_status || 'missing',
-        reason_codes: [
-          'missing_analyzer_rows',
-          ...((detailContract?.missing_reasons as string[] | undefined) ?? []),
-          ...((detailContract?.missing_inputs as string[] | undefined) ?? []),
-        ],
-        analyzer_coverage: detailContract?.analyzer_coverage ?? null,
-      })
+      (hasResponseContractMetadata(detailContract)
+        ? buildMetricTrustState({
+            formula_status: detailContract?.formula_status || detailContract?.state,
+            reason_codes: [
+              ...((detailContract?.missing_reasons as string[] | undefined) ?? []),
+              ...((detailContract?.missing_inputs as string[] | undefined) ?? []),
+            ],
+            analyzer_coverage: detailContract?.analyzer_coverage ?? null,
+          })
+        : null)
   const scopeLabel = selectedScopeLabel(detailContract)
 
   return (
