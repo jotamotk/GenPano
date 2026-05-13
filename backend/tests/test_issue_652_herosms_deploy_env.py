@@ -155,7 +155,8 @@ def test_server_diagnostics_has_readonly_doubao_sms_forensics_mode() -> None:
     assert "sanitize_herosms_stream" in run_script
     assert "cat > \"${sanitizer_py}\" <<'PY'" in run_script
     assert "scripts/sanitize_herosms_logs.py" not in run_script
-    assert 'if [ "${BASH_SUBSHELL:-0}" != "0" ]; then' in run_script
+    assert 'main_bash_pid="${BASHPID}"' in run_script
+    assert 'if [ "${BASHPID}" != "${main_bash_pid}" ]; then' in run_script
     assert "docker compose logs --since" in run_script
     assert "queue-lengths.txt" in run_script
     assert "journal-docker-window.txt" in run_script
