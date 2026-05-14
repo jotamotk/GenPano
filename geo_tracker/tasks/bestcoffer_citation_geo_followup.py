@@ -1199,6 +1199,11 @@ async def _citation_plan_or_apply(
                         updated_citations.append(updated)
                     else:
                         updated_citations.append(dict(citation))
+                elif skip_ambiguous_marker_source:
+                    updated = _force_unresolved_citation(citation)
+                    if updated != citation:
+                        package_changed = True
+                    updated_citations.append(updated)
                 elif conflict:
                     updated = _force_unresolved_citation(citation)
                     if updated != citation:
