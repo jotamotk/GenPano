@@ -72,14 +72,22 @@ comment with these fields:
 - Allowed Scope
 - Forbidden Scope
 - Contract Snapshot
-- Acceptance Criteria
-- Verification
+- Acceptance Matrix with source for every row
+- Coverage Gaps, if any
+- Verification Evidence Ledger expectations
+- User-Symptom Replay target when user-reported or UI-visible
+- Test Integrity expectations
 - Dependencies
 - Branch
 - PR target
 - Handoff expectations
 
 One Claude Code assignment maps to one deliverable, one branch, and one PR.
+
+Claude Code must not make tests pass by deleting assertions, adding skips,
+weakening checks, swallowing exceptions, or moving verification away from the
+assigned user path. If a test appears obsolete, report it as `BLOCKER` or
+`PRD-CHANGE` and wait for Codex Lead or product-owner direction.
 
 ## Branch And PR Rules
 
@@ -120,7 +128,10 @@ PR. Keep it concise; it is a readiness signal, not a diary.
 - Current code entrypoints verified:
 - Allowed Scope understood:
 - Forbidden Scope understood:
-- Expected verification:
+- Acceptance Matrix source coverage:
+- Expected Evidence Ledger rows:
+- User-Symptom Replay target:
+- Test Integrity risk:
 - Missing context or blocker:
 ```
 
@@ -171,8 +182,12 @@ Claude Code PRs must include:
 - changed files
 - scope kept and scope explicitly not changed
 - PRD coverage table when product behavior is involved
-- local verification output
-- Playwright evidence if UI-visible
+- Acceptance Matrix status
+- Verification Evidence Ledger with command/run, exit/conclusion, key output,
+  scope, artifact/link, and commit SHA
+- User-Symptom Replay evidence if user-reported or UI-visible
+- Test Integrity Statement listing test files changed, assertions relaxed,
+  skips added, exceptions swallowed, and unverified acceptance rows
 - CI/CD status or blocker
 - risk and rollback notes
 - exact next handoff target
@@ -187,8 +202,11 @@ Suggested PR handoff:
 - Summary:
 - Changed Files:
 - Not Changed:
-- Verification:
+- Acceptance Matrix:
+- Verification Evidence Ledger:
 - Screenshots/Traces:
+- User-Symptom Replay:
+- Test Integrity:
 - CI/CD:
 - Live Check:
 - Risks:
@@ -210,12 +228,15 @@ For QA/E2E assignments, Claude Code must not implement business behavior. It
 reports:
 
 - base URL
-- exact scenario
+- exact scenario, including route, row, brand, query, request, payload, action,
+  and expected visible result when available
 - commands run
+- exit codes or CI job conclusions
 - screenshots, traces, or request details
 - pass/fail result
 - failed request URL, status, response body summary, and timestamp when
   available
+- commit SHA tested
 
 For pruning assignments, Claude Code must not delete files or change workflow
 rules. It reports:
@@ -290,9 +311,14 @@ Before merge or user-facing completion, the Codex Lead verifies:
 
 - linked issue body is current
 - PRD IDs are linked when product behavior is involved
+- Acceptance Matrix is source-backed and complete
+- Coverage Gaps are empty or accepted
 - PR stays inside one deliverable scope
 - required local tests are present
-- required Playwright or QA evidence is present
+- Verification Evidence Ledger is complete
+- user-reported symptoms have targeted replay evidence or an explicit blocker
+- Test Integrity Statement is present
+- required Playwright or QA evidence matches the selected E2E tier
 - CI/CD is green or the blocker is explicitly accepted
 - deployment path is known
 - production-facing behavior is verified on `http://116.62.36.173/`

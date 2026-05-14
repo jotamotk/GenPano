@@ -106,23 +106,49 @@ body:
   - type: textarea
     id: acceptance
     attributes:
-      label: Acceptance Criteria
-      description: List the exact checks that make this deliverable complete.
+      label: Acceptance Matrix
+      description: Translate acceptance from PRD/user decisions before implementation. Every row needs a source.
       value: |
-        - [ ] Define the acceptance check.
+        | AC | Source | User Path | Machine Check | Evidence Required | Status |
+        | --- | --- | --- | --- | --- | --- |
+        | AC-1 |  |  |  |  | pending |
+
+        Coverage Gaps:
+        | Source Requirement | Missing Coverage | Decision Needed |
+        | --- | --- | --- |
+        |  |  |  |
     validations:
       required: true
   - type: textarea
     id: verification
     attributes:
-      label: Verification
-      description: Required local tests, CI checks, screenshots, Playwright traces, or live checks.
+      label: Verification Evidence Ledger
+      description: Every checked item needs command/run, exit/conclusion, key output, scope covered, artifact/link when available, and commit SHA.
       value: |
-        - [ ] Local:
-        - [ ] Screenshot/video:
-        - [ ] Playwright:
-        - [ ] CI/CD:
-        - [ ] Live `http://116.62.36.173/` check if production-facing:
+        | Check | Command/Run | Exit/Conclusion | Key Output | Scope Covered | Artifact/Link | Commit |
+        | --- | --- | --- | --- | --- | --- | --- |
+        | Local |  |  |  |  |  |  |
+        | CI/CD |  |  |  |  |  |  |
+        | Playwright/E2E |  |  |  |  |  |  |
+
+        User-Symptom Replay:
+        - Exact route/row/brand/query/request/action:
+        - Expected visible result:
+        - E2E tier used: Tier 0 | Tier 1 | Tier 2 | Tier 3
+        - Evidence or blocker:
+    validations:
+      required: true
+  - type: textarea
+    id: test-integrity
+    attributes:
+      label: Test Integrity
+      description: Disclose test changes so "green tests" cannot hide weakened acceptance.
+      value: |
+        - Test files added/modified/deleted:
+        - Assertions removed or relaxed:
+        - Skips/xfails added:
+        - Exceptions swallowed or converted to success:
+        - Acceptance rows not verified:
     validations:
       required: true
   - type: textarea
