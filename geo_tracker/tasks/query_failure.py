@@ -26,6 +26,7 @@ INFRASTRUCTURE_FAILURE_REASONS = frozenset(
         "proxy_no_available_nodes",
         "proxy_source_group_unavailable",
         "proxy_unavailable",
+        "scraper_session_lock_timeout",
         "soft_time_limit",
     }
 )
@@ -40,6 +41,16 @@ def classify_execution_failure(exc: BaseException) -> str:
     if "timeout" in text:
         return "browser_timeout"
     return "browser_exception"
+
+
+def resolve_execution_failure_reason(exc: BaseException, prior: str | None) -> str:
+    # Refs #928: an artifact-save call (e.g. _save_runtime_snapshot, page.content)
+    # in a specific failure branch can raise a Playwright TimeoutError after the
+    # inner branch already set a precise reason like "no_input" / "page_unavailable".
+    # The outer except must not overwrite that precise reason with "browser_timeout".
+    if prior:
+        return prior
+    return classify_execution_failure(exc)
 
 
 def _empty_response_failure_reason(

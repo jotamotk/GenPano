@@ -5,6 +5,7 @@ import types
 import asyncio
 import json
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 from sqlalchemy import select
@@ -29,6 +30,7 @@ from geo_tracker.tasks.account_assignment import (
 )
 from geo_tracker.tasks.query_failure import (
     classify_execution_failure,
+    resolve_execution_failure_reason,
     _empty_response_failure_reason,
     _should_report_account_failure,
 )
@@ -2412,3 +2414,110 @@ async def test_execute_query_falls_back_to_profile_scoped_pool_when_assignment_u
     ]
     assert assigned.query_count_today == 2
     assert db.commits == 0
+
+
+# Refs #928 / #930: regression coverage for Doubao no_input being overwritten
+# as browser_timeout when an artifact-save call inside the no_input branch
+# raises a Playwright TimeoutError and bubbles to the outer except.
+def test_resolve_execution_failure_reason_preserves_no_input_over_timeout_exception():
+    exc = TimeoutError("Page.evaluate: Timeout 30000ms exceeded.")
+    assert resolve_execution_failure_reason(exc, prior="no_input") == "no_input"
+
+
+def test_resolve_execution_failure_reason_preserves_other_specific_reasons():
+    exc = TimeoutError("Page.evaluate: Timeout 30000ms exceeded.")
+    assert (
+        resolve_execution_failure_reason(exc, prior="page_unavailable")
+        == "page_unavailable"
+    )
+    assert (
+        resolve_execution_failure_reason(exc, prior="cookies_expired")
+        == "cookies_expired"
+    )
+    assert (
+        resolve_execution_failure_reason(exc, prior="doubao_not_logged_in")
+        == "doubao_not_logged_in"
+    )
+
+
+def test_resolve_execution_failure_reason_falls_back_to_classifier_when_no_prior():
+    timeout_exc = TimeoutError("Page.evaluate: Timeout 30000ms exceeded.")
+    assert resolve_execution_failure_reason(timeout_exc, prior=None) == "browser_timeout"
+    assert resolve_execution_failure_reason(timeout_exc, prior="") == "browser_timeout"
+
+    other_exc = RuntimeError("Connection reset")
+    assert (
+        resolve_execution_failure_reason(other_exc, prior=None) == "browser_exception"
+    )
+
+
+def test_classify_execution_failure_unchanged_for_existing_callers():
+    assert (
+        classify_execution_failure(TimeoutError("Timeout 90000ms exceeded."))
+        == "browser_timeout"
+    )
+    assert (
+        classify_execution_failure(RuntimeError("write EPIPE")) == "browser_epipe"
+    )
+    assert (
+        classify_execution_failure(RuntimeError("plain failure"))
+        == "browser_exception"
+    )
+
+
+# Refs #928: the AccountSessionLockTimeout caught at celery_tasks.py used to
+# hardcode failure_reason="browser_timeout", masking Redis session-lock
+# contention as if it were a Playwright timeout. The new value
+# "scraper_session_lock_timeout" is reserved as infrastructure-class so it
+# still bypasses account-level failure reporting (no false account flags).
+def test_scraper_session_lock_timeout_is_infrastructure_reason():
+    from geo_tracker.tasks.query_failure import (
+        INFRASTRUCTURE_FAILURE_REASONS,
+        _should_report_account_failure,
+    )
+
+    assert "scraper_session_lock_timeout" in INFRASTRUCTURE_FAILURE_REASONS
+    # Infrastructure reasons MUST NOT trigger account-level failure escalation;
+    # otherwise a worker pool / lock contention storm would erroneously cool
+    # down or expire accounts.
+    assert _should_report_account_failure("scraper_session_lock_timeout") is False
+    # And the old name is still infrastructure (unchanged for unrelated callers).
+    assert _should_report_account_failure("browser_timeout") is False
+
+
+def test_account_session_lock_timeout_celery_handler_uses_distinct_reason():
+    # We do not import celery_tasks end-to-end here (it requires Celery + Redis
+    # + Playwright import chain that the unit-test layer does not have); but we
+    # can pin the source contract that the AccountSessionLockTimeout handler
+    # writes a value distinguishable from generic browser_timeout, so admin
+    # Tracker and the #930 diagnostic recipe can separate the two failure modes.
+    source_path = (
+        Path(__file__).resolve().parent.parent / "tasks" / "celery_tasks.py"
+    )
+    source = source_path.read_text(encoding="utf-8")
+    # The exact assignment line — drift here means the rename was reverted.
+    assert 'failure_reason = "scraper_session_lock_timeout"' in source
+    # And the misleading hardcoded "browser_timeout" assignment is gone.
+    assert 'failure_reason = "browser_timeout"' not in source
+
+
+# Refs PR #933 Codex review (P2): execute() retries _execute_once across
+# proxy-rotation attempts without resetting self.last_error_reason between
+# attempts. resolve_execution_failure_reason preserves any prior value, so
+# attempt N raising a fresh Playwright exception with no in-attempt reason
+# set would otherwise inherit attempt N-1's stale reason and mask the real
+# current-attempt failure. _execute_once must reset the field at entry.
+def test_execute_once_resets_last_error_reason_at_entry():
+    source_path = (
+        Path(__file__).resolve().parent.parent / "agent" / "guest_executor.py"
+    )
+    source = source_path.read_text(encoding="utf-8")
+    sig_idx = source.index("async def _execute_once(")
+    body_until_first_try = source[sig_idx : source.index("try:", sig_idx)]
+    # The reset must appear before any other self.last_error_reason write or
+    # before any operation that may set the field via inner branches.
+    assert "self.last_error_reason = None" in body_until_first_try, (
+        "_execute_once must reset self.last_error_reason at entry to prevent "
+        "stale reasons from a prior retry attempt leaking through "
+        "resolve_execution_failure_reason."
+    )
