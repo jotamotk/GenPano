@@ -551,9 +551,7 @@ def test_sov_series_with_points_and_no_missing_inputs_keeps_ok_status() -> None:
             "admin_fact_response_count": 4,
         },
         formula_status="missing_required_inputs",
-        formula_diagnostics=analytics_contract.formula_diagnostics_for(
-            "missing_required_inputs"
-        ),
+        formula_diagnostics=analytics_contract.formula_diagnostics_for("missing_required_inputs"),
         metric_formula_evidence={
             "sov": {
                 "formula_status": "missing_required_inputs",
