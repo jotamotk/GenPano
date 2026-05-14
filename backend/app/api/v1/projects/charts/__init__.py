@@ -24,6 +24,14 @@ from app.api.v1.projects.charts._contracts import (
     _missing_analyzer_metric_evidence,
     _with_chart_contract,
 )
+from app.api.v1.projects.charts.authority import (
+    _target_authority_points_from_facts,
+    _with_authority_trend_contract,
+)
+from app.api.v1.projects.charts.citation import (
+    _target_citation_composition_rows,
+    _with_citation_composition_contract,
+)
 from app.api.v1.projects.charts.sentiment import (
     _fact_sentiment_score_response_count,
     _label_for_polarity,
@@ -54,8 +62,12 @@ __all__ = [
     "_sentiment_by_engine_missing_out",
     "_sentiment_label_sql",
     "_sentiment_missing_out",
+    "_target_authority_points_from_facts",
+    "_target_citation_composition_rows",
     "_unique",
+    "_with_authority_trend_contract",
     "_with_chart_contract",
+    "_with_citation_composition_contract",
     "_with_sentiment_by_engine_contract",
     "_with_sentiment_trend_contract",
 ]
