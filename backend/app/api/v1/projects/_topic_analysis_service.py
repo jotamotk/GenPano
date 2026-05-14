@@ -1171,7 +1171,12 @@ async def get_topic_monitoring(
     filters: AnalysisFilters,
     brand_id_override: int | None = None,
 ) -> TopicMonitoringOut:
-    from app.api.v1.projects._analytics_contract import build_contract_context, context_update
+    from app.api.v1.projects._analytics_contract import (
+        FORMULA_OK_STATUS,
+        build_contract_context,
+        context_update,
+        formula_diagnostics_for,
+    )
 
     brand_id = _effective_brand_id(project, brand_id_override)
     if brand_id is None:
@@ -1241,6 +1246,14 @@ async def get_topic_monitoring(
                 "missing_reasons": out.missing_reasons,
             }
         )
+    if (
+        update.get("state") == "ok"
+        and not update.get("missing_inputs")
+        and not update.get("missing_sources")
+        and out.evidence_count > 0
+    ):
+        update["formula_status"] = FORMULA_OK_STATUS
+        update["formula_diagnostics"] = formula_diagnostics_for(FORMULA_OK_STATUS)
     return out.model_copy(update=update)
 
 
