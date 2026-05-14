@@ -472,6 +472,144 @@ async def test_apply_materializes_attributable_analyzer_v4_citation(
 
 
 @pytest.mark.asyncio
+async def test_apply_resolves_missing_v3_citation_brand_name_from_marker_context(
+    session: AsyncSession,
+) -> None:
+    await _seed_scope(session)
+    response = (
+        await session.execute(select(LLMResponse).where(LLMResponse.id == 7610))
+    ).scalar_one()
+    response.raw_text = (
+        "BestCoffer is the office coffee pick supported by this source [2]. "
+        + ("general detail " * 20)
+        + "AcmeGrind is mentioned separately later in the response."
+    )
+    await session.commit()
+
+    report = await build_bestcoffer_citation_geo_followup_report(
+        session,
+        BestCofferCitationGeoScope(
+            project_id="7380c0e0-8798-4a5f-998f-42010a7d9caa",
+            brand_id=24,
+            competitor_brand_ids=(2,),
+            response_ids=(7610,),
+            date_from="2026-05-12",
+            date_to="2026-05-12",
+            limit=10,
+        ),
+        apply=True,
+        approval_ref=APPROVAL_REF,
+        approval_comment_fetcher=_approval_fetcher,
+    )
+
+    assert report["citation_plan"]["candidate_citation_count"] == 2
+    assert report["citation_plan"]["resolvable_citation_count"] == 2
+    assert report["citation_plan"]["unresolved_citation_count"] == 0
+    marker_row = [
+        row
+        for row in report["citation_plan"]["rows"]
+        if row["url"].endswith("general-guide")
+    ][0]
+    assert marker_row["resolution_method"] == "response_marker_context"
+
+    citations = (
+        await session.execute(
+            select(CitationSource).where(CitationSource.response_id == 7610)
+        )
+    ).scalars().all()
+    general = [row for row in citations if row.url.endswith("general-guide")][0]
+    assert general.mention_id == 7620
+
+
+@pytest.mark.asyncio
+async def test_apply_resolves_missing_v3_citation_brand_name_from_safe_query_context(
+    session: AsyncSession,
+) -> None:
+    await _seed_scope(session)
+    session.add(
+        BrandMention(
+            id=7622,
+            response_id=7611,
+            brand_id=24,
+            brand_name="BestCoffer",
+            is_target=True,
+            position_type="ranked",
+            position_rank=1,
+            detail_level="detailed",
+            sentiment="positive",
+            sentiment_score=0.8,
+            mention_count=1,
+        )
+    )
+    session.add(
+        ResponseAnalysis(
+            id=7631,
+            response_id=7611,
+            dimension_industry="coffee",
+            dimension_category="category",
+            target_brand_mentioned=True,
+            target_brand_sentiment="positive",
+            visibility_score=80,
+            sentiment_score=80,
+            sov_score=50,
+            citation_score=0,
+            geo_score=0,
+            analyzed_at=datetime(2026, 5, 12, 10, 0),
+            raw_analysis_json={
+                "analyzer_fact_package_v3": {
+                    "analyzer_version": "v3",
+                    "response_id": 7611,
+                    "query_id": 7604,
+                    "target_brand_id": 24,
+                    "citations": {
+                        "total_citations": 1,
+                        "attributed_citations": [],
+                        "unresolved_citations": [
+                            {
+                                "url": "https://coffee.example/context-bestcoffer",
+                                "domain": "coffee.example",
+                                "title": "Office coffee guide",
+                                "citation_index": 5,
+                                "source_type": "article",
+                                "brand_name": None,
+                                "mention_id": None,
+                            }
+                        ],
+                        "formula_status": "partial",
+                        "reason_codes": ["citation_sources.mention_id"],
+                    },
+                }
+            },
+        )
+    )
+    await session.commit()
+
+    report = await build_bestcoffer_citation_geo_followup_report(
+        session,
+        BestCofferCitationGeoScope(
+            project_id="7380c0e0-8798-4a5f-998f-42010a7d9caa",
+            brand_id=24,
+            competitor_brand_ids=(2,),
+            response_ids=(7611,),
+            date_from="2026-05-12",
+            date_to="2026-05-12",
+            limit=10,
+        ),
+        apply=True,
+        approval_ref=APPROVAL_REF,
+        approval_comment_fetcher=_approval_fetcher,
+    )
+
+    assert report["citation_plan"]["resolvable_citation_count"] == 1
+    assert report["citation_plan"]["unresolved_citation_count"] == 0
+    assert report["citation_plan"]["rows"][0]["resolution_method"] == "query_brand_context"
+    citation = (
+        await session.execute(select(CitationSource).where(CitationSource.response_id == 7611))
+    ).scalar_one()
+    assert citation.mention_id == 7622
+
+
+@pytest.mark.asyncio
 async def test_apply_processes_v3_and_v4_packages_in_same_raw_analysis_json(
     session: AsyncSession,
 ) -> None:
