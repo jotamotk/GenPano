@@ -25,6 +25,7 @@ from genpano_models import (
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.v1.projects import _analytics_contract as analytics_contract
 from app.user_auth.jwt import sign_user_access_token
 
 os.environ.setdefault("USER_JWT_SECRET", "x" * 64)
@@ -404,6 +405,78 @@ async def test_topics_monitoring_keeps_formula_status_from_first_class_v4_eviden
     assert body["evidence_counts"]["analyzer_run_count"] == 1
     assert body["evidence_counts"]["analyzer_entity_count"] == 2
     assert "analyzer_runs" in body["source_provenance"]
+
+
+@pytest.mark.asyncio
+async def test_topics_monitoring_normalizes_ok_state_partial_formula_without_missing_inputs(
+    client,
+    user: User,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = await _project(db_session, user)
+    await _seed_admin_chain_tables(db_session)
+    await _seed_chain_response(
+        db_session,
+        topic_id=78371,
+        prompt_id=78372,
+        query_id=78373,
+        response_id=78374,
+    )
+    await _seed_first_class_v4_facts(db_session, response_id=78374, linked_citation=True)
+
+    async def _partial_contract_without_missing_inputs(*args, **kwargs):
+        return analytics_contract.AnalyticsContractContext(
+            project_scope=analytics_contract.ProjectScope(
+                project_id=project.id,
+                primary_brand_id=project.primary_brand_id,
+                requested_brand_id=project.primary_brand_id,
+                competitor_brand_ids=[99],
+            ),
+            state="ok",
+            state_reason="data_available",
+            missing_inputs=[],
+            missing_sources=[],
+            missing_reasons=[],
+            evidence_counts={
+                "admin_fact_response_count": 1,
+                "analyzer_run_count": 1,
+                "analyzer_entity_count": 2,
+            },
+            formula_status="partial",
+            formula_diagnostics=analytics_contract.formula_diagnostics_for("partial"),
+            metric_formula_evidence={
+                "coverage": {
+                    "formula_status": "partial",
+                    "reason_codes": [],
+                    "source_tables": ["analyzer_runs"],
+                }
+            },
+            selected_filters=kwargs.get("selected_filters") or {},
+            source_provenance=["admin_facts", "analyzer_runs"],
+        )
+
+    monkeypatch.setattr(
+        analytics_contract,
+        "build_contract_context",
+        _partial_contract_without_missing_inputs,
+    )
+
+    response = await client.get(
+        f"/api/v1/projects/{project.id}/topics/monitoring",
+        headers=_bearer(user),
+        params={"from": DAY.date().isoformat(), "to": DAY.date().isoformat()},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["state"] == "ok"
+    assert body["state_reason"] == "data_available"
+    assert body["evidence_count"] == 1
+    assert body["missing_inputs"] == []
+    assert body["missing_sources"] == []
+    assert body["formula_status"] == "ok"
+    assert body["formula_diagnostics"]["status"] == "ok"
 
 
 @pytest.mark.asyncio
