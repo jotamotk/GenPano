@@ -29,6 +29,7 @@ from geo_tracker.tasks.account_assignment import (
 )
 from geo_tracker.tasks.query_failure import (
     classify_execution_failure,
+    resolve_execution_failure_reason,
     _empty_response_failure_reason,
     _should_report_account_failure,
 )
@@ -2412,3 +2413,52 @@ async def test_execute_query_falls_back_to_profile_scoped_pool_when_assignment_u
     ]
     assert assigned.query_count_today == 2
     assert db.commits == 0
+
+
+# Refs #928 / #930: regression coverage for Doubao no_input being overwritten
+# as browser_timeout when an artifact-save call inside the no_input branch
+# raises a Playwright TimeoutError and bubbles to the outer except.
+def test_resolve_execution_failure_reason_preserves_no_input_over_timeout_exception():
+    exc = TimeoutError("Page.evaluate: Timeout 30000ms exceeded.")
+    assert resolve_execution_failure_reason(exc, prior="no_input") == "no_input"
+
+
+def test_resolve_execution_failure_reason_preserves_other_specific_reasons():
+    exc = TimeoutError("Page.evaluate: Timeout 30000ms exceeded.")
+    assert (
+        resolve_execution_failure_reason(exc, prior="page_unavailable")
+        == "page_unavailable"
+    )
+    assert (
+        resolve_execution_failure_reason(exc, prior="cookies_expired")
+        == "cookies_expired"
+    )
+    assert (
+        resolve_execution_failure_reason(exc, prior="doubao_not_logged_in")
+        == "doubao_not_logged_in"
+    )
+
+
+def test_resolve_execution_failure_reason_falls_back_to_classifier_when_no_prior():
+    timeout_exc = TimeoutError("Page.evaluate: Timeout 30000ms exceeded.")
+    assert resolve_execution_failure_reason(timeout_exc, prior=None) == "browser_timeout"
+    assert resolve_execution_failure_reason(timeout_exc, prior="") == "browser_timeout"
+
+    other_exc = RuntimeError("Connection reset")
+    assert (
+        resolve_execution_failure_reason(other_exc, prior=None) == "browser_exception"
+    )
+
+
+def test_classify_execution_failure_unchanged_for_existing_callers():
+    assert (
+        classify_execution_failure(TimeoutError("Timeout 90000ms exceeded."))
+        == "browser_timeout"
+    )
+    assert (
+        classify_execution_failure(RuntimeError("write EPIPE")) == "browser_epipe"
+    )
+    assert (
+        classify_execution_failure(RuntimeError("plain failure"))
+        == "browser_exception"
+    )

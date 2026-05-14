@@ -47,7 +47,7 @@ from geo_tracker.agent.response_validation import (
     invalid_response_reason,
 )
 from geo_tracker.db.models import LLMResponse, Query
-from geo_tracker.tasks.query_failure import classify_execution_failure
+from geo_tracker.tasks.query_failure import resolve_execution_failure_reason
 
 logger = logging.getLogger(__name__)
 
@@ -1291,7 +1291,9 @@ class GuestQueryExecutor:
 
         except Exception as e:
             logger.exception(f"[{llm}] 执行异常: {e}")
-            self.last_error_reason = classify_execution_failure(e)
+            self.last_error_reason = resolve_execution_failure_reason(
+                e, self.last_error_reason
+            )
             if page_obj:
                 try:
                     await _save_screenshot(page_obj, query.id, f"{llm}_exception")
