@@ -1239,8 +1239,6 @@ async def get_topic_monitoring(
                 "missing_inputs": out.missing_inputs,
                 "missing_sources": out.missing_sources,
                 "missing_reasons": out.missing_reasons,
-                "formula_status": out.formula_status,
-                "formula_diagnostics": out.formula_diagnostics,
             }
         )
     return out.model_copy(update=update)
