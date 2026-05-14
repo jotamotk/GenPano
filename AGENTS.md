@@ -2,97 +2,151 @@
 
 These rules are the first stop for Codex-style agents working in this repo.
 
-## AI Lead Multi-Agent Workflow
+## Codex Coordination Workflow
 
 Genpano work is coordinated through GitHub. Treat GitHub issues, pull requests,
 review comments, and CI/CD runs as the durable collaboration state. Chat is only
 for discussion and clarification; it does not replace issue, PR, or review
 state.
 
-### AI Lead Role
+The purpose of this workflow is speed with recoverability. Issues should make
+the core problem, current judgment, and next action obvious to the next Codex
+session. Do not create process artifacts that do not improve execution.
 
-- The AI Lead does not write business code. Do not use the Lead role to modify
-  frontend, backend, worker, test, script, migration, or CI implementation
-  files.
-- The AI Lead may maintain coordination artifacts: PRDs, GitHub issues, PR
-  review comments, merge plans, verification plans, and workflow docs.
-- The AI Lead owns requirement clarification, PRD linkage, issue decomposition,
-  Agent assignment, PR review orchestration, CI/CD diagnosis, merge sequencing,
-  and online Playwright E2E verification planning.
-- In multi-Agent parallel work, the AI Lead owns CD coordination: serialize or
-  intentionally order production deploys, monitor overlapping Build & Deploy
-  runs, cancel superseded deploy runs promptly, and verify the final live
-  environment is running the intended latest `main` SHA.
-- If the user asks for implementation while the current role is AI Lead, the
-  Lead must create or update Agent task issues instead of editing code directly.
+### Real Agent Topology
 
-### Required Flow
+- There is one Codex coordinator wearing different hats during the work. The
+  named agent roles are responsibility views, not independent people.
+- Do not split issues by agent role. Split by deliverable: one issue should map
+  to a user-visible or engineering outcome that can be accepted or closed.
+- The Lead hat does not write business code. It may maintain coordination
+  artifacts: PRDs, GitHub issues, PR review comments, merge plans, verification
+  plans, and workflow docs.
+- Codex may switch into an implementation, QA, review, or release hat only after
+  the issue has a clear execution contract. Do not pretend a handoff happened to
+  a separate agent when the same coordinator is continuing the work.
+- In parallel or overlapping work, the Lead hat owns CD coordination: order
+  production deploys intentionally, monitor overlapping Build & Deploy runs,
+  cancel superseded deploy runs when safe, and verify the final live environment
+  is running the intended latest `main` SHA.
 
-1. One user request becomes one Epic issue.
-2. The Epic issue links stable PRD requirement IDs and all child Agent task
-   issues.
-3. When a user-facing experience is involved, create a Frontend Visualization
-   issue first. Frontend is the prototype; do not use detached mockups as the
-   source of truth.
-4. After the page direction and PRD are confirmed, split implementation into
-   scoped Agent task issues.
-5. Each Agent task issue maps to exactly one owner Agent, one branch, and one
-   PR.
-6. Worker PRs start as draft PRs. The Worker marks them ready only after the
-   issue's verification checklist is complete.
-7. Worker Agents do not merge. The AI Lead prepares a merge plan and may merge
-   without waiting for a fixed `pr，merge` phrase once review, CI, risk, rollback,
-   and live-verification criteria are satisfied, unless the user explicitly
-   pauses or blocks the release.
-8. After deployed functionality is merged, verify the live product with
-   Playwright E2E against `http://116.62.36.173/`.
+### Fast Path And Full Path
 
-### Agent Roles
+Not every request needs Epic -> Frontend Visualization -> PRD -> split issues.
 
-- `ai-lead-agent`: no business code; owns PRD, issue decomposition, scheduling,
-  reviews, CI/CD diagnosis, merge plans, CD coordination, and live verification
-  planning. It must cancel or stop superseded deployment runs when parallel
-  Agent merges would otherwise race on the shared production environment.
-- `frontend-visualization-agent`: turns requirements into real frontend pages.
-  It may change pages, components, styling, and lightweight frontend-only empty
-  states or mock data. It must not change backend, database, worker, or CI/CD
-  behavior.
-- `frontend-integration-agent`: connects confirmed frontend pages to real APIs,
-  state, error handling, and frontend tests. It must not change backend API
-  contracts without a separate Backend API issue.
-- `backend-api-agent`: owns FastAPI API behavior, auth, aggregation, and backend
-  tests. For Admin work, it must preserve the `backend/static/admin.html` shell
-  and `/admin/api/*` boundary.
-- `pipeline-data-agent`: owns scheduler, worker, adapter, data repair, and
-  migration work. It must include targeted tests and a rollback note.
-- `qa-e2e-agent`: verifies behavior only. It owns local smoke checks,
-  Playwright, and live E2E; it must not implement business behavior.
-- `release-ci-agent`: owns GitHub Actions, deploy logs, server diagnostics, and
-  CD run hygiene. It monitors overlapping Build & Deploy runs, identifies which
-  run targets the latest intended `main` SHA, cancels superseded deploys when
-  safe, and reports the final deployed SHA. It must not fold business fixes into
-  CI work without a new Agent task issue.
-- `review-agent`: reviews only. It prioritizes bugs, regressions, missing tests,
-  and release risk, with file and line references.
+Use **Fast Path** when the request is a bug fix or small improvement that:
 
-### Issue, PR, and PRD Contract
+- affects one product or engineering area
+- does not change PRD requirements, public contracts, schemas, migrations, or
+  deployment architecture
+- has a clear reproduction or acceptance check
+- can be completed with one issue, one branch, and one PR
 
-- Issues are the task context entrypoint, not the full context store. They must
-  link to PRD docs, code paths, related issues or PRs, screenshots, and online
-  repro details when relevant.
-- PRDs are the requirement source of truth. Every actionable PRD requirement
-  must have a stable ID such as `PRD-ADM-SCHED-001`.
-- Agent task issues must include: Goal, Owner Agent, Allowed Scope, Forbidden
-  Scope, PRD Source, PRD Slice, Acceptance Criteria, Verification,
-  Dependencies, and Handoff.
-- PRs must include: Linked Issue, Agent Role, Summary, Scope, Verification,
-  Risks, Handoff, and PRD Coverage.
-- Use `Refs #123` before final acceptance. Use `Closes #123` only when the PR is
-  approved for merge.
-- Issue text describes intent; code describes reality. If they conflict, the
-  Agent must stop and comment on the issue for AI Lead decision.
-- If a PRD changes, the AI Lead must update related issues' PRD Source and
-  Acceptance Mapping and comment with the impact.
+Use **Full Path** when any of these are true:
+
+- new user-facing workflow or material UX direction
+- PRD requirement or product contract may change
+- API, database, migration, scheduler, worker, CI/CD, or deployment contract
+  changes across areas
+- multiple deliverables must be sequenced
+- production risk is high or the rollback path is unclear
+
+Full Path may use an Epic, PRD linkage, Frontend Visualization, and multiple
+deliverable issues. Fast Path should not create those artifacts unless they
+serve the specific fix.
+
+### Issue Writing Standard
+
+Issues are task control panels, not chat rooms. Comments should be short,
+judgment-first, and useful three weeks later.
+
+- Start every substantive issue comment with the conclusion, then evidence,
+  then next action.
+- Use prefixes as writing aids, not bureaucracy:
+  `QUESTION`, `DECISION`, `BLOCKER`, `STATUS`, `PRD-CHANGE`, `EVIDENCE`.
+- `QUESTION` asks all known clarifying questions at once and states the default
+  assumption if the answer is not available.
+- `BLOCKER` states what is blocked, impact, options, and who or what can unblock
+  it.
+- `STATUS` is only for material state changes. Do not post process narration
+  that does not change current state, risk, decision, or next action.
+- `DECISION` records only settled decisions and must be copied into
+  `## Decisions` when the issue body has that section.
+- `PRD-CHANGE` states the PRD text, observed code or product reality, the
+  conflict, and the decision requested from the product owner.
+- `EVIDENCE` records exact proof: PR, run URL, commit SHA, route, request id,
+  screenshot, Playwright trace, server diagnostic, or API readback.
+
+Before posting a comment, check that it answers: what is the core judgment, what
+evidence supports it, what changed, and what happens next?
+
+### Issue, PR, And PRD Contract
+
+- Any problem, incident, bug, requirement gap, blocker, release risk, or workflow
+  gap reported to Codex must be captured in GitHub as a new issue or linked to
+  an existing issue before durable work continues.
+- Issue body is the current fact source. Comments are draft discussion and audit
+  trail. Keep `## Current State` and `## Decisions` current when state changes.
+- Downstream issues must inline their execution contract. Do not rely on
+  unresolved pointers such as "depends on #123" as the only source of scope.
+- Execution contracts should include Goal, Path (`fast` or `full`), Owner Hat,
+  Allowed Scope, Forbidden Scope, Contract Snapshot, Acceptance Criteria,
+  Verification, Dependencies, and Handoff when relevant.
+- PRDs are product-owner-approved facts. If implementation reveals a PRD problem,
+  Codex must request a `PRD-CHANGE`; it must not silently rewrite PRD intent.
+- PRs must include: Linked Issue, Owner Hat, Summary, Scope, Verification,
+  Risks, Handoff, and PRD Coverage when product behavior is involved.
+- Use `Refs #123` before final acceptance. Use `Closes #123` only when the issue
+  closure path is approved for completion.
+- Issue text describes intent; code and live behavior describe reality. If they
+  conflict, stop and raise the conflict in the issue.
+
+### Issue Closure
+
+Closed issues must say why they ended. Use one of these closure types:
+
+- `Completed`: linked PR or commit, acceptance result, verification evidence,
+  and live Playwright or production evidence when relevant. Codex may close this
+  after required verification passes.
+- `Won't Do`: reason, deciding person, accepted risk, and alternative path if
+  any. This needs product-owner confirmation unless the issue is an obvious
+  duplicate or mistaken artifact created by Codex.
+- `Split/Superseded`: replacement issue links, which scope moved where, and what
+  this issue no longer owns. Prefer product-owner confirmation when product
+  scope changes.
+- `Duplicate`: canonical issue link and why it fully covers this issue. Codex
+  may close when the overlap is exact; otherwise ask first.
+
+### Workflow Improvement Notes
+
+Codex should surface process friction, but must classify it before proposing a
+rule change:
+
+- `Efficiency`: repeated low-value work, waiting, template noise, or duplicated
+  status updates.
+- `Constraint`: a gate, forbidden scope, or approval step feels restrictive.
+  Treat these skeptically and explain what risk the constraint prevents.
+- `Reliability`: a change that reduces missed evidence, stale state, or
+  incorrect closure.
+- `Topology Correction`: a rule assumes multiple independent agents when the
+  real topology is one coordinator wearing hats.
+
+Small notes can go in a governance/process issue. Do not change workflow rules
+without an accepted issue or explicit user instruction.
+
+### Human Input Channel
+
+The fixed Human Input issue is an inbox, not a task and not a PRD.
+
+- It stays open permanently and does not enter Fast Path or Full Path itself.
+- It is not closed by status workflow and should not be used as a requirement
+  source for implementation.
+- Each raw item needs a triage receipt: item id or short quote, classification
+  (`bug`, `feature change`, `new requirement`, `question/idea`, or
+  `needs clarification`), disposition, target issue or PRD-change request, and
+  last updated date.
+- Codex must not implement a vague Human Input item directly. It must first
+  convert it to a scoped issue, request a PRD decision, or ask for clarification.
 
 See `docs/AI_LEAD_WORKFLOW.md` for the full operating procedure and templates.
 For Claude Code collaboration, see `docs/AI_LEAD_CLAUDE_COLLABORATION.md`.

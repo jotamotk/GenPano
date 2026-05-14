@@ -21,7 +21,8 @@ Canonical product and implementation references:
 
 Historical agent planning artifacts were removed in the cleanup branch. Do not
 recreate root `CLAUDE.md`, session prompt files, decision logs, or auto-memory
-files. Current multi-agent coordination belongs in `AGENTS.md`,
-`AI_LEAD_WORKFLOW.md`, GitHub issues, PRs, and review comments. New product
+files. Current Codex coordination belongs in `AGENTS.md`,
+`AI_LEAD_WORKFLOW.md`, GitHub issues, PRs, and review comments. Treat named
+agents as responsibility hats, not independent sources of authority. New product
 behavior belongs in the relevant PRD or contract; engineering notes belong in
 code, tests, or PR descriptions.

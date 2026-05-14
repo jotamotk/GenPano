@@ -1,59 +1,63 @@
-name: Human Issue
-description: Track a task that requires manual operator or PM review/intervention
-title: "[Human] "
+name: Human Input Channel
+description: Create or maintain the permanent product-owner inbox issue
+title: "[Human Input] "
 labels:
-  - type:human
+  - type:human-input
 body:
   - type: markdown
     attributes:
       value: |
-        Use this template for tasks that must be completed or verified by humans.
-  - type: dropdown
-    id: priority
-    attributes:
-      label: Priority
-      description: Select the urgency and impact level for human triage.
-      options:
-        - P0 - Production outage, data loss, security risk, or release blocker
-        - P1 - High impact or time-sensitive operator/customer issue
-        - P2 - Normal priority task needed for planned work
-        - P3 - Low priority cleanup, follow-up, or backlog item
-    validations:
-      required: true
+        Use this for the permanent Human Input Channel. It is an inbox ledger, not an executable task, PRD, branch, or PR.
   - type: textarea
-    id: priority-rationale
+    id: purpose
     attributes:
-      label: Priority Rationale
-      description: Explain the user impact, deadline, and blocking risk behind the selected priority.
+      label: Purpose
+      description: State the channel purpose so future agents do not treat it as a task.
       value: |
-        - User impact:
-        - Deadline:
-        - Blocking risk:
-    validations:
-      required: true
-  - type: textarea
-    id: user-need
-    attributes:
-      label: User Need
-      description: Describe the operator/PM request in clear terms and include any exact URLs, issue ids, or error signatures.
-      placeholder: "Operator requests..."
+        This issue is the product-owner inbox for raw observations, ideas, bugs, feature changes, and new requirements. It stays open permanently. Each entry needs a triage receipt before it becomes executable work.
     validations:
       required: true
   - type: textarea
     id: current-state
     attributes:
       label: Current State
-      description: What is currently true (observed behavior, affected scope, evidence links).
-      placeholder: "- Symptom:\n- Scope:\n- Evidence:"
+      description: Keep a compact ledger of open raw inputs and their disposition.
+      value: |
+        | Item | Raw Input | Classification | Disposition | Target | Last Updated |
+        | --- | --- | --- | --- | --- | --- |
+        |  |  |  |  |  |  |
     validations:
       required: true
   - type: textarea
-    id: verification
+    id: triage-rules
     attributes:
-      label: Human Verification
-      description: What must be confirmed manually and who is responsible.
+      label: Triage Rules
+      description: Rules Codex must follow when reading this channel.
       value: |
-        - Responsible:
-        - Acceptance:
+        - Do not implement directly from a vague raw note.
+        - Classify each item as bug, feature change, new requirement, question/idea, or needs clarification.
+        - Convert actionable work into a scoped Task or Full Path Coordination issue.
+        - Use PRD-CHANGE when the item changes product behavior or contract.
+        - Leave a triage receipt for every item.
+        - Keep this issue open permanently.
+    validations:
+      required: true
+  - type: textarea
+    id: triage-receipt-template
+    attributes:
+      label: Triage Receipt Template
+      description: Copy this shape into comments or the ledger for each raw input item.
+      value: |
+        TRIAGE: <item id or short quote> classified as <bug | feature change | new requirement | question/idea | needs clarification>.
+
+        Disposition:
+        - Converted to:
+        - PRD decision requested in:
+        - Waiting for clarification from:
+        - No action because:
+
+        Receipt:
+        - Original note:
+        - Last updated:
     validations:
       required: true

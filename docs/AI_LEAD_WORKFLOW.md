@@ -1,4 +1,4 @@
-# Genpano AI Lead Multi-Agent Workflow
+# Genpano Codex Coordination Workflow
 
 This document defines how Codex-style agents coordinate Genpano work through
 GitHub. It is a repository-level operating procedure. It does not change the
@@ -6,250 +6,419 @@ global Codex configuration.
 
 ## Core Rule
 
-GitHub is the state source for multi-agent work. Chat may clarify intent, but it
-does not replace issues, PRs, review comments, CI logs, or verification records.
+GitHub is the durable state source for Genpano work. Chat may clarify intent,
+but it does not replace issues, PRs, review comments, CI logs, deploy logs, or
+verification records.
 
-The AI Lead does not write business code. It coordinates the work, keeps the
-requirement trail intact, reviews outcomes, and drives verification. Worker
-Agents implement scoped issues through PRs.
+The workflow optimizes for low-noise execution. An issue should let a future
+Codex session understand the core problem, current judgment, decision history,
+and next action without reading a long chat transcript.
 
-Claude Code collaboration is governed by
-`docs/AI_LEAD_CLAUDE_COLLABORATION.md`. Treat Claude Code as an assigned Agent
-tool inside this workflow, not as a parallel source of authority.
+## Real Topology
 
-## End-to-End Flow
+There is one Codex coordinator. The named agents are hats that the coordinator
+wears for different responsibilities:
 
-1. User need
-   - AI Lead captures the user goal, affected surface, current symptom, success
-     criteria, risk, and live verification target.
-   - If anything is uncertain in production, the Lead uses GitHub Actions,
-     deploy logs, server diagnostics, or live checks instead of guessing.
+- `lead`: requirements, issue shaping, PRD linkage, merge sequencing, release
+  planning, and live verification planning
+- `frontend-visualization`: real frontend prototype or page-state visualization
+- `frontend-integration`: frontend wiring to real APIs, state, and tests
+- `backend-api`: FastAPI behavior, auth, aggregation, backend tests
+- `pipeline-data`: scheduler, worker, adapters, migrations, repair scripts
+- `qa-e2e`: verification only, including local smoke and Playwright
+- `release-ci`: GitHub Actions, deploy logs, server diagnostics, CD hygiene
+- `review`: review only, focused on bugs, regressions, missing tests, and risk
 
-2. Epic issue
-   - One user request becomes one Epic issue.
-   - The Epic links PRD requirement IDs, child Agent task issues, related
-     incidents, and the final merge plan.
+The hats do not imply separate people. Do not create one issue per hat. Create
+issues for deliverables that can be accepted, merged, closed, or abandoned.
 
-3. Frontend visualization
-   - For user-facing experience work, the Lead first creates a
-     Frontend Visualization issue.
-   - Frontend is the prototype. The visualization must be a real repo page or
-     real component state, not a detached mockup.
-   - The Frontend Visualization Agent submits a draft PR with screenshot,
-     recording, or Playwright evidence.
+When Codex is wearing the `lead` hat, it does not edit business implementation
+files. It may edit PRDs, GitHub issues, review comments, merge plans,
+verification plans, workflow docs, and templates. Codex may switch into a worker
+hat only after the issue has a clear execution contract.
 
-4. Page and PRD confirmation
-   - The AI Lead reviews the visualization against the user goal.
-   - After the page direction is accepted, the Lead records or updates PRD
-     requirements with stable IDs.
+## Intake And Path Selection
 
-5. Implementation issues
-   - The Lead splits the confirmed work into Backend API, Frontend Integration,
-     Pipeline/Data, QA/E2E, Release/CI, or Review issues.
-   - Each issue has one owner Agent, a tight allowed scope, a forbidden scope,
-     acceptance criteria, verification, dependencies, and handoff instructions.
+Every user-reported problem, incident, requirement gap, blocker, release risk,
+or workflow gap must be captured in GitHub as a new issue or linked to an
+existing issue before durable work continues.
 
-6. Worker PRs
-   - Each Worker opens one branch and one draft PR for one assigned issue.
-   - Branch naming: `codex/issue-123-short-slug`.
-   - PR title: `[#123] Short imperative title`.
-   - Workers do not merge.
+At intake, choose one path.
 
-7. Review and verification
-   - The AI Lead first checks scope.
-   - The Review Agent checks bugs, regressions, missing tests, and release risk.
-   - The QA/E2E Agent verifies local and live behavior when assigned.
-   - The Release/CI Agent diagnoses GitHub Actions, deployment, and server
-     failures when assigned.
+### Fast Path
 
-8. Merge plan and merge
-   - The AI Lead prepares a merge plan with order, dependencies, risks, rollback
-     notes, and live verification.
-   - The AI Lead may merge without waiting for a fixed `pr，merge` phrase once
-     review, CI, risk, rollback, and live-verification criteria are satisfied,
-     unless the user explicitly pauses or blocks the release.
-   - After deployment, verify completed functionality on
-     `http://116.62.36.173/` with Playwright E2E when the feature is user
-     visible or production-facing.
+Use Fast Path for small, bounded changes:
 
-## Agent Roles
+- one affected product or engineering area
+- no PRD requirement change
+- no public API, schema, migration, scheduler, worker, CI/CD, or deploy
+  contract change across areas
+- clear reproduction or acceptance check
+- one issue, one branch, one PR
 
-### AI Lead Agent
-
-- Does not edit frontend, backend, worker, test, script, migration, or CI
-  implementation files.
-- May edit coordination artifacts: PRD docs, issue text, review comments,
-  workflow docs, and merge plans.
-- Owns requirement clarification, issue decomposition, dependency ordering,
-  review orchestration, CI/CD diagnosis, and live verification planning.
-- Owns CD coordination during parallel Agent work: serialize or intentionally
-  order production deploys, monitor overlapping Build & Deploy runs, cancel
-  superseded deploy runs promptly, and verify the final live environment is
-  running the intended latest `main` SHA.
-- Converts user requests into Epic issues, PRD IDs, and Agent task issues.
-
-### Frontend Visualization Agent
-
-- Turns requirements into real frontend pages or component states.
-- Uses the existing frontend and Admin surface conventions.
-- May change page/component/style files and lightweight frontend-only empty
-  states or mock data needed to visualize the flow.
-- Must not change backend, database, scheduler, worker, migration, or CI/CD
-  behavior.
-- Must provide screenshot, recording, or Playwright evidence.
-
-### Frontend Integration Agent
-
-- Connects confirmed frontend pages to real APIs, state, errors, and tests.
-- May change frontend hooks, API clients, page wiring, and frontend tests.
-- Must not change backend contracts without a separate Backend API issue.
-- If the API is insufficient, comments on the issue and waits for AI Lead
-  routing.
-
-### Backend API Agent
-
-- Owns FastAPI routes, auth, aggregation, backend behavior, and backend tests.
-- For Admin work, preserves `backend/static/admin.html` and `/admin/api/*`.
-- Must document request/response contract changes in the PR.
-- Must add targeted backend tests for behavior changes.
-
-### Pipeline/Data Agent
-
-- Owns scheduler, worker, adapter, data repair, and migration work.
-- Must include targeted tests, production-risk notes, and rollback notes.
-- Must use GitHub Actions or server diagnostics for uncertain deployment or
-  runtime behavior.
-
-### QA/E2E Agent
-
-- Verifies only; does not implement business behavior.
-- Owns Playwright, local smoke checks, screenshots, traces, and live E2E.
-- Reports failures with exact route, request, response, screenshot, and
-  reproduction command when possible.
-
-### Release/CI Agent
-
-- Owns GitHub Actions, deploy logs, server diagnostics, and release blockers.
-- Uses `gh` or GitHub Actions logs when CI/CD is involved.
-- Monitors overlapping Build & Deploy runs, identifies which run targets the
-  latest intended `main` SHA, cancels superseded deploys when safe, and reports
-  the final deployed SHA.
-- Does not patch business logic unless the AI Lead creates a separate issue.
-
-### Review Agent
-
-- Reviews only; does not write code.
-- Prioritizes correctness bugs, behavioral regressions, missing tests, and
-  release risk.
-- Findings must cite file and line references where possible.
-
-## Issue Model
-
-Issues are task contracts. They must be short enough to execute and complete
-enough to prevent interpretation drift.
-
-Required fields for every Agent task issue:
+Fast Path issue shape:
 
 - Goal
-- Owner Agent
-- Epic
-- PRD Source
-- PRD Slice
-- Allowed Scope
-- Forbidden Scope
+- Current State
+- Decisions
+- Execution Contract
 - Acceptance Criteria
 - Verification
-- Dependencies
-- Context Links
-- Handoff
+- Closure
 
-Issue content should link to long-form PRD sections, docs, screenshots, code
-paths, prior issues, and prior PRs. It should not copy large PRD sections.
+Fast Path should not create an Epic, Frontend Visualization issue, or role-based
+child issue unless that artifact directly improves execution.
 
-If the issue conflicts with code reality, the Worker must stop and comment on
-the issue. The AI Lead decides whether to update the issue, update the PRD,
-split more work, or stop the task.
+### Full Path
 
-## PRD Linkage
+Use Full Path when any condition is true:
 
-PRD requirements are the upstream source of truth. Each actionable requirement
-needs a stable ID:
+- new user-facing workflow or material UX direction
+- PRD requirement or product contract may change
+- API, database, migration, scheduler, worker, CI/CD, or deployment behavior
+  crosses area boundaries
+- multiple deliverables must be sequenced
+- production risk or rollback path needs explicit planning
 
-```text
-PRD-<AREA>-<FEATURE>-<NUMBER>
-PRD-ADM-SCHED-001
-PRD-APP-DASH-002
-PRD-PIPELINE-DISPATCH-003
-```
+Full Path issue shape:
 
-Agent issues must map their scope to PRD requirements:
+1. Epic or coordination issue records the user goal and final merge plan.
+2. User-facing work gets a Frontend Visualization deliverable first.
+3. PRD changes happen only after product-owner decision.
+4. Implementation is split by deliverable, not by hat.
+5. Each deliverable issue has one branch and one PR.
+6. After merge, production-facing behavior is verified on
+   `http://116.62.36.173/` with Playwright E2E when applicable.
+
+### Escalation From Fast To Full
+
+Escalate a Fast Path issue to Full Path when investigation finds:
+
+- the acceptance behavior is not product-owner-approved
+- a PRD change is needed
+- the fix requires contract, schema, migration, scheduler, worker, deploy, or
+  CI/CD changes outside the original area
+- more than one deliverable needs separate acceptance
+- verification cannot be completed without production-risk planning
+
+Escalation requires a `STATUS` comment summarizing the new fact, the reason Fast
+Path is no longer safe, and the proposed Full Path shape.
+
+## Issue Body As Current Fact Source
+
+The issue body is the current fact source. Comments are discussion and audit
+trail. When state changes materially, update the body instead of leaving the
+new truth buried in comments.
+
+Recommended issue body sections:
 
 ```md
-## PRD Source
-- PRD: docs/PRD_ADMIN_SCHEDULER.md
-- Requirement IDs:
-  - PRD-ADM-SCHED-001
-- Epic: #120
+## Goal
 
-## PRD Slice
-Included:
-- Frontend display for pending / dispatched / failed
-- Loading, empty, and error states
+## Current State
 
-Excluded:
-- Backend dispatch logic, assigned to #124
-- Live E2E, assigned to #126
+## Decisions
 
-## Acceptance Criteria Mapping
-| PRD Criteria | This Issue |
-| --- | --- |
-| Show pending / dispatched / failed | Yes |
-| Show failed reason | Yes, frontend only |
-| Brand filter | No, backend/API issue #124 |
-| Live Playwright E2E | No, QA issue #126 |
+## Execution Contract
+
+## Acceptance Criteria
+
+## Verification
+
+## Closure
 ```
 
-When a PRD changes, the AI Lead must update related issues and comment with:
+`## Current State` is not a history log. It states what is true now:
 
-- changed PRD ID
-- commit or PR where it changed
-- impacted issues
-- new or removed requirements
-- whether existing PRs need updates
+- selected path: `fast` or `full`
+- known root cause or current hypothesis
+- current branch or PR
+- current blocker, if any
+- next action
+
+`## Decisions` records settled decisions only:
+
+- selected product behavior
+- path selection
+- scope inclusion or exclusion
+- accepted risk
+- closure decision
+
+## Execution Contract
+
+Downstream issues must inline their execution contract. A link to another issue
+or PRD is helpful context, but not enough by itself.
+
+Recommended contract:
+
+```md
+## Execution Contract
+
+- Path: fast | full
+- Owner Hat:
+- Branch:
+- Allowed Scope:
+  -
+- Forbidden Scope:
+  -
+- Contract Snapshot:
+  -
+- Acceptance Criteria:
+  -
+- Verification:
+  -
+- Dependencies:
+  -
+- Handoff:
+  -
+```
+
+`Contract Snapshot` is the frozen instruction for this issue. It should include
+the relevant user-facing behavior, API shape, data rule, or PRD slice that the
+worker should execute without chasing unresolved upstream comments.
+
+## Issue Comment Writing Standard
+
+Issue comments should be judgment-first. They should make it clear why the
+reader should care.
+
+Use these prefixes as writing guidance:
+
+- `QUESTION`: needs product-owner, user, CI/CD, server, or GitHub input
+- `DECISION`: records a settled decision
+- `BLOCKER`: identifies what prevents safe progress
+- `STATUS`: records a material state change
+- `PRD-CHANGE`: requests product-owner decision on PRD conflict
+- `EVIDENCE`: records verification proof
+
+Default comment shape:
+
+```md
+STATUS: One-sentence conclusion.
+
+Evidence:
+- Exact fact, link, route, file, PR, run id, screenshot, or log summary.
+- Exact fact.
+
+Next:
+- Next action.
+- Owner or needed decision.
+```
+
+Blocker comment shape:
+
+```md
+BLOCKER: What is blocked and why.
+
+Impact:
+- What cannot safely continue.
+
+Options:
+- Option A and tradeoff.
+- Option B and tradeoff.
+
+Need:
+- Specific decision, access, server help, CI/CD action, or user input.
+```
+
+Question comment shape:
+
+```md
+QUESTION: Need decision on <topic>.
+
+Questions:
+- First question.
+- Second question.
+
+Default if unanswered:
+- The assumption Codex will use, or "pause until answered" if no safe default.
+```
+
+Do not post a `STATUS` comment just to narrate work performed. If the comment
+does not change state, risk, decision, evidence, or next action, keep it out of
+the issue.
+
+## PRD Change Protocol
+
+PRD is product-owner-approved fact, not an immutable artifact. Code and live
+behavior can reveal that the PRD is incomplete or wrong, but Codex must not
+silently rewrite product intent.
+
+When a PRD conflict appears, post:
+
+```md
+PRD-CHANGE: <one-sentence requested decision>
+
+PRD Text:
+- File/section/requirement ID:
+- Current wording:
+
+Observed Reality:
+- Code, test, product behavior, data, or operator evidence:
+
+Conflict:
+- Why both cannot be true.
+
+Recommended Decision:
+- Proposed product-owner decision.
+
+Impact:
+- Issues/PRs/tests affected:
+```
+
+Implementation waits for the decision unless there is a safe, reversible
+diagnostic step that does not choose product behavior.
+
+## Human Input Channel
+
+The fixed Human Input issue is the product-owner inbox. It is not a task, not a
+PRD, and not a status workflow item.
+
+Rules:
+
+- Keep it open permanently.
+- Do not assign it to a branch or PR.
+- Do not close it when a child task completes.
+- Do not implement directly from a vague raw note.
+- Do not treat it as product fact until a scoped issue or PRD decision exists.
+
+Each raw entry needs a triage receipt:
+
+```md
+TRIAGE: <item id or short quote> classified as <bug | feature change | new requirement | question/idea | needs clarification>.
+
+Disposition:
+- Converted to: #123
+- PRD decision requested in: #124
+- Waiting for clarification from:
+- No action because:
+
+Receipt:
+- Original note:
+- Last updated:
+```
+
+The target issue or PRD-change request becomes the executable source. The Human
+Input issue remains the inbox ledger.
+
+## Workflow Improvement Notes
+
+Codex should propose workflow improvements when it repeatedly hits friction.
+Every proposal must self-classify:
+
+- `Efficiency`: removes repeated low-value work, waiting, duplicate status, or
+  template noise
+- `Constraint`: relaxes a gate, forbidden scope, approval point, or authority
+  boundary
+- `Reliability`: reduces stale state, missed evidence, bad closure, or wrong
+  routing
+- `Topology Correction`: fixes a rule that assumes independent agents instead
+  of one coordinator wearing hats
+
+Recommended note:
+
+```md
+WORKFLOW-IMPROVEMENT: <one-sentence proposal>
+
+Class:
+- Efficiency | Constraint | Reliability | Topology Correction
+
+Observed Friction:
+- What happened, with issue or PR links.
+
+Proposed Change:
+- Specific rule or template change.
+
+Risk Check:
+- For Constraint proposals, what risk did the old rule prevent?
+```
+
+Efficiency and Reliability notes can accumulate in a governance/process issue.
+Constraint changes need product-owner approval before becoming rules.
+
+## Issue Closure Protocol
+
+Every closed issue needs a closure record. Use one closure type.
+
+### Completed
+
+Codex may close when required verification has passed.
+
+Required record:
+
+- linked PR or commit
+- acceptance checklist result
+- verification evidence
+- live Playwright or production evidence when applicable
+- final state
+
+### Won't Do
+
+Needs product-owner confirmation unless the issue is an obvious mistaken Codex
+artifact.
+
+Required record:
+
+- reason
+- deciding person
+- accepted risk
+- alternative path or "none"
+
+### Split/Superseded
+
+Prefer product-owner confirmation when product scope changes.
+
+Required record:
+
+- replacement issue links
+- scope moved to each replacement
+- what this issue no longer owns
+- whether any PRD or acceptance criteria changed
+
+### Duplicate
+
+Codex may close only when the canonical issue fully covers this issue.
+
+Required record:
+
+- canonical issue link
+- duplicate evidence
+- any unique evidence copied to the canonical issue
 
 ## PR Model
 
-Each PR implements one issue.
+Each PR implements one issue or one clearly bounded docs/process change.
 
 Required PR sections:
 
 - Linked Issue
-- Agent Role
+- Owner Hat
 - Summary
 - Scope
 - Verification
 - Risks
 - Handoff
-- PRD Coverage
+- PRD Coverage when product behavior is involved
 
-Use `Refs #123` while the PR is under review. Use `Closes #123` only when the PR
-is accepted for merge.
+Use `Refs #123` while the PR is under review. Use `Closes #123` only when the
+closure type is `Completed` and the PR is intended to close the issue on merge.
 
-PRs start as draft. A Worker marks the PR ready only when the issue's
-verification checklist is complete or any missing verification is clearly
-explained as blocked.
+Draft PRs are preferred while verification is incomplete. A PR can be ready only
+when the issue's verification checklist is complete or any missing verification
+is explicitly blocked and accepted.
 
 ## Review Rules
 
-AI Lead scope review:
+Lead scope review:
 
-- Does the PR solve exactly one issue?
+- Does the PR solve exactly one issue or approved docs/process change?
 - Does it stay inside Allowed Scope?
 - Does it avoid Forbidden Scope?
 - Does it preserve Admin boundaries when Admin is touched?
 - Does it include required verification evidence?
+- Is the linked issue body current?
 
-Review Agent technical review:
+Review hat technical review:
 
 - correctness bugs
 - regressions
@@ -273,53 +442,54 @@ Release/CI review:
 
 Actionable feedback must live in GitHub review comments and be resolved there.
 
-## Merge Rules
+## Merge And Deployment Rules
 
 Do not merge PRs that:
 
-- have no linked issue
+- have no linked issue or approved docs/process anchor
 - are not mapped to PRD IDs when product behavior is involved
 - modify unrelated scope
 - have unexplained failing CI
 - lack required verification
 - skip needed live Playwright E2E for production-facing changes
+- leave the linked issue body stale
 
-The AI Lead produces a merge plan before merge:
+The Lead hat produces a merge plan before merge:
 
 - PR order
-- dependency graph
+- dependencies
 - CI status
-- CD run plan for parallel-Agent merges, including which deploys should be
-  allowed to finish and which superseded deploy runs should be cancelled
+- CD plan for overlapping deploys
 - risks
 - rollback notes
 - post-merge live verification
 
-The AI Lead may merge without waiting for a fixed `pr，merge` phrase once the
-merge plan is ready, required reviews/checks pass, release risk is understood,
-rollback is documented, and post-merge live verification is planned. Worker
-Agents still do not merge. If the user explicitly pauses or blocks a release,
-the AI Lead must stop at the merge plan and wait.
+The Lead hat may merge without waiting for a fixed phrase once the merge plan is
+ready, required reviews/checks pass, release risk is understood, rollback is
+documented, and post-merge live verification is planned. If the user explicitly
+pauses or blocks a release, stop at the merge plan and wait.
 
 ## Status Labels
 
 Recommended issue labels:
 
-- `agent:lead`
-- `agent:frontend-visualization`
-- `agent:frontend-integration`
-- `agent:backend-api`
-- `agent:pipeline-data`
-- `agent:qa-e2e`
-- `agent:release-ci`
-- `agent:review`
+- `path:fast`
+- `path:full`
+- `hat:lead`
+- `hat:frontend-visualization`
+- `hat:frontend-integration`
+- `hat:backend-api`
+- `hat:pipeline-data`
+- `hat:qa-e2e`
+- `hat:release-ci`
+- `hat:review`
 - `type:epic`
-- `type:visualization`
-- `type:implementation`
+- `type:deliverable`
 - `type:bugfix`
 - `type:e2e`
 - `type:prd`
-- `type:human`
+- `type:human-input`
+- `type:workflow`
 - `status:briefing`
 - `status:ready`
 - `status:in-progress`
@@ -335,14 +505,13 @@ Recommended issue labels:
 
 ## Lead Status Report
 
-The AI Lead should report Epic state in this shape:
+Lead reports should prioritize current facts:
 
 ```md
-| Issue | Agent | PR | Status | Blocker | Next |
-| --- | --- | --- | --- | --- | --- |
-| #121 | frontend-visualization | #130 | review | none | Lead scope review |
-| #122 | backend-api | - | blocked | waiting page confirmation | hold |
-| #123 | qa-e2e | - | ready | depends on #130 | wait |
+| Issue | Path | Owner Hat | PR | Current State | Blocker | Next |
+| --- | --- | --- | --- | --- | --- | --- |
+| #121 | fast | backend-api | #130 | ready for review | none | scope review |
+| #122 | full | frontend-visualization | - | blocked | page direction | ask QUESTION |
 ```
 
 For Admin incident merge/deploy comments, include explicit E2E coverage instead
@@ -358,4 +527,3 @@ Admin E2E release-gate evidence:
 - Skipped coverage:
 - Incident-specific acceptance claim: yes/no, with required coverage rows named
 ```
-
