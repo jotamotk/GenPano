@@ -1,4 +1,6 @@
 from collections.abc import AsyncGenerator
+import hashlib
+import json
 from datetime import datetime
 from types import SimpleNamespace
 
@@ -39,11 +41,18 @@ async def session() -> AsyncGenerator[AsyncSession, None]:
 
 async def _seed_response(session: AsyncSession) -> tuple[Brand, LLMResponse]:
     day = datetime(2026, 5, 14, 8, 0)
-    brand = Brand(id=8441, name="BestCoffer", aliases=["Best Coffer"], industry="coffee")
+    brand = Brand(
+        id=8441, name="BestCoffer", aliases=["Best Coffer"], industry="coffee"
+    )
     session.add_all(
         [
             brand,
-            Topic(id=8442, brand_id=8441, text="BestCoffer alternatives", category="coffee"),
+            Topic(
+                id=8442,
+                brand_id=8441,
+                text="BestCoffer alternatives",
+                category="coffee",
+            ),
             Prompt(
                 id=8443,
                 topic_id=8442,
@@ -118,11 +127,7 @@ class _InvalidJsonCompletions:
     async def create(self, *_args, **_kwargs):
         return SimpleNamespace(
             usage={"total_tokens": 10},
-            choices=[
-                SimpleNamespace(
-                    message=SimpleNamespace(content="{not-json")
-                )
-            ],
+            choices=[SimpleNamespace(message=SimpleNamespace(content="{not-json"))],
         )
 
 
@@ -221,18 +226,76 @@ async def test_ok_status_without_raw_analyzer_json_is_not_persisted_as_done(
     await session.refresh(response)
     assert response.analysis_status == AnalysisStatus.FAILED.value
     assert await session.scalar(select(func.count(ResponseAnalysis.id))) == 0
-    run = await session.scalar(select(AnalyzerRun).where(AnalyzerRun.response_id == response.id))
+    run = await session.scalar(
+        select(AnalyzerRun).where(AnalyzerRun.response_id == response.id)
+    )
     assert run is not None
     assert run.status == "failed"
     assert run.failure_code == "missing_raw_analyzer_json"
     flag_codes = (
-        await session.execute(
-            select(AnalyzerQualityFlag.code).where(
-                AnalyzerQualityFlag.response_id == response.id
+        (
+            await session.execute(
+                select(AnalyzerQualityFlag.code).where(
+                    AnalyzerQualityFlag.response_id == response.id
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     assert "missing_raw_analyzer_json" in flag_codes
+
+
+@pytest.mark.asyncio
+async def test_ok_status_with_non_analyzer_json_is_not_legacy_packaged_as_done(
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    brand, response = await _seed_response(session)
+    raw_json = {"error": "rate limit"}
+    _patch_pipeline(
+        monkeypatch, LLMAnalysisResult(parse_status="ok", raw_json=raw_json)
+    )
+
+    result = await analyzer_cli.analyze_single_response(
+        session,
+        response,
+        brand,
+        [],
+        "non_brand",
+    )
+
+    assert result["status"] == "failed"
+    assert result["error"] == "invalid_analyzer_schema"
+    await session.refresh(response)
+    assert response.analysis_status == AnalysisStatus.FAILED.value
+    assert await session.scalar(select(func.count(ResponseAnalysis.id))) == 0
+    run = await session.scalar(
+        select(AnalyzerRun).where(AnalyzerRun.response_id == response.id)
+    )
+    assert run is not None
+    assert run.status == "failed"
+    assert run.failure_code == "invalid_analyzer_schema"
+    assert (
+        run.raw_output_sha256
+        == hashlib.sha256(
+            json.dumps(
+                raw_json, sort_keys=True, ensure_ascii=False, default=str
+            ).encode("utf-8")
+        ).hexdigest()
+    )
+    flag_codes = (
+        (
+            await session.execute(
+                select(AnalyzerQualityFlag.code).where(
+                    AnalyzerQualityFlag.response_id == response.id
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert "invalid_analyzer_schema" in flag_codes
 
 
 @pytest.mark.asyncio
@@ -274,7 +337,13 @@ async def test_provider_and_parse_failures_are_not_persisted_as_done(
     await session.refresh(response)
     assert response.analysis_status == AnalysisStatus.FAILED.value
     assert await session.scalar(select(func.count(ResponseAnalysis.id))) == 0
-    run = await session.scalar(select(AnalyzerRun).where(AnalyzerRun.response_id == response.id))
+    run = await session.scalar(
+        select(AnalyzerRun).where(AnalyzerRun.response_id == response.id)
+    )
     assert run is not None
     assert run.status == "failed"
     assert run.failure_code == expected_code
+    if parse_status == "invalid_json":
+        assert run.raw_output_sha256 == hashlib.sha256(b"not-json").hexdigest()
+    else:
+        assert run.raw_output_sha256 is None
