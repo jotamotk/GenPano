@@ -292,6 +292,9 @@ async def fetch_response_analyzer_status(
     )
     has_run_task_fields = {"task_id", "batch_id"}.issubset(analyzer_run_cols)
     has_analyzer_quality_flags = await _table_exists(session, "analyzer_quality_flags")
+    has_brand_mentions = await _table_exists(session, "brand_mentions")
+    has_citation_sources = await _table_exists(session, "citation_sources")
+    has_product_feature_mentions = await _table_exists(session, "product_feature_mentions")
     latest_run_task_select = (
         """
             ar.task_id,
@@ -304,12 +307,41 @@ async def fetch_response_analyzer_status(
         """
     )
     analysis_select = (
-        "ra.id AS analysis_id, ra.analyzer_model, ra.analyzed_at AS analysis_analyzed_at"
+        """ra.id AS analysis_id, ra.analyzer_model,
+            ra.analyzed_at AS analysis_analyzed_at,
+            ra.geo_score, ra.visibility_score, ra.sentiment_score,
+            ra.sov_score, ra.citation_score,
+            ra.total_brands_mentioned, ra.target_brand_mentioned,
+            ra.target_brand_sentiment"""
         if has_response_analyses
-        else "NULL AS analysis_id, NULL AS analyzer_model, NULL AS analysis_analyzed_at"
+        else """NULL AS analysis_id, NULL AS analyzer_model,
+            NULL AS analysis_analyzed_at,
+            NULL AS geo_score, NULL AS visibility_score, NULL AS sentiment_score,
+            NULL AS sov_score, NULL AS citation_score,
+            NULL AS total_brands_mentioned, NULL AS target_brand_mentioned,
+            NULL AS target_brand_sentiment"""
     )
     analysis_join = (
         "LEFT JOIN response_analyses ra ON ra.response_id = lr.id" if has_response_analyses else ""
+    )
+    mentions_count_select = (
+        "(SELECT COUNT(*) FROM brand_mentions bm "
+        "WHERE bm.response_id = lr.id)::int AS mentions_count,"
+        if has_brand_mentions
+        else "NULL AS mentions_count,"
+    )
+    citations_count_select = (
+        "(SELECT COUNT(*) FROM citation_sources cs "
+        "WHERE cs.response_id = lr.id)::int AS citations_count,"
+        if has_citation_sources
+        else "NULL AS citations_count,"
+    )
+    features_count_select = (
+        """(SELECT COUNT(*) FROM product_feature_mentions pfm
+             WHERE ra.id IS NOT NULL AND pfm.analysis_id = ra.id
+            )::int AS features_count,"""
+        if has_product_feature_mentions and has_response_analyses
+        else "NULL AS features_count,"
     )
     latest_run_select = (
         f"""
@@ -418,6 +450,9 @@ async def fetch_response_analyzer_status(
                         lr.analyzed_at,
                         q.status AS attempt_status,
                         {analysis_select},
+                        {mentions_count_select}
+                        {citations_count_select}
+                        {features_count_select}
                         {latest_run_select}
                         {quality_flags_select}
                     FROM llm_responses lr
