@@ -62,6 +62,11 @@ from app.api.v1.projects.contracts.package import (
     _repair_entries,
     _status_from_package,
 )
+from app.api.v1.projects.contracts.queries import (
+    _pinned_topic_response_ids,
+    _project_eligible_response_ids,
+    _target_response_ids,
+)
 from app.api.v1.projects.contracts.rollups import (
     _rollup_citations,
     _rollup_coverage,
@@ -106,6 +111,8 @@ __all__ = [
     "_package_response_ids",
     "_package_source_tables",
     "_package_target_brand_id",
+    "_pinned_topic_response_ids",
+    "_project_eligible_response_ids",
     "_repair_entries",
     "_rollup_citations",
     "_rollup_coverage",
@@ -113,6 +120,7 @@ __all__ = [
     "_rollup_sentiment",
     "_rollup_sov",
     "_status_from_package",
+    "_target_response_ids",
     "formula_diagnostics_for",
     "metric_definition",
     "metric_definitions",
