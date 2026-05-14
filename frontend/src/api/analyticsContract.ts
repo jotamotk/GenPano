@@ -157,7 +157,15 @@ function hasUsableMetricEvidence(fields: MetricContractFields | null | undefined
   if (!fields) return false
   const metricState = lower(fields.state)
   const formulaStatus = lower(fields.formula_status)
-  if (formulaStatus) return isOkFormulaStatus(fields.formula_status)
+  if (formulaStatus) {
+    // `partial` is emitted by the backend (`_apply_kpi_contract` /
+    // `_apply_metric_series_contract`, issue #948) when the value was
+    // computed from real evidence but peripheral analyzer rollup pointers
+    // are missing. The backend's no-fallback contract still nulls the
+    // value when critical inputs are missing, so a non-null value with
+    // `partial` status is trustworthy at the contract level.
+    return isOkFormulaStatus(fields.formula_status) || formulaStatus === 'partial'
+  }
   return metricState === 'ok'
 }
 

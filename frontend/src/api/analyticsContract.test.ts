@@ -87,6 +87,27 @@ describe('analytics formula-status guards', () => {
     expect(canUseContractMetricValue('ok', { formula_status: 'ok' })).toBe(true)
   })
 
+  it('surfaces a metric value when formula_status is partial (#948)', () => {
+    // Backend `_apply_kpi_contract` / `_apply_metric_series_contract` emit
+    // `formula_status: partial` when the value was computed from real
+    // evidence but peripheral analyzer rollup pointers are missing.
+    // The frontend must surface the trustworthy value instead of '—'.
+    expect(canUseContractMetricValue('partial', { formula_status: 'partial' })).toBe(true)
+    expect(canUseContractMetricValue('ok', { formula_status: 'partial' })).toBe(true)
+    expect(
+      canUseMetricEvidence(
+        {
+          state: 'partial',
+          formula_status: 'partial',
+          metric_formula_evidence: {
+            mention_rate: { formula_status: 'partial' },
+          },
+        },
+        ['mention_rate'],
+      ),
+    ).toBe(true)
+  })
+
   it('classifies analyzer coverage and reason codes without turning partial evidence into zero', () => {
     const state = buildMetricTrustState({
       metricKey: 'sov',
