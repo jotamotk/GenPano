@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Optional
@@ -23,6 +24,24 @@ logger = logging.getLogger(__name__)
 MAX_CONSECUTIVE_FAILS = 3      # 连续失败N次 → banned
 COOLDOWN_HOURS        = 12     # 超配额冷却时间
 DAILY_RESET_HOUR      = 0      # UTC 00:00 重置每日计数
+
+# Refs #958: doubao_page_unavailable 是平台瞬时错误，不是账号问题。
+# 用 12 小时 cooldown 把账号雪藏太重；改用一个短得多的窗口（默认 30 分钟），
+# 让账号在平台恢复后能尽快重新承接流量。可通过 env 调，0/负值回退到全局 COOLDOWN_HOURS。
+DOUBAO_PAGE_UNAVAILABLE_COOLDOWN_MINUTES_DEFAULT = 30
+
+
+def _doubao_page_unavailable_cooldown() -> timedelta:
+    raw = os.getenv("DOUBAO_PAGE_UNAVAILABLE_COOLDOWN_MINUTES")
+    minutes = DOUBAO_PAGE_UNAVAILABLE_COOLDOWN_MINUTES_DEFAULT
+    if raw is not None:
+        try:
+            minutes = int(raw.strip())
+        except (TypeError, ValueError):
+            minutes = DOUBAO_PAGE_UNAVAILABLE_COOLDOWN_MINUTES_DEFAULT
+    if minutes <= 0:
+        return timedelta(hours=COOLDOWN_HOURS)
+    return timedelta(minutes=minutes)
 EXPIRED_ACCOUNT_REASONS = frozenset(
     {
         "chatgpt_auth_redirect",
@@ -406,8 +425,17 @@ class AccountPool:
         elif reason == "response_too_short" or (
             account.llm_name == "doubao" and reason in DOUBAO_SESSION_COOLDOWN_REASONS
         ):
+            doubao_short_cd = (
+                account.llm_name == "doubao"
+                and reason in DOUBAO_SESSION_COOLDOWN_REASONS
+            )
+            cooldown_delta = (
+                _doubao_page_unavailable_cooldown()
+                if doubao_short_cd
+                else timedelta(hours=COOLDOWN_HOURS)
+            )
             account.status = AccountStatus.COOLDOWN.value
-            account.cooldown_until = datetime.utcnow() + timedelta(hours=COOLDOWN_HOURS)
+            account.cooldown_until = datetime.utcnow() + cooldown_delta
             _log_account_state_transition(
                 account,
                 previous_status=previous_status,
