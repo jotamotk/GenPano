@@ -9592,6 +9592,18 @@ function formatAttemptAnalyzerSummaryValue(value, row) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return firstNonEmptyText(value);
   }
+  const partialParts = [];
+  const geoScore = formatAttemptAnalyzerMetric(value.geo_score);
+  const visibilityScore = formatAttemptAnalyzerMetric(value.visibility_score);
+  const sentimentScore = formatAttemptAnalyzerMetric(value.sentiment_score);
+  if (geoScore) partialParts.push('GEO ' + geoScore);
+  if (visibilityScore) partialParts.push('可见度 ' + visibilityScore);
+  if (sentimentScore) partialParts.push('情感 ' + sentimentScore);
+  if (value.total_brands_mentioned != null) partialParts.push('品牌 ' + value.total_brands_mentioned);
+  if (value.mentions_count != null) partialParts.push('命中 ' + value.mentions_count);
+  if (value.citations_count != null) partialParts.push('引用 ' + value.citations_count);
+  if (value.target_brand_sentiment) partialParts.push('目标情绪 ' + value.target_brand_sentiment);
+  const partialSummary = partialParts.join(' · ');
   if (value.scores_explicit === false) {
     if (value.status === 'defaulted' || value.score_source === 'response_analyses_defaulted') {
       return firstNonEmptyText(value.summary, '默认值');
@@ -9599,22 +9611,12 @@ function formatAttemptAnalyzerSummaryValue(value, row) {
     const readinessReason = row ? firstAnalyzerReadinessReason(row) : '';
     return firstNonEmptyText(
       value.summary,
+      partialSummary,
       readinessReason,
       value.status === 'completed' ? 'metrics pending' : value.status
     );
   }
-  const parts = [];
-  const geoScore = formatAttemptAnalyzerMetric(value.geo_score);
-  const visibilityScore = formatAttemptAnalyzerMetric(value.visibility_score);
-  const sentimentScore = formatAttemptAnalyzerMetric(value.sentiment_score);
-  if (geoScore) parts.push('GEO ' + geoScore);
-  if (visibilityScore) parts.push('可见度 ' + visibilityScore);
-  if (sentimentScore) parts.push('情感 ' + sentimentScore);
-  if (value.total_brands_mentioned != null) parts.push('品牌 ' + value.total_brands_mentioned);
-  if (value.mentions_count != null) parts.push('命中 ' + value.mentions_count);
-  if (value.citations_count != null) parts.push('引用 ' + value.citations_count);
-  if (value.target_brand_sentiment) parts.push('目标情绪 ' + value.target_brand_sentiment);
-  return parts.join(' · ');
+  return partialSummary;
 }
 
 function firstAnalyzerReadinessReason(row) {
