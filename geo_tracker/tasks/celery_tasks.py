@@ -50,6 +50,7 @@ from geo_tracker.pool.account_pool import AccountPool, EXPIRED_ACCOUNT_REASONS
 
 # 数据库 & Redis 连接（实际项目从 config 读取）
 from geo_tracker.config import create_task_engine, get_task_async_session, REDIS_URL
+from geo_tracker.tasks._loop_utils import safe_dispose_engine
 from geo_tracker.tasks.account_assignment import (
     acquire_query_account,
     diagnose_account_unavailable,
@@ -1060,10 +1061,7 @@ def execute_query(self, query_id: int) -> dict:
         logger.exception(f"execute_query {query_id} raised: {exc}")
         raise self.retry(exc=exc, countdown=60 * (2 ** self.request.retries))
     finally:
-        try:
-            loop.run_until_complete(task_engine.dispose())
-        except:
-            pass
+        safe_dispose_engine(loop, task_engine, logger)
         loop.close()
 
 
@@ -1118,10 +1116,7 @@ def dispatch_batch(limit: int = 50) -> dict:
     try:
         return loop.run_until_complete(_run())
     finally:
-        try:
-            loop.run_until_complete(task_engine.dispose())
-        except:
-            pass
+        safe_dispose_engine(loop, task_engine, logger)
         loop.close()
 
 
@@ -1141,10 +1136,7 @@ def reset_daily_counts() -> dict:
     try:
         return loop.run_until_complete(_run())
     finally:
-        try:
-            loop.run_until_complete(task_engine.dispose())
-        except:
-            pass
+        safe_dispose_engine(loop, task_engine, logger)
         loop.close()
 
 
@@ -1300,10 +1292,7 @@ def cookie_keep_alive() -> dict:
     try:
         return loop.run_until_complete(_run())
     finally:
-        try:
-            loop.run_until_complete(task_engine.dispose())
-        except:
-            pass
+        safe_dispose_engine(loop, task_engine, logger)
         loop.close()
 
 
@@ -1503,10 +1492,7 @@ def auto_login(
                 )
         except Exception as e:
             logger.warning(f"auto_login: lock release best-effort failed: {e}")
-        try:
-            loop.run_until_complete(task_engine.dispose())
-        except:
-            pass
+        safe_dispose_engine(loop, task_engine, logger)
         loop.close()
 
 
