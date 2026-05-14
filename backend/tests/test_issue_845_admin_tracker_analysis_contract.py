@@ -73,11 +73,41 @@ def test_tracker_analysis_contract_completed_nullable_metrics_are_partial_not_ze
     assert item["analysis_summary"]["visibility_score"] == 0
 
 
+def test_tracker_analysis_contract_defaulted_all_zero_metrics_are_not_explicit() -> None:
+    item = _format(
+        {
+            "analysis_id": 459,
+            "analysis_status": "done",
+            "geo_score": 0,
+            "visibility_score": 0,
+            "sentiment_score": 0,
+            "sov_score": 0,
+            "citation_score": 0,
+            "mentions_count": 0,
+            "citations_count": 0,
+            "features_count": 0,
+        }
+    )
+
+    assert item["analysis"]["status"] == "defaulted"
+    assert item["analysis"]["score_source"] == "response_analyses_defaulted"
+    assert item["analysis"]["has_analyzer_evidence"] is False
+    assert item["analysis"]["scores_explicit"] is False
+    assert item["analysis_summary"]["status"] == "defaulted"
+    assert item["analysis_summary"]["score_source"] == "response_analyses_defaulted"
+    assert item["analysis_summary"]["scores_explicit"] is False
+    assert item["analysis_summary"]["geo_score"] == 0
+    assert item["analysis_summary"]["visibility_score"] == 0
+    assert item["analysis_summary"]["sentiment_score"] == 0
+
+
 def test_tracker_analysis_contract_completed_true_zero_metrics_are_explicit() -> None:
     item = _format(
         {
             "analysis_id": 457,
             "analysis_status": "done",
+            "analyzer_run_id": 9002,
+            "analyzer_run_status": "done",
             "geo_score": 0,
             "visibility_score": 0,
             "sentiment_score": 0,
@@ -91,6 +121,7 @@ def test_tracker_analysis_contract_completed_true_zero_metrics_are_explicit() ->
 
     assert item["analysis"]["status"] == "completed"
     assert item["analysis"]["score_source"] == "response_analyses"
+    assert item["analysis"]["has_analyzer_evidence"] is True
     assert item["analysis"]["scores_explicit"] is True
     assert item["analysis_summary"]["scores_explicit"] is True
     assert item["analysis_summary"]["geo_score"] == 0

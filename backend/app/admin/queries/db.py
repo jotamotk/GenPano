@@ -48,21 +48,90 @@ async def _table_exists(session: AsyncSession, name: str) -> bool:
 
 
 _CORE_SCORE_FIELDS = ("geo_score", "visibility_score", "sentiment_score")
+_COMPLETED_ANALYZER_RUN_STATUSES = {"already_analyzed", "completed", "done", "partial", "success"}
+_DEFAULTABLE_ANALYSIS_STATUSES = {"", "already_analyzed", "completed", "done", "success"}
+
+
+def _is_zeroish(value: Any) -> bool:
+    if value is None or isinstance(value, bool):
+        return False
+    try:
+        return float(value) == 0.0
+    except (TypeError, ValueError):
+        return False
+
+
+def _positive_number(value: Any) -> bool:
+    if value is None or isinstance(value, bool):
+        return False
+    try:
+        return float(value) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _has_core_scores(item: dict[str, Any]) -> bool:
+    return all(item.get(field) is not None for field in _CORE_SCORE_FIELDS)
+
+
+def _core_scores_all_zero(item: dict[str, Any]) -> bool:
+    return _has_core_scores(item) and all(
+        _is_zeroish(item.get(field)) for field in _CORE_SCORE_FIELDS
+    )
+
+
+def _has_analyzer_evidence(item: dict[str, Any]) -> bool:
+    run_status = str(item.get("analyzer_run_status") or "").strip().lower()
+    if run_status in _COMPLETED_ANALYZER_RUN_STATUSES:
+        return True
+    if (
+        item.get("analyzer_run_id") is not None
+        and item.get("analyzer_run_completed_at") is not None
+    ):
+        return True
+    if item.get("target_brand_mentioned") is True:
+        return True
+    return any(
+        _positive_number(item.get(field))
+        for field in (
+            "mentions_count",
+            "citations_count",
+            "features_count",
+            "total_brands_mentioned",
+        )
+    )
+
+
+def _defaulted_score_row(item: dict[str, Any]) -> bool:
+    if item.get("analysis_id") is None:
+        return False
+    status = str(item.get("analysis_status") or "").strip().lower()
+    return (
+        status in _DEFAULTABLE_ANALYSIS_STATUSES
+        and _core_scores_all_zero(item)
+        and not _has_analyzer_evidence(item)
+    )
 
 
 def _scores_explicit(item: dict[str, Any]) -> bool:
-    return item.get("analysis_id") is not None and all(
-        item.get(field) is not None for field in _CORE_SCORE_FIELDS
-    )
+    if item.get("analysis_id") is None or not _has_core_scores(item):
+        return False
+    if _defaulted_score_row(item):
+        return False
+    return True
 
 
 def _analysis_score_source(item: dict[str, Any]) -> str:
     if item.get("analysis_id") is None:
         return "none"
+    if _defaulted_score_row(item):
+        return "response_analyses_defaulted"
     return "response_analyses" if _scores_explicit(item) else "response_analyses_partial"
 
 
 def _analysis_contract_status(item: dict[str, Any]) -> str:
+    if _defaulted_score_row(item):
+        return "defaulted"
     status = str(item.get("analysis_status") or "").strip().lower()
     if status in {"done", "already_analyzed"}:
         return "completed"
@@ -82,6 +151,7 @@ def _analysis_summary(item: dict[str, Any]) -> dict[str, Any] | None:
         "status": _analysis_contract_status(item),
         "score_source": _analysis_score_source(item),
         "scores_explicit": _scores_explicit(item),
+        "has_analyzer_evidence": _has_analyzer_evidence(item),
         "geo_score": item.get("geo_score"),
         "visibility_score": item.get("visibility_score"),
         "sentiment_score": item.get("sentiment_score"),
@@ -111,6 +181,7 @@ def _analysis_contract(item: dict[str, Any]) -> dict[str, Any]:
         "error_message": item.get("analysis_error_message") or item.get("analysis_error"),
         "score_source": _analysis_score_source(item),
         "scores_explicit": _scores_explicit(item),
+        "has_analyzer_evidence": _has_analyzer_evidence(item),
         "geo_score": item.get("geo_score"),
         "visibility_score": item.get("visibility_score"),
         "sentiment_score": item.get("sentiment_score"),
