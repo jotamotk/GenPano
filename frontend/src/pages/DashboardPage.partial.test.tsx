@@ -188,6 +188,11 @@ vi.mock('../hooks/useDiagnostics', () => ({
 }))
 
 vi.mock('../hooks/useIndustries', () => ({
+  useIndustries: () => ({
+    data: [],
+    isLoading: false,
+    error: null,
+  }),
   useIndustryAvgGeo: () => ({
     data: null,
     error: null,

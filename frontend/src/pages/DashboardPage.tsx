@@ -16,7 +16,7 @@ import {
   useCompetitorTrends,
 } from '../hooks/useBrandMetrics';
 import { useDiagnostics } from '../hooks/useDiagnostics';
-import { useIndustryAvgGeo } from '../hooks/useIndustries';
+import { useIndustries, useIndustryAvgGeo } from '../hooks/useIndustries';
 import {
   adaptOverviewToPrimary,
   adaptCompetitorMetricsToList,
@@ -330,6 +330,19 @@ export default function DashboardPage() {
     defaultPrimary;
   const mockIndustry =
     INDUSTRIES.find((ind) => ind.id === project?.industryId) || null;
+  // Live mode: backend industry_id is numeric; mock INDUSTRIES uses string keys
+  // (e.g. 'beauty'), so the lookup above always returns null for real projects
+  // and the hero shows "行业: —". Resolve against the live /industries list.
+  const liveIndustriesQ = useIndustries();
+  const liveIndustry = useMemo(() => {
+    if (!isLive) return null;
+    const industryId = overviewQ.data?.industry_id;
+    if (industryId == null) return null;
+    const row = liveIndustriesQ.data?.find((ind) => ind.industry_id === industryId);
+    if (!row) return null;
+    return { id: row.industry_id, name: row.nameZh || row.name, nameEn: row.nameEn };
+  }, [isLive, overviewQ.data?.industry_id, liveIndustriesQ.data]);
+  const industryForPanel = liveIndustry ?? mockIndustry;
   const mockCompetitors = (project?.competitorBrandIds || [])
     .map((id) => BRANDS.find((b) => b.id === id))
     .filter(Boolean)
@@ -396,7 +409,7 @@ export default function DashboardPage() {
       <BrandSwitchStateContract contract={brandSwitchContract} />
       <BrandPanoramaPanel
         primary={primaryForPanel}
-        industry={mockIndustry}
+        industry={industryForPanel}
         competitors={competitorsForPanel}
         headerSlot={header}
         scrollAnchorId="dashboard-competition"
