@@ -7,6 +7,17 @@ This package is being filled incrementally; see Epic #885 and tracking issue
 
 from __future__ import annotations
 
+from app.api.v1.projects.topic_analysis.filters import (
+    DEFAULT_WINDOW_DAYS,
+    AnalysisFilters,
+    _is_non_branded_row,
+    _mention_name_condition,
+    _prompt_scope_from_row,
+    _resolve_window,
+    _row_matches_analysis_filters,
+    _target_mention_condition,
+    _text_scope_conditions,
+)
 from app.api.v1.projects.topic_analysis.legacy_schema import (
     _not_deleted_condition,
     _prompt_scope_expr,
@@ -31,24 +42,47 @@ from app.api.v1.projects.topic_analysis.normalize import (
     _round,
     _timestamp_key,
 )
+from app.api.v1.projects.topic_analysis.profiles import (
+    _brand_fact_terms,
+    _clean_fact_term,
+    _expand_brand_fact_terms,
+    _profile_name,
+    _profile_names_for_ids,
+    _profile_names_for_rows,
+)
 
 __all__ = [
+    "DEFAULT_WINDOW_DAYS",
+    "AnalysisFilters",
     "_as_float",
     "_as_int",
+    "_brand_fact_terms",
+    "_clean_fact_term",
     "_coerce_json",
     "_date_key",
+    "_expand_brand_fact_terms",
+    "_is_non_branded_row",
     "_iso",
     "_mean",
+    "_mention_name_condition",
     "_normalize_key",
     "_not_deleted_condition",
     "_pct",
+    "_profile_name",
+    "_profile_names_for_ids",
+    "_profile_names_for_rows",
     "_prompt_scope_expr",
+    "_prompt_scope_from_row",
     "_prompt_tags_expr",
     "_prompt_text_expr",
+    "_resolve_window",
     "_response_preview",
     "_round",
+    "_row_matches_analysis_filters",
     "_safe_ident",
     "_select_col",
+    "_target_mention_condition",
+    "_text_scope_conditions",
     "_timestamp_key",
     "_topic_name_expr",
     "legacy_table_columns",

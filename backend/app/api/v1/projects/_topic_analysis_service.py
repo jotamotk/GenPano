@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections import Counter, OrderedDict, defaultdict
-from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -13,8 +12,6 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.projects._legacy_lookups import (
-    BRAND_NAME_COLUMNS,
-    brand_table_columns,
     resolve_brand_names,
 )
 from app.api.v1.projects._topic_analysis_dto import (
@@ -45,6 +42,33 @@ from app.api.v1.projects._topic_analysis_dto import (
     TopicMonitoringSummary,
     TopicPromptRow,
     TopicPromptsOut,
+)
+from app.api.v1.projects.topic_analysis.filters import (
+    DEFAULT_WINDOW_DAYS as DEFAULT_WINDOW_DAYS,
+)
+from app.api.v1.projects.topic_analysis.filters import (
+    AnalysisFilters as AnalysisFilters,
+)
+from app.api.v1.projects.topic_analysis.filters import (
+    _is_non_branded_row as _is_non_branded_row,
+)
+from app.api.v1.projects.topic_analysis.filters import (
+    _mention_name_condition as _mention_name_condition,
+)
+from app.api.v1.projects.topic_analysis.filters import (
+    _prompt_scope_from_row as _prompt_scope_from_row,
+)
+from app.api.v1.projects.topic_analysis.filters import (
+    _resolve_window as _resolve_window,
+)
+from app.api.v1.projects.topic_analysis.filters import (
+    _row_matches_analysis_filters as _row_matches_analysis_filters,
+)
+from app.api.v1.projects.topic_analysis.filters import (
+    _target_mention_condition as _target_mention_condition,
+)
+from app.api.v1.projects.topic_analysis.filters import (
+    _text_scope_conditions as _text_scope_conditions,
 )
 from app.api.v1.projects.topic_analysis.legacy_schema import (
     _not_deleted_condition as _not_deleted_condition,
@@ -106,46 +130,27 @@ from app.api.v1.projects.topic_analysis.normalize import (
 from app.api.v1.projects.topic_analysis.normalize import (
     _timestamp_key as _timestamp_key,
 )
+from app.api.v1.projects.topic_analysis.profiles import (
+    _brand_fact_terms as _brand_fact_terms,
+)
+from app.api.v1.projects.topic_analysis.profiles import (
+    _clean_fact_term as _clean_fact_term,
+)
+from app.api.v1.projects.topic_analysis.profiles import (
+    _expand_brand_fact_terms as _expand_brand_fact_terms,
+)
+from app.api.v1.projects.topic_analysis.profiles import (
+    _profile_name as _profile_name,
+)
+from app.api.v1.projects.topic_analysis.profiles import (
+    _profile_names_for_ids as _profile_names_for_ids,
+)
+from app.api.v1.projects.topic_analysis.profiles import (
+    _profile_names_for_rows as _profile_names_for_rows,
+)
 from app.core.errors import not_found
 
-DEFAULT_WINDOW_DAYS = 30
 _PROJECT_BRAND = object()
-
-
-@dataclass(frozen=True)
-class AnalysisFilters:
-    from_date: date | None = None
-    to_date: date | None = None
-    engines: tuple[str, ...] | None = None
-    segment_id: str | None = None
-    profile_id: str | None = None
-    dimensions: tuple[str, ...] | None = None
-    intents: tuple[str, ...] | None = None
-    prompt_scope: str | None = None
-
-    @property
-    def explicit(self) -> bool:
-        return any(
-            [
-                self.from_date is not None,
-                self.to_date is not None,
-                bool(self.engines),
-                bool(self.segment_id),
-                bool(self.profile_id),
-                bool(self.dimensions),
-                bool(self.intents),
-                bool(self.prompt_scope),
-            ]
-        )
-
-
-def _resolve_window(filters: AnalysisFilters) -> tuple[date, date]:
-    today = date.today()
-    to_d = filters.to_date or today
-    from_d = filters.from_date or (to_d - timedelta(days=DEFAULT_WINDOW_DAYS - 1))
-    if from_d > to_d:
-        from_d, to_d = to_d, from_d
-    return from_d, to_d
 
 
 def _period(from_d: date, to_d: date) -> dict[str, str]:
@@ -186,182 +191,6 @@ def _row_attempt_sort_key(row: dict[str, Any]) -> tuple[str, int, str, int]:
         int(row.get("query_id") or 0),
         _timestamp_key(row.get("response_created_at")),
         int(row.get("response_id") or 0),
-    )
-
-
-def _profile_name(profile_id: Any, profile_names: dict[str, str]) -> str:
-    if profile_id is None:
-        return "Unknown profile"
-    return profile_names.get(str(profile_id), "Unknown profile")
-
-
-def _clean_fact_term(value: Any) -> str | None:
-    if value is None:
-        return None
-    term = str(value).strip().lower()
-    return term or None
-
-
-def _expand_brand_fact_terms(values: set[str]) -> list[str]:
-    terms: set[str] = set()
-    for value in values:
-        term = _clean_fact_term(value)
-        if not term:
-            continue
-        terms.add(term)
-        if "雅诗兰黛" in term:
-            terms.add(term.replace("雅诗兰黛", "雅思兰黛"))
-        if "雅思兰黛" in term:
-            terms.add(term.replace("雅思兰黛", "雅诗兰黛"))
-    return sorted(terms)
-
-
-async def _brand_fact_terms(session: AsyncSession, brand_id: int) -> list[str]:
-    cols = await brand_table_columns(session)
-    name_cols = [c for c in BRAND_NAME_COLUMNS if c in cols]
-    if not name_cols:
-        return []
-
-    try:
-        row = (
-            await session.execute(
-                text(f"SELECT {', '.join(name_cols)} FROM brands WHERE id = :id"),
-                {"id": brand_id},
-            )
-        ).one_or_none()
-    except Exception:
-        return []
-    if row is None:
-        return []
-    terms = {term for value in row for term in [_clean_fact_term(value)] if term}
-    return _expand_brand_fact_terms(terms)
-
-
-def _text_scope_conditions(
-    expressions: list[str],
-    terms: list[str],
-    params: dict[str, Any],
-    *,
-    prefix: str,
-) -> list[str]:
-    conditions: list[str] = []
-    for idx, term in enumerate(terms):
-        key = f"{prefix}_{idx}"
-        params[key] = f"%{term}%"
-        for expr in expressions:
-            conditions.append(f"LOWER(COALESCE({expr}, '')) LIKE :{key}")
-    return conditions
-
-
-def _mention_name_condition(
-    mention_cols: set[str],
-    terms: list[str],
-    params: dict[str, Any],
-) -> str | None:
-    if "brand_name" not in mention_cols or not terms:
-        return None
-    placeholders: list[str] = []
-    for idx, term in enumerate(terms):
-        key = f"brand_mention_term_{idx}"
-        params[key] = term
-        placeholders.append(f":{key}")
-    return f"LOWER(TRIM(COALESCE(bm.brand_name, ''))) IN ({', '.join(placeholders)})"
-
-
-def _target_mention_condition(
-    mention_cols: set[str],
-    brand_id: int | None,
-    terms: list[str],
-    params: dict[str, Any],
-) -> str | None:
-    parts: list[str] = []
-    if brand_id is not None and "brand_id" in mention_cols:
-        params["primary_brand_id"] = brand_id
-        parts.append("bm.brand_id = :primary_brand_id")
-    mention_name_condition = _mention_name_condition(mention_cols, terms, params)
-    if mention_name_condition:
-        parts.append(mention_name_condition)
-    if not parts:
-        return None
-    return f"({' OR '.join(parts)})" if len(parts) > 1 else parts[0]
-
-
-def _prompt_scope_from_row(row: dict[str, Any]) -> str:
-    raw = row.get("prompt_scope")
-    if raw is None:
-        tags = _coerce_json(row.get("prompt_tags"))
-        raw = tags.get("prompt_scope") or tags.get("promptScope")
-    return _normalize_key(raw) or "non_branded"
-
-
-def _is_non_branded_row(row: dict[str, Any]) -> bool:
-    return _prompt_scope_from_row(row) == "non_branded"
-
-
-def _row_matches_analysis_filters(row: dict[str, Any], filters: AnalysisFilters) -> bool:
-    if filters.dimensions:
-        allowed = {_normalize_key(v) for v in filters.dimensions}
-        if _normalize_key(row.get("topic_dimension")) not in allowed:
-            return False
-    if filters.intents:
-        allowed = {_normalize_key(v) for v in filters.intents}
-        if _normalize_key(row.get("prompt_intent")) not in allowed:
-            return False
-    if filters.prompt_scope:
-        if _prompt_scope_from_row(row) != _normalize_key(filters.prompt_scope):
-            return False
-    return True
-
-
-async def _profile_names_for_ids(
-    session: AsyncSession,
-    profile_ids: set[str],
-) -> dict[str, str]:
-    wanted = {str(pid) for pid in profile_ids if pid is not None and str(pid)}
-    if not wanted or not await legacy_table_exists(session, "profiles"):
-        return {}
-    cols = await legacy_table_columns(session, "profiles")
-    if "id" not in cols:
-        return {}
-    name_expr = "name" if "name" in cols else None
-    if name_expr is None:
-        return {}
-    placeholders: list[str] = []
-    params: dict[str, Any] = {}
-    for i, pid in enumerate(sorted(wanted)):
-        key = f"profile_id_{i}"
-        placeholders.append(f":{key}")
-        params[key] = pid
-    rows = (
-        (
-            await session.execute(
-                text(
-                    f"""
-                    SELECT CAST(id AS TEXT) AS id, {name_expr} AS name
-                    FROM profiles
-                    WHERE CAST(id AS TEXT) IN ({", ".join(placeholders)})
-                    """
-                ),
-                params,
-            )
-        )
-        .mappings()
-        .all()
-    )
-    return {
-        str(row["id"]): str(row["name"])
-        for row in rows
-        if row.get("id") is not None and row.get("name")
-    }
-
-
-async def _profile_names_for_rows(
-    session: AsyncSession,
-    rows: list[dict[str, Any]],
-) -> dict[str, str]:
-    return await _profile_names_for_ids(
-        session,
-        {str(row["profile_id"]) for row in rows if row.get("profile_id") is not None},
     )
 
 
