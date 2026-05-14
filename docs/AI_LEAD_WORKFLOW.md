@@ -456,16 +456,22 @@ diagnostic step that does not choose product behavior.
 
 ## Human Input Channel
 
-The fixed Human Input issue is the product-owner inbox. It is not a task, not a
-PRD, and not a status workflow item.
+Human Input is the product-owner's durable intake and final acceptance issue.
+It is not a task, not a PRD, not a branch, not a PR, and not a status workflow
+item.
 
 Rules:
 
-- Keep it open permanently.
-- Do not assign it to a branch or PR.
-- Do not close it when a child task completes.
+- Keep the Human Input issue open while the underlying work is being split,
+  scheduled, implemented, merged, deployed, and verified.
+- Do not assign the Human Input issue itself to a branch or PR.
+- Do not close it when a child task completes or when a PR merges.
 - Do not implement directly from a vague raw note.
-- Do not treat it as product fact until a scoped issue or PRD decision exists.
+- Do not treat it as product fact until a triage disposition, scoped issue,
+  issue `DECISION`, or PRD decision exists.
+- Use the Human Input issue as the parent acceptance ledger. If Full Path needs
+  a separate coordination issue, link it both ways and keep the Human Input
+  issue open for user acceptance.
 
 Each raw entry needs a triage receipt:
 
@@ -483,8 +489,35 @@ Receipt:
 - Last updated:
 ```
 
-The target issue or PRD-change request becomes the executable source. The Human
-Input issue remains the inbox ledger.
+After triage, the Lead hat splits actionable work and schedules the needed hats:
+
+- `bug`: create or update a Fast Path or Full Path issue with exact symptom
+  replay and evidence requirements.
+- `feature change` or `new requirement`: create the coordination issue and PRD
+  decision path before implementation.
+- `question/idea`: answer in the Human Input issue or convert to a decision
+  issue when it changes scope.
+- `needs clarification`: ask one clear `QUESTION` and pause executable work
+  until a safe default or user answer exists.
+
+Executable child issues must link back with `Refs #<human-input-issue>`, carry
+their own Acceptance Matrix and Evidence Ledger, and return their final
+evidence to the Human Input issue.
+
+Final delivery happens on the Human Input issue, not only on child PRs. The
+Lead posts `Ready for User Acceptance` with:
+
+- live URL or exact production route for the user to check
+- user-visible result that should now be true
+- child issues and PRs completed
+- deployed commit SHA and deploy run when applicable
+- Playwright, screenshot, server diagnostic, API readback, or production
+  evidence
+- known caveats, blockers, or remaining out-of-scope items
+
+The user closes the Human Input issue after accepting the live result. Codex
+must not close it unless the user explicitly delegates closure or the user
+confirms there is no action to take.
 
 ## Workflow Improvement Notes
 
@@ -594,6 +627,23 @@ Pruning reports are not permission to delete.
 ## Issue Closure Protocol
 
 Every closed issue needs a closure record. Use one closure type.
+
+### Human Input Accepted
+
+Human Input issues close only after user acceptance or explicit user-delegated
+closure.
+
+Required record:
+
+- user acceptance signal or explicit closure delegation
+- live URL or production route checked
+- final user-visible result
+- child issues and PRs completed
+- deploy SHA or production evidence when applicable
+- remaining caveats or "none"
+
+Codex may post the `Ready for User Acceptance` record, but it should leave the
+issue open for the user to close.
 
 ### Completed
 
