@@ -98,7 +98,11 @@ assigned user path. If a test appears obsolete, report it as `BLOCKER` or
 - A `claude/issue-123-short-slug` branch is allowed only when the issue says
   Claude Code owns that branch.
 - Worker PRs start as draft PRs when verification is incomplete.
-- Claude Code must not merge PRs.
+- Claude Code may merge PRs when the Lead has explicitly delegated that action
+  (for example via a goal directive or in the linked issue). When merging,
+  Claude Code must verify CI is green and the Acceptance Matrix is satisfied
+  before clicking merge; if either is missing, surface the blocker instead of
+  merging.
 - Claude Code must not mark a PR ready unless the issue or Lead explicitly
   delegates that readiness action.
 - Use `Refs #123` before final acceptance.
