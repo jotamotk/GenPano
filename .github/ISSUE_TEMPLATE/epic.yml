@@ -9,6 +9,26 @@ body:
     attributes:
       value: |
         Use this template only when Fast Path is not enough. Split child issues by deliverable, not by agent role.
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      description: Select the shared Genpano issue priority. Apply the matching priority:p* label during triage.
+      options:
+        - "P0 - Critical: production outage, data loss, security risk, or release blocker"
+        - "P1 - High: user-visible regression, committed delivery blocker, or urgent operator workflow"
+        - "P2 - Medium: planned deliverable or important improvement that does not block the current release"
+        - "P3 - Low: polish, cleanup, docs, or backlog work with no immediate delivery pressure"
+    validations:
+      required: true
+  - type: textarea
+    id: priority-rationale
+    attributes:
+      label: Priority Rationale
+      description: Explain the impact, deadline, blocked work, or why this can safely wait.
+      placeholder: "This is P1 because..."
+    validations:
+      required: true
   - type: textarea
     id: user-need
     attributes:

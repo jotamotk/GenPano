@@ -121,6 +121,9 @@ evidence supports it, what changed, and what happens next?
 - Any problem, incident, bug, requirement gap, blocker, release risk, or workflow
   gap reported to Codex must be captured in GitHub as a new issue or linked to
   an existing issue before durable work continues.
+- Every issue must use the shared priority taxonomy: one required `Priority`,
+  one required `Priority Rationale`, and exactly one matching label from
+  `priority:p0`, `priority:p1`, `priority:p2`, or `priority:p3`.
 - Issue body is the current fact source. Comments are draft discussion and audit
   trail. Keep `## Current State` and `## Decisions` current when state changes.
 - Downstream issues must inline their execution contract. Do not rely on

@@ -130,6 +130,29 @@ Recommended issue body sections:
 ## Closure
 ```
 
+## Issue Priority
+
+Every issue must carry exactly one shared priority. Repo issue forms require a
+`Priority` field and a `Priority Rationale` field. During intake or triage, the
+Lead must also apply exactly one matching GitHub label.
+
+| Priority | Label | Use when |
+| --- | --- | --- |
+| P0 - Critical | `priority:p0` | Production outage, data loss, security risk, or release blocker. |
+| P1 - High | `priority:p1` | User-visible regression, committed delivery blocker, or urgent operator workflow. |
+| P2 - Medium | `priority:p2` | Planned deliverable or important improvement that does not block the current release. |
+| P3 - Low | `priority:p3` | Polish, cleanup, docs, or backlog work with no immediate delivery pressure. |
+
+Rules:
+
+- Do not leave an issue without a priority field and one matching
+  `priority:*` label.
+- Do not apply multiple priority labels to the same issue.
+- If an issue was created by API, chat intake, or an older template, add the
+  missing priority and rationale before routing implementation work.
+- Change priority only with a `DECISION` or `STATUS` comment explaining the new
+  impact, risk, or schedule fact.
+
 `## Current State` is not a history log. It states what is true now:
 
 - selected path: `fast` or `full`
