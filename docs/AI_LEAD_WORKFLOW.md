@@ -80,7 +80,7 @@ Use Full Path when any condition is true:
 - API, database, migration, scheduler, worker, CI/CD, or deployment behavior
   crosses area boundaries
 - multiple deliverables must be sequenced
-- production risk or rollback path needs explicit planning
+- release risk or rollback path needs explicit planning
 
 Full Path issue shape:
 
@@ -89,7 +89,7 @@ Full Path issue shape:
 3. PRD changes happen only after product-owner decision.
 4. Implementation is split by deliverable, not by hat.
 5. Each deliverable issue has one branch and one PR.
-6. After merge, production-facing behavior is verified on
+6. After merge, live-facing behavior is verified on the test environment
    `http://116.62.36.173/` with Playwright E2E when applicable.
 
 ### Escalation From Fast To Full
@@ -101,7 +101,7 @@ Escalate a Fast Path issue to Full Path when investigation finds:
 - the fix requires contract, schema, migration, scheduler, worker, deploy, or
   CI/CD changes outside the original area
 - more than one deliverable needs separate acceptance
-- verification cannot be completed without production-risk planning
+- verification cannot be completed without release-risk planning
 
 Escalation requires a `STATUS` comment summarizing the new fact, the reason Fast
 Path is no longer safe, and the proposed Full Path shape.
@@ -363,7 +363,7 @@ Use when risk or release shape justifies the time cost:
 - new or materially changed user-facing workflow
 - auth, scheduler, worker, migration, data repair, or deploy behavior
 - multiple PRs merged into one release window
-- production-facing incident closeout
+- live-facing incident closeout
 - before declaring a high-risk release complete
 
 Tier 3 should run in CI when possible so pass/fail is a machine artifact tied to
@@ -530,12 +530,12 @@ evidence to the Human Input issue.
 Final delivery happens on the Human Input issue, not only on child PRs. The
 Lead posts `Ready for User Acceptance` with:
 
-- live URL or exact production route for the user to check
+- live URL or exact test-environment route for the user to check
 - user-visible result that should now be true
 - child issues and PRs completed
 - deployed commit SHA and deploy run when applicable
-- Playwright, screenshot, server diagnostic, API readback, or production
-  evidence
+- Playwright, screenshot, server diagnostic, API readback, or live
+  test-environment evidence
 - known caveats, blockers, or remaining out-of-scope items
 
 The user closes the Human Input issue after accepting the live result. Codex
@@ -638,7 +638,7 @@ Pruning reports are not permission to delete.
 
 - Low-risk docs, debug scripts, and detached prototypes can become Fast Path
   cleanup issues.
-- Runtime code, CI/CD, migrations, data repair scripts, production routes,
+- Runtime code, CI/CD, migrations, data repair scripts, live runtime routes,
   security-sensitive files, and product behavior removals require a scoped issue
   with explicit verification.
 - Do not create archive directories as a default. If git history can recover the
@@ -659,10 +659,10 @@ closure.
 Required record:
 
 - user acceptance signal or explicit closure delegation
-- live URL or production route checked
+- live URL or test-environment route checked
 - final user-visible result
 - child issues and PRs completed
-- deploy SHA or production evidence when applicable
+- deploy SHA or live test-environment evidence when applicable
 - remaining caveats or "none"
 
 Codex may post the `Ready for User Acceptance` record, but it should leave the
@@ -677,7 +677,7 @@ Required record:
 - linked PR or commit
 - acceptance checklist result
 - verification evidence
-- live Playwright or production evidence when applicable
+- live Playwright or live test-environment evidence when applicable
 - final state
 
 ### Won't Do
@@ -783,7 +783,7 @@ Do not merge PRs that:
 - have unexplained failing CI
 - lack required verification evidence
 - skip the user-symptom replay for a user-reported bug
-- skip the required E2E tier for production-facing changes
+- skip the required E2E tier for live-facing changes
 - omit the Test Integrity Statement
 - leave the linked issue body stale
 

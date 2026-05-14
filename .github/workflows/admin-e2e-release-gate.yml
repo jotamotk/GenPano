@@ -43,7 +43,7 @@ on:
         required: false
         type: string
       analyzer_mutation_confirm:
-        description: "Set true only when the analyzer response ids are safe production mutation targets."
+        description: "Set true only when the analyzer response ids are safe live-mutation targets."
         required: false
         default: false
         type: boolean
@@ -312,7 +312,7 @@ jobs:
               echo "- Controlled Tracker retry state: skipped; no \`tracker_retry_query_id\` input was provided."
             fi
             if [[ "${ADMIN_E2E_ANALYZER_ATTEMPTS_INCLUDED:-0}" == "1" ]]; then
-              echo "- Admin analyzer state: included; \`${ADMIN_E2E_ANALYZER_ATTEMPTS_SPEC}\` verifies analyzer status, drawer summary, and batch dry-run against production."
+              echo "- Admin analyzer state: included; \`${ADMIN_E2E_ANALYZER_ATTEMPTS_SPEC}\` verifies analyzer status, drawer summary, and batch dry-run against the live test environment."
               if [[ "${ADMIN_E2E_ANALYZER_MUTATION_CONFIRM}" == "1" ]]; then
                 echo "- Controlled analyzer submit state: enabled for single response id \`${ADMIN_E2E_ANALYZER_SINGLE_RESPONSE_ID:-none}\` and batch response ids \`${ADMIN_E2E_ANALYZER_BATCH_RESPONSE_IDS:-none}\`."
               else

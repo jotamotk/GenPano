@@ -15,7 +15,7 @@ body:
       label: Priority
       description: Select the shared Genpano issue priority. Apply the matching priority:p* label during triage.
       options:
-        - "P0 - Critical: production outage, data loss, security risk, or release blocker"
+        - "P0 - Critical: live test-environment outage, data loss, security risk, or release blocker"
         - "P1 - High: user-visible regression, committed delivery blocker, or urgent operator workflow"
         - "P2 - Medium: planned deliverable or important improvement that does not block the current release"
         - "P3 - Low: polish, cleanup, docs, or backlog work with no immediate delivery pressure"
@@ -124,7 +124,7 @@ body:
         - [ ] Verification Evidence Ledgers complete on child PRs
         - [ ] Test Integrity Statements complete on child PRs
         - [ ] CI/CD tied to current head SHA and understood
-        - [ ] Tiered E2E planned or completed if production-facing
+        - [ ] Tiered E2E planned or completed if live-facing
     validations:
       required: true
   - type: textarea
@@ -145,7 +145,7 @@ body:
     id: live-verification
     attributes:
       label: Live Verification
-      description: Required production-facing validation after merge.
+      description: Required live-facing validation after merge.
       value: |
         - Target: http://116.62.36.173/
         - E2E tier: Tier 0 | Tier 1 | Tier 2 | Tier 3

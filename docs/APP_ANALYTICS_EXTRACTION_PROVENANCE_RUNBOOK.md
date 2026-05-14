@@ -31,8 +31,8 @@ This runbook covers the no-fallback analyzer and aggregate inputs for
 
 ## Dry-Run Counters For Estee Lauder
 
-Use #484 production diagnostics to capture exact values. Do not infer exact
-production row counts from local data.
+Use #484 live test-environment diagnostics to capture exact values. Do not infer exact
+live row counts from local data.
 
 Expected healthy counter shape for the Estee Lauder project dataset:
 
@@ -124,7 +124,7 @@ WHERE q.brand_id = :brand_id
 
 ## Backfill Plan
 
-No production writes before the AI Lead merge/deploy plan.
+No live test-environment writes before the AI Lead merge/deploy plan.
 
 After deployment, re-run analyzer only for the #484-confirmed affected date
 range and brand/project scope, then aggregate those dates. Verify read-only
@@ -145,7 +145,7 @@ App. After deployment, aggregate recomputation first removes existing
 requested brand/date scope, then writes only rows that are computable from the
 current evidence.
 
-Affected production dates to repair for Estee Lauder / brand `12`:
+Affected live test-environment dates to repair for Estee Lauder / brand `12`:
 
 - `2026-04-24`
 - `2026-05-06`
@@ -245,7 +245,7 @@ Before any write, run the dry-run form for each approved date. #563 dry-run is
 idempotent: it inspects existing competitor/citation rows and reports
 `citations_seen`, `citations_existing`, `citations_repairable`,
 `citations_attributed_by_context`, `sentiment_drivers_seen`, and
-`sentiment_drivers_inserted` without changing production data.
+`sentiment_drivers_inserted` without changing live test-environment data.
 
 ```powershell
 $dates = @("2026-04-24", "2026-05-06", "2026-05-07")
@@ -324,7 +324,7 @@ Rollback options:
   if daily aggregate rows were regenerated.
 - For #563 write reruns, capture repaired `citation_sources.id`,
   inserted `sentiment_drivers.id`, and any `brand_mentions` whose sentiment
-  fields changed from `NULL` before committing the production audit note. Data
+  fields changed from `NULL` before committing the live audit note. Data
   rollback is:
   - set `citation_sources.mention_id = NULL` for only the captured repaired
     citation IDs;
@@ -339,5 +339,5 @@ Rollback options:
 - If a live backfill inserted analyzer rows with wrong provenance, pause further
   analyzer writes and coordinate a data repair issue before deleting rows.
 
-Do not delete production `brand_mentions`, `citation_sources`, or
+Do not delete live `brand_mentions`, `citation_sources`, or
 `sentiment_drivers` rows without an AI Lead-approved repair plan.

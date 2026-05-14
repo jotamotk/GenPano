@@ -538,7 +538,7 @@ Minimum online Playwright evidence:
 - App chart diagnostics show metric readiness or missing inputs after analyzer
   facts/aggregations are refreshed.
 
-If live mutation is unsafe in production, QA must use a controlled row approved
+If live mutation is unsafe in the test environment, QA must use a controlled row approved
 by AI Lead or document the exact not-run reason and verify every read-only state
 available.
 

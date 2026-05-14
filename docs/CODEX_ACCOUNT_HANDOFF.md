@@ -33,13 +33,13 @@ repo document. The note must include:
 - Verification Evidence Ledger rows completed or blocked
 - Test Integrity Statement, if tests changed
 - CI/CD run links or blocker summary
-- production URL or route being verified
+- live test-environment URL or route being verified
 - User-Symptom Replay target and evidence, if user-reported or UI-visible
 - exact next action
 - unresolved questions or risks
 
-If the work is production-facing or user-visible, include the E2E tier selected
-and the live verification target: `http://116.62.36.173/`.
+If the work is live-facing or user-visible, include the E2E tier selected
+and the live verification target (test environment): `http://116.62.36.173/`.
 
 ## After Switching Accounts
 
@@ -54,8 +54,8 @@ durable state:
 5. Read the Epic issue, Agent task issue, PR, review comments, and latest CI/CD
    run.
 6. Inspect the current branch and worktree status before editing.
-7. If production behavior is uncertain, use GitHub Actions, deployment logs,
-   server diagnostics, or live checks instead of guessing.
+7. If live test-environment behavior is uncertain, use GitHub Actions,
+   deployment logs, server diagnostics, or live checks instead of guessing.
 8. After deployed functionality is merged, verify online behavior with the
    smallest E2E tier that proves the acceptance claim against
    `http://116.62.36.173/`.
@@ -116,14 +116,14 @@ Then inspect durable GitHub state:
 Rules:
 - Treat GitHub issues, PRs, review comments, and CI/CD runs as durable state.
 - Chat history is not source of truth.
-- Do not guess when production behavior is uncertain; use GitHub Actions,
-  deploy logs, server diagnostics, or live checks.
+- Do not guess when live test-environment behavior is uncertain; use GitHub
+  Actions, deploy logs, server diagnostics, or live checks.
 - Do not treat "tests passed" as acceptance unless the issue has a source-backed
   Acceptance Matrix and a Verification Evidence Ledger.
 - Before changing Admin UI, verify the actual Admin shell and route boundary.
 - Worker Agents do not merge. AI Lead owns merge sequencing.
-- After merged production-facing work, verify online with the required E2E tier
-  against http://116.62.36.173/.
+- After merged live-facing work, verify online with the required E2E tier
+  against the test environment http://116.62.36.173/.
 
 Start by posting a concise takeover receipt:
 - files read

@@ -169,7 +169,7 @@ P0 的目标不是“搭一个新 Admin”，而是把现有 `admin_console` Adm
 
 - `/admin` 的服务归属清楚。
 - `/admin/api/*` 的转发规则清楚。
-- preview / production compose 不再暗示独立 React Admin。
+- preview / live test-environment compose 不再暗示独立 React Admin。
 
 ### P0.3 Admin Auth 基线
 

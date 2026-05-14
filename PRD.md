@@ -575,7 +575,7 @@ CREATE TABLE daily_stats (
 |------|------|
 | 运行时 | Node.js 20 LTS |
 | 框架 | Express + TypeScript |
-| 数据存储 | 内存存储（dev）/ PostgreSQL（prod） |
+| 数据存储 | 内存存储（dev）/ PostgreSQL（live test 环境） |
 | 认证 | JWT（jsonwebtoken）|
 | OAuth | Passport.js + passport-google-oauth20 |
 | 邮件 | Nodemailer + Ethereal（dev） |
