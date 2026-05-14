@@ -150,9 +150,143 @@ async def test_metrics_default_window(client, user, project_with_full_data):
     assert len(by_metric["rank"]["points"]) == 30
     assert len(by_metric["sentiment"]["points"]) == 30
     assert len(by_metric["citation"]["points"]) == 30
+    # SoV's competitive denominator (`brand_mentions.competitive_set`) is
+    # critical missing input for the SoV metric — no competitor mentions
+    # in this fixture — so points stay cleared per the no-fallback contract.
     assert by_metric["sov"]["points"] == []
     assert by_metric["sov"]["formula_status"] == "missing_required_inputs"
     assert "brand_mentions.competitive_set" in by_metric["sov"]["missing_inputs"]
+
+
+@pytest_asyncio.fixture
+async def project_with_primary_sources_and_competitors(
+    db_session: AsyncSession, user: User
+) -> Project:
+    """Issue #948 fixture: all primary sources are populated for the
+    target brand AND a competitor, but analyzer fact packages are absent.
+
+    This is the scenario where the user reported `—` for 提及率 /
+    引用份额 / 行业排名 / Sentiment on `/brand/overview` and
+    `/brand/visibility`: `GeoScoreDaily`, `BrandMention` (target +
+    competitor), `CitationSource`, and `SentimentDriver` rows all exist,
+    yet the analyzer-evidence rollup is empty so peripheral missing
+    inputs surface as `missing_analyzer_fact_packages`. Before the
+    issue-948 fix, `_apply_metric_series_contract` cleared all points
+    in this state, breaking the frontend KPI cards.
+    """
+    p = Project(user_id=user.id, name="Peripheral Missing", primary_brand_id=42, industry_id=1)
+    db_session.add(p)
+    await db_session.commit()
+    await db_session.refresh(p, ["competitors"])
+
+    today = datetime.now().date()
+    for i in range(30):
+        d = today - timedelta(days=29 - i)
+        db_session.add(
+            GeoScoreDaily(
+                brand_id=42,
+                date=datetime.combine(d, datetime.min.time()),
+                target_llm="chatgpt",
+                avg_geo_score=70.0 + i * 0.5,
+                mention_rate=0.5 + i * 0.005,
+                avg_sov=0.3 + i * 0.005,
+                avg_sentiment=0.6 + i * 0.005,
+                avg_position_rank=2.5 - i * 0.05,
+                citation_rate=0.2 + i * 0.003,
+                total_queries=100,
+            )
+        )
+    # Target brand + competitor mentions (so SoV's competitive_set is
+    # non-empty), with sentiment + position rank so all per-metric
+    # primary sources are populated.
+    for i in range(8):
+        db_session.add(
+            BrandMention(
+                response_id=7000 + i,
+                brand_id=42,
+                brand_name="Test Brand",
+                sentiment="positive",
+                sentiment_score=0.7,
+                position_rank=(i % 3) + 1,
+                created_at=datetime.now() - timedelta(days=i % 5),
+            )
+        )
+    for i in range(4):
+        db_session.add(
+            BrandMention(
+                response_id=7100 + i,
+                brand_id=99,
+                brand_name="Competitor",
+                sentiment="neutral",
+                sentiment_score=0.0,
+                position_rank=(i % 4) + 1,
+                created_at=datetime.now() - timedelta(days=i % 5),
+            )
+        )
+    await db_session.commit()
+
+    bm_id = (
+        await db_session.execute(
+            BrandMention.__table__.select().where(BrandMention.brand_id == 42).limit(1)
+        )
+    ).first()
+    bm_id_val = bm_id[0] if bm_id else 1
+    for i in range(3):
+        db_session.add(
+            CitationSource(
+                response_id=7000 + i,
+                mention_id=bm_id_val,
+                url=f"https://example.com/948-{i}",
+                domain="example.com",
+                title=f"948 Article {i}",
+                source_type="article",
+                created_at=datetime.now() - timedelta(days=i),
+            )
+        )
+    await db_session.commit()
+    return p
+
+
+@pytest.mark.asyncio
+async def test_metric_series_with_evidence_survives_peripheral_missing_inputs(
+    client, user, project_with_primary_sources_and_competitors
+):
+    """Issue #948: KPI cards showed `—` because `_apply_metric_series_contract`
+    cleared `points` when only peripheral analyzer inputs (e.g.
+    `missing_analyzer_fact_packages`) were missing, even though the value
+    itself was computed from real `GeoScoreDaily` rows and all per-metric
+    primary sources (brand_mentions, citation_sources) were populated.
+
+    The fix keeps `points` populated and downgrades `formula_status` from
+    `missing_required_inputs` to `partial` so the frontend's
+    `canUseContractMetricValue` gate still surfaces the value rather than
+    rendering `—`.
+
+    Critical missing inputs (denominator missing, primary source missing,
+    project unbound) still clear points per the no-fallback contract —
+    see `test_metrics_marks_brand_mentions_partial_when_daily_rollups_missing`
+    and `test_citation_metric_agrees_with_citations_when_sources_absent`.
+    """
+    resp = await client.get(
+        f"/api/v1/projects/{project_with_primary_sources_and_competitors.id}/metrics",
+        headers=_bearer(user),
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    by_metric = {s["metric"]: s for s in body["series"]}
+    # All 5 metrics have GeoScoreDaily evidence rows AND per-metric primary
+    # sources populated. Only peripheral analyzer-fact-package evidence is
+    # missing. Points must survive (issue #948) so the frontend renders
+    # numbers instead of `—`.
+    for metric in ("mention_rate", "sov", "rank", "sentiment", "citation"):
+        assert len(by_metric[metric]["points"]) == 30, (
+            f"{metric} should keep points when GeoScoreDaily evidence + "
+            f"primary sources exist (only analyzer fact packages missing)"
+        )
+        assert by_metric[metric]["formula_status"] != "missing_required_inputs", (
+            f"{metric} formula_status should not be missing_required_inputs "
+            f"when value is real (got {by_metric[metric]['formula_status']})"
+        )
 
 
 @pytest.mark.asyncio

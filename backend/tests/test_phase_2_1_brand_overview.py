@@ -201,6 +201,102 @@ async def test_overview_brand_id_override_falsy_keeps_default(client, user, proj
     assert resp.json()["brand_id"] == 42
 
 
+@pytest_asyncio.fixture
+async def project_with_primary_sources_and_competitors(
+    db_session: AsyncSession, user: User
+) -> Project:
+    """Issue #948 fixture: all primary sources populated for target +
+    competitor, but no analyzer fact packages.
+
+    Reproduces the production scenario where /brand/overview returned `—`
+    for KPI cards (`_apply_kpi_contract` nulled `card.value`) even though
+    `geo_score_daily` had rows.
+    """
+    p = Project(user_id=user.id, name="Peripheral KPI", primary_brand_id=42, industry_id=1)
+    db_session.add(p)
+    await db_session.commit()
+    await db_session.refresh(p, ["competitors"])
+
+    today = datetime.now().date()
+    for i in range(30):
+        d = today - timedelta(days=29 - i)
+        db_session.add(
+            GeoScoreDaily(
+                brand_id=42,
+                date=datetime.combine(d, datetime.min.time()),
+                target_llm="chatgpt",
+                avg_geo_score=70.0 + i * 0.5,
+                mention_rate=0.5 + i * 0.005,
+                avg_sov=0.3 + i * 0.005,
+                avg_sentiment=0.6 + i * 0.005,
+                total_queries=100,
+            )
+        )
+    for i in range(6):
+        db_session.add(
+            BrandMention(
+                response_id=8000 + i,
+                brand_id=42,
+                brand_name="Test Brand",
+                sentiment="positive",
+                sentiment_score=0.7,
+                position_rank=(i % 3) + 1,
+                created_at=datetime.now() - timedelta(days=i),
+            )
+        )
+    for i in range(3):
+        db_session.add(
+            BrandMention(
+                response_id=8100 + i,
+                brand_id=99,
+                brand_name="Competitor",
+                sentiment="neutral",
+                sentiment_score=0.0,
+                position_rank=(i % 3) + 1,
+                created_at=datetime.now() - timedelta(days=i),
+            )
+        )
+    await db_session.commit()
+    return p
+
+
+@pytest.mark.asyncio
+async def test_overview_kpi_cards_with_evidence_survive_peripheral_missing_inputs(
+    client, user, project_with_primary_sources_and_competitors
+):
+    """Issue #948: 提及率 / 引用份额 / 行业排名 / Sentiment cards rendered
+    `—` on /brand/overview because `_apply_kpi_contract` nulled out
+    `card.value` when peripheral analyzer inputs were missing — even when
+    `geo_score_daily` rows actually backed the value and all per-metric
+    primary sources (brand_mentions for target + competitor) were
+    populated.
+
+    The fix keeps `card.value` populated and downgrades `formula_status`
+    to `partial` so the frontend's `canUseContractMetricValue` gate still
+    surfaces the number. Critical missing inputs (denominator missing,
+    primary source missing) still null the value per the no-fallback
+    contract — see
+    `test_overview_marks_brand_mentions_partial_when_daily_rollups_missing`.
+    """
+    resp = await client.get(
+        f"/api/v1/projects/{project_with_primary_sources_and_competitors.id}/overview",
+        headers=_bearer(user),
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["evidence_counts"]["geo_score_daily_rows"] == 30
+    for card in body["kpi_cards"]:
+        assert card["value"] is not None, (
+            f"{card['label_en']} value should survive peripheral missing "
+            f"inputs when geo_score_daily evidence + primary sources back it"
+        )
+        assert card["formula_status"] != "missing_required_inputs", (
+            f"{card['label_en']} formula_status should not be "
+            f"missing_required_inputs when value is real (got "
+            f"{card['formula_status']})"
+        )
+
+
 @pytest.mark.asyncio
 async def test_overview_marks_brand_mentions_partial_when_daily_rollups_missing(
     client, user, db_session
