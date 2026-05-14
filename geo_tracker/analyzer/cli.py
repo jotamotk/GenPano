@@ -413,6 +413,83 @@ def _fact_type_index(package: dict) -> dict[str, str]:
     return index
 
 
+def _analyzer_result_failure(llm_result) -> tuple[str | None, str | None]:
+    parse_status = str(getattr(llm_result, "parse_status", "ok") or "ok")
+    parse_error = getattr(llm_result, "parse_error", None)
+    if parse_status not in {"ok", "json_repaired"}:
+        code = "invalid_json" if parse_status == "invalid_json" else parse_status
+        return code, str(parse_error or "Analyzer output could not be parsed.")
+
+    raw_json = getattr(llm_result, "raw_json", None)
+    if not isinstance(raw_json, dict):
+        return "missing_raw_analyzer_json", (
+            "Analyzer returned parse_status=ok but no raw analyzer JSON payload."
+        )
+    if not raw_json:
+        return "empty_raw_analyzer_json", (
+            "Analyzer returned parse_status=ok but the raw analyzer JSON payload was empty."
+        )
+    return None, None
+
+
+async def _mark_analyzer_result_failed(
+    session,
+    *,
+    analyzer_run: AnalyzerRun,
+    response: LLMResponse,
+    response_id: int,
+    previous_analysis_status: str,
+    preserve_current_success: bool,
+    code: str,
+    message: str,
+) -> dict:
+    completed_at = _utcnow_naive()
+    analyzer_run.status = "failed"
+    analyzer_run.completed_at = completed_at
+    analyzer_run.failure_code = code
+    analyzer_run.failure_message = message
+    analyzer_run.validator_summary_json = {
+        "schema_version": "analyzer_v4",
+        "validator_status": "failed",
+        "errors": [message],
+        "quality_flag_count": 1,
+        "failure_code": code,
+        "failure_message": message,
+    }
+    await _persist_analyzer_v4_facts(
+        session,
+        analyzer_run=analyzer_run,
+        response_id=response_id,
+        package={
+            "quality_flags": [
+                {
+                    "flag_key": f"flag_{code}_analysis",
+                    "severity": "error",
+                    "code": code,
+                    "message": message,
+                    "target_type": "analysis",
+                    "target_key": None,
+                    "blocks_metric_readiness": True,
+                }
+            ]
+        },
+        include_current_facts=False,
+    )
+    response.analysis_status = (
+        previous_analysis_status
+        if preserve_current_success
+        else AnalysisStatus.FAILED.value
+    )
+    await session.commit()
+    return {
+        "response_id": response_id,
+        "status": "failed",
+        "error": code,
+        "message": message,
+        "analyzer_run_id": int(analyzer_run.id),
+    }
+
+
 async def _persist_analyzer_v4_facts(
     session,
     *,
@@ -612,6 +689,18 @@ async def analyze_single_response(
             f"  Stage 2: LLM found {len(llm_result.brands)} brands, "
             f"dimension={llm_result.dimension.industry}"
         )
+        failure_code, failure_message = _analyzer_result_failure(llm_result)
+        if failure_code:
+            return await _mark_analyzer_result_failed(
+                session,
+                analyzer_run=analyzer_run,
+                response=response,
+                response_id=response_id,
+                previous_analysis_status=previous_analysis_status,
+                preserve_current_success=preserve_current_success,
+                code=failure_code,
+                message=failure_message or failure_code,
+            )
 
         # Stage 3: Citation mapping. Use both rule-detected and LLM-only
         # brands so unconfigured competitors can still receive attribution.
