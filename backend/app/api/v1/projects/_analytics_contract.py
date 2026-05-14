@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import date, datetime
 from typing import Any
 
 from genpano_models import (
@@ -20,7 +20,6 @@ from genpano_models import (
     ResponseRelationFact,
     SentimentDriver,
 )
-from pydantic import BaseModel, Field
 from sqlalchemy import and_, bindparam, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -30,6 +29,30 @@ from app.api.v1.projects._topic_analysis_service import (
     _fact_rows,
     legacy_table_columns,
     legacy_table_exists,
+)
+from app.api.v1.projects.contracts.models import (
+    AnalyticsContractContext as AnalyticsContractContext,
+)
+from app.api.v1.projects.contracts.models import (
+    DataFreshness as DataFreshness,
+)
+from app.api.v1.projects.contracts.models import (
+    FormulaDiagnostics as FormulaDiagnostics,
+)
+from app.api.v1.projects.contracts.models import (
+    IdentityDiagnostics as IdentityDiagnostics,
+)
+from app.api.v1.projects.contracts.models import (
+    MetricDefinition as MetricDefinition,
+)
+from app.api.v1.projects.contracts.models import (
+    MetricValue as MetricValue,
+)
+from app.api.v1.projects.contracts.models import (
+    ProjectScope as ProjectScope,
+)
+from app.api.v1.projects.contracts.models import (
+    ValueRange as ValueRange,
 )
 
 FORMULA_OK_STATUS = "ok"
@@ -100,83 +123,6 @@ _METRIC_BLOCKING_REASONS = {
         "sentiment_component_partial",
     },
 }
-
-
-class ValueRange(BaseModel):
-    min: float
-    max: float
-
-
-class DataFreshness(BaseModel):
-    generated_at: str = Field(
-        default_factory=lambda: datetime.now(UTC).isoformat().replace("+00:00", "Z")
-    )
-
-
-class ProjectScope(BaseModel):
-    exists: bool = True
-    project_id: str
-    primary_brand_id: int | None
-    requested_brand_id: int | None
-    competitor_brand_ids: list[int] = Field(default_factory=list)
-    missing_reason: str | None = None
-
-
-class MetricDefinition(BaseModel):
-    metric_key: str
-    unit: str
-    value_scale: str
-    value_range: ValueRange
-    denominator_label: str | None = None
-    numerator_label: str | None = None
-    source: str | None = None
-    formula_status: str | None = None
-
-
-class MetricValue(BaseModel):
-    value: float | None
-    unit: str
-    value_scale: str
-    value_range: ValueRange
-    source: str | None = None
-    formula_status: str | None = None
-
-
-class FormulaDiagnostics(BaseModel):
-    status: str = "not_applicable"
-    pending_sources: list[str] = Field(default_factory=list)
-    details: list[str] = Field(default_factory=list)
-
-
-class IdentityDiagnostics(BaseModel):
-    canonical_brand_id: int | None = None
-    normalized_brand_mention_count: int = 0
-    brand_mentioned_response_count: int = 0
-    response_analysis_count: int = 0
-    canonical_alias_repair_count: int = 0
-    raw_text_owner_brand_ids: list[int] = Field(default_factory=list)
-    repair_missing_sources: list[str] = Field(default_factory=list)
-
-
-class AnalyticsContractContext(BaseModel):
-    project_scope: ProjectScope
-    brand_aliases: list[str] = Field(default_factory=list)
-    state: str
-    state_reason: str
-    state_detail: str | None = None
-    missing_inputs: list[str] = Field(default_factory=list)
-    missing_sources: list[str] = Field(default_factory=list)
-    missing_reasons: list[str] = Field(default_factory=list)
-    invalid_fields: list[str] = Field(default_factory=list)
-    evidence_counts: dict[str, int] = Field(default_factory=dict)
-    identity_diagnostics: IdentityDiagnostics = Field(default_factory=IdentityDiagnostics)
-    formula_diagnostics: FormulaDiagnostics = Field(default_factory=FormulaDiagnostics)
-    formula_status: str = FORMULA_NO_EVIDENCE_STATUS
-    metric_formula_evidence: dict[str, Any] = Field(default_factory=dict)
-    selected_filters: dict[str, Any] = Field(default_factory=dict)
-    source_provenance: list[str] = Field(default_factory=list)
-    request_id: str | None = None
-    data_freshness: DataFreshness = Field(default_factory=DataFreshness)
 
 
 def _unique(values: list[str]) -> list[str]:
