@@ -29,6 +29,7 @@ import {
 import { resolveLiveProjectId } from '../lib/liveProject'
 import {
   buildMetricTrustState,
+  isOkFormulaStatus,
   type MetricFormulaEvidence,
   type MetricTrustState,
   type AnalyticsContractMetadata,
@@ -408,13 +409,41 @@ function topicMetricEvidence(
   return null
 }
 
+function emptyContractList(value: unknown) {
+  return !Array.isArray(value) || value.length === 0
+}
+
+function canShowConcreteValueFromOkTableContract(
+  source: (AnalyticsContractMetadata & LooseRecord) | null | undefined,
+  fallback: (AnalyticsContractMetadata & LooseRecord) | null | undefined,
+  value: unknown,
+) {
+  if (source?.formula_status) return false
+  if (asNumber(value) == null) return false
+  return (
+    String(fallback?.state || '').toLowerCase() === 'ok' &&
+    isOkFormulaStatus(fallback?.formula_status) &&
+    emptyContractList(fallback?.missing_inputs) &&
+    emptyContractList(fallback?.missing_sources) &&
+    emptyContractList(fallback?.missing_reasons)
+  )
+}
+
 function topicMetricTrustState(
   source: (AnalyticsContractMetadata & LooseRecord) | null | undefined,
   metric: keyof typeof TOPIC_METRIC_ALIASES,
   fallback?: (AnalyticsContractMetadata & LooseRecord) | null,
   value?: unknown,
+  allowOkTableConcreteValue = false,
 ): MetricTrustState | null {
   const sourceEvidence = topicMetricEvidence(source, metric)
+  if (
+    allowOkTableConcreteValue &&
+    !sourceEvidence &&
+    canShowConcreteValueFromOkTableContract(source, fallback, value)
+  ) {
+    return null
+  }
   const fallbackEvidence = topicMetricEvidence(fallback, metric)
   const evidence = sourceEvidence || fallbackEvidence
   const hasSourceMetricProof = Boolean(sourceEvidence)
@@ -877,6 +906,7 @@ function TopicsView({
                   'visibility',
                   contractSource,
                   visibilityValue(topic),
+                  true,
                 )
                 const rowSentimentTrust = topicMetricTrustState(
                   topicSource,
@@ -889,6 +919,7 @@ function TopicsView({
                   'citation',
                   contractSource,
                   topic.citation_rate,
+                  true,
                 )
                 return (
                   <tr
