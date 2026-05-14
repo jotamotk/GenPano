@@ -11,6 +11,8 @@ from geo_tracker.db.models import LLMResponse, Query, QueryStatus
 
 DEFAULT_STALE_RUNNING_SECONDS = 60 * 60
 DEFAULT_REPAIR_REASON = "stale_running_timeout"
+DEFAULT_PENDING_DISPATCH_SECONDS = 60 * 60
+DEFAULT_PENDING_DISPATCH_REASON = "pending_dispatch_timeout"
 
 
 @dataclass(frozen=True)
@@ -107,6 +109,80 @@ async def repair_stale_running_queries(
         latency = _latency_ms(query.started_at, finished_at)
         if latency is not None:
             query.latency_ms = latency
+
+    await session.commit()
+    return StaleRunningRepairReport(
+        matched=len(candidates),
+        repaired=len(candidates),
+        query_ids=query_ids,
+        by_engine=by_engine,
+        reason=repair_reason,
+        cutoff=cutoff,
+        dry_run=False,
+    )
+
+
+async def repair_stale_pending_dispatch_queries(
+    session: AsyncSession,
+    *,
+    max_age_seconds: int = DEFAULT_PENDING_DISPATCH_SECONDS,
+    reason: str = DEFAULT_PENDING_DISPATCH_REASON,
+    now: datetime | None = None,
+    brand_id: int | None = None,
+    target_llm: str | None = None,
+    dry_run: bool = False,
+) -> StaleRunningRepairReport:
+    """Fail old queued pending queries that never reached a worker.
+
+    ``queued_at`` is the guardrail: unqueued pending rows are not rewritten by
+    this repair path because they may be drafts/orphans that were never meant
+    to have a broker delivery.
+    """
+    finished_at = now or _utcnow_naive()
+    seconds = max(60, int(max_age_seconds or DEFAULT_PENDING_DISPATCH_SECONDS))
+    cutoff = finished_at - timedelta(seconds=seconds)
+    repair_reason = (
+        (reason or DEFAULT_PENDING_DISPATCH_REASON).strip()
+        or DEFAULT_PENDING_DISPATCH_REASON
+    )
+
+    stmt = (
+        select(Query)
+        .where(func.lower(Query.status) == QueryStatus.PENDING.value)
+        .where(Query.queued_at.is_not(None))
+        .where(Query.started_at.is_(None))
+    )
+    if brand_id is not None:
+        stmt = stmt.where(Query.brand_id == brand_id)
+    if target_llm:
+        stmt = stmt.where(Query.target_llm == target_llm)
+    stmt = stmt.where(~exists().where(LLMResponse.query_id == Query.id)).order_by(Query.id)
+
+    rows = list((await session.execute(stmt)).scalars().all())
+    candidates = [query for query in rows if (query.queued_at or finished_at) < cutoff]
+
+    query_ids = [int(query.id) for query in candidates]
+    by_engine: dict[str, int] = {}
+    for query in candidates:
+        engine = str(query.target_llm or "unknown")
+        by_engine[engine] = by_engine.get(engine, 0) + 1
+
+    if dry_run or not candidates:
+        return StaleRunningRepairReport(
+            matched=len(candidates),
+            repaired=0,
+            query_ids=query_ids,
+            by_engine=by_engine,
+            reason=repair_reason,
+            cutoff=cutoff,
+            dry_run=dry_run,
+        )
+
+    for query in candidates:
+        query.status = QueryStatus.FAILED.value
+        query.finished_at = finished_at
+        query.retry_reason = repair_reason
+        query.latency_ms = None
 
     await session.commit()
     return StaleRunningRepairReport(
