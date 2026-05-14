@@ -47,10 +47,41 @@ async def _table_exists(session: AsyncSession, name: str) -> bool:
     return row is not None
 
 
+_CORE_SCORE_FIELDS = ("geo_score", "visibility_score", "sentiment_score")
+
+
+def _scores_explicit(item: dict[str, Any]) -> bool:
+    return item.get("analysis_id") is not None and all(
+        item.get(field) is not None for field in _CORE_SCORE_FIELDS
+    )
+
+
+def _analysis_score_source(item: dict[str, Any]) -> str:
+    if item.get("analysis_id") is None:
+        return "none"
+    return "response_analyses" if _scores_explicit(item) else "response_analyses_partial"
+
+
+def _analysis_contract_status(item: dict[str, Any]) -> str:
+    status = str(item.get("analysis_status") or "").strip().lower()
+    if status in {"done", "already_analyzed"}:
+        return "completed"
+    if status in {"queued", "pending", "running", "failed", "missing", "partial"}:
+        return status
+    if status == "not_eligible":
+        return "not_eligible"
+    if item.get("analysis_id") is not None:
+        return "completed"
+    return "missing"
+
+
 def _analysis_summary(item: dict[str, Any]) -> dict[str, Any] | None:
     if item.get("analysis_id") is None:
         return None
     return {
+        "status": _analysis_contract_status(item),
+        "score_source": _analysis_score_source(item),
+        "scores_explicit": _scores_explicit(item),
         "geo_score": item.get("geo_score"),
         "visibility_score": item.get("visibility_score"),
         "sentiment_score": item.get("sentiment_score"),
@@ -62,6 +93,36 @@ def _analysis_summary(item: dict[str, Any]) -> dict[str, Any] | None:
         "mentions_count": item.get("mentions_count"),
         "citations_count": item.get("citations_count"),
         "features_count": item.get("features_count"),
+    }
+
+
+def _analysis_contract(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "status": _analysis_contract_status(item),
+        "analysis_id": item.get("analysis_id"),
+        "run_id": item.get("analyzer_run_id"),
+        "response_id": item.get("response_id"),
+        "model": item.get("analyzer_model"),
+        "started_at": _isoformat(item.get("analyzer_run_started_at")),
+        "completed_at": _isoformat(
+            item.get("analyzer_run_completed_at") or item.get("analyzed_at")
+        ),
+        "error_code": item.get("analysis_error_code"),
+        "error_message": item.get("analysis_error_message") or item.get("analysis_error"),
+        "score_source": _analysis_score_source(item),
+        "scores_explicit": _scores_explicit(item),
+        "geo_score": item.get("geo_score"),
+        "visibility_score": item.get("visibility_score"),
+        "sentiment_score": item.get("sentiment_score"),
+        "sov_score": item.get("sov_score"),
+        "citation_score": item.get("citation_score"),
+        "fact_counts": {
+            "brand_mentions": item.get("mentions_count"),
+            "citations": item.get("citations_count"),
+            "features": item.get("features_count"),
+        },
+        "metric_readiness_status": item.get("metric_readiness_status"),
+        "metric_readiness_reasons": item.get("metric_readiness_reasons"),
     }
 
 
@@ -151,6 +212,8 @@ def format_attempt_analysis_fields(row: dict[str, Any]) -> dict[str, Any]:
         )
     elif latest_run_status in {"queued", "running"}:
         item["analysis_status"] = latest_run_status
+    elif latest_run_status == "failed" and analysis_id is None:
+        item["analysis_status"] = "failed"
     elif persisted_status == "pending" and analysis_id is None:
         item["analysis_status"] = "missing"
     elif persisted_status:
@@ -170,6 +233,7 @@ def format_attempt_analysis_fields(row: dict[str, Any]) -> dict[str, Any]:
         item["metric_readiness_reasons"] = quality_flags or None
 
     item["analysis_summary"] = _analysis_summary(item)
+    item["analysis"] = _analysis_contract(item)
     item["analysis_task"] = {
         "latest_task_id": item.get("task_id"),
         "latest_run_id": item.get("analyzer_run_id"),

@@ -9565,6 +9565,7 @@ function finitePositiveId(...values) {
 }
 
 function formatAttemptAnalyzerMetric(value, digits = 2) {
+  if (value === null || value === undefined || value === '') return '';
   const next = Number(value);
   if (!Number.isFinite(next)) return '';
   return next.toFixed(digits).replace(/\.?0+$/, '');
@@ -9573,6 +9574,9 @@ function formatAttemptAnalyzerMetric(value, digits = 2) {
 function formatAttemptAnalyzerSummaryValue(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return firstNonEmptyText(value);
+  }
+  if (value.scores_explicit === false) {
+    return firstNonEmptyText(value.summary, value.status === 'completed' ? 'metrics pending' : value.status);
   }
   const parts = [];
   const geoScore = formatAttemptAnalyzerMetric(value.geo_score);
