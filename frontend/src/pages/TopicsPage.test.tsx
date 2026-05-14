@@ -452,6 +452,94 @@ describe('TopicsPage live brand override', () => {
     expect(within(row).queryByText('Positive 0')).not.toBeInTheDocument()
   })
 
+  it('shows concrete row metric values when row proof is ok despite partial global proof', () => {
+    topicHooks.useTopicMonitoring.mockReturnValue({
+      data: {
+        summary: {
+          topic_count: 1,
+          prompt_count: 9,
+          query_count: 72,
+          response_count: 72,
+          analyzed_count: 34,
+          citation_count: 467,
+          last_collected: '2026-05-14T03:52:53.599995',
+        },
+        analyzer_coverage: {
+          eligible_response_count: 72,
+          analyzed_response_count: 34,
+          missing_response_count: 38,
+          analyzer_version: 'v3',
+        },
+        formula_status: 'partial',
+        metric_formula_evidence: {
+          visibility: {
+            formula_status: 'partial',
+            reason_codes: ['missing_analyzer_rows'],
+          },
+          sentiment: {
+            formula_status: 'missing',
+            reason_codes: ['missing_sentiment_quote'],
+          },
+          citation: {
+            formula_status: 'partial',
+            reason_codes: ['unresolved_citation_attribution'],
+          },
+        },
+        missing_inputs: ['missing_analyzer_rows'],
+        topics: [
+          {
+            topic_id: 907,
+            topic_name: '企业级AI数据脱敏工具选购指南',
+            dimension: 'product',
+            associated_brand: 'bestCoffer',
+            prompt_count: 9,
+            query_count: 72,
+            response_count: 72,
+            visibility_rate: 0,
+            sentiment_distribution: { positive: 0, neutral: 0, negative: 0 },
+            citation_rate: 0.903,
+            citation_count: 467,
+            last_collected: '2026-05-14T03:52:53.599995',
+            formula_status: 'partial',
+            metric_formula_evidence: {
+              visibility: {
+                formula_status: 'ok',
+                numerator: 0,
+                denominator: 9,
+                reason_codes: ['valid_zero'],
+              },
+              sentiment: {
+                formula_status: 'missing',
+                reason_codes: ['missing_sentiment_quote'],
+              },
+              citation: {
+                formula_status: 'ok',
+                numerator: 28,
+                denominator: 31,
+              },
+            },
+          },
+        ],
+        intent_matrix: [],
+        state: 'ok',
+      },
+      isLoading: false,
+    })
+
+    renderTopicsPage('/brand/topics?brandId=24&range=30d&profileGroup=all')
+
+    const row = screen
+      .getByText('企业级AI数据脱敏工具选购指南')
+      .closest('tr') as HTMLElement
+    expect(within(row).getByText('0.0%')).toBeInTheDocument()
+    expect(within(row).getByText('90.3%')).toBeInTheDocument()
+    expect(within(row).getByText('Pending proof')).toBeInTheDocument()
+    expect(within(row).getByText('467')).toBeInTheDocument()
+    expect(within(row).getByText('9')).toBeInTheDocument()
+    expect(within(row).getByText('72')).toBeInTheDocument()
+    expect(within(row).queryByText('Valid zero proof missing')).not.toBeInTheDocument()
+  })
+
   it('uses backend visibility_rate ahead of legacy mention or sov fields', () => {
     topicHooks.useTopicMonitoring.mockReturnValue({
       data: {
