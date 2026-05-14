@@ -1,94 +1,114 @@
-name: Agent Task
-description: Assign a scoped task to one Codex Agent
-title: "[Agent Task] "
+name: Deliverable Task
+description: Track one fast-path or full-path deliverable with a clear execution contract
+title: "[Task] "
 labels:
   - status:ready
 body:
   - type: markdown
     attributes:
       value: |
-        Use this template for child issues assigned to one Agent. One Agent task issue should map to one branch and one PR.
+        Use this template for one deliverable, not one agent role. A task should normally map to one branch and one PR.
   - type: dropdown
-    id: owner-agent
+    id: path
     attributes:
-      label: Owner Agent
-      description: Select the single Agent role responsible for this issue.
+      label: Path
+      description: Select the workflow path for this deliverable.
       options:
-        - frontend-visualization-agent
-        - frontend-integration-agent
-        - backend-api-agent
-        - pipeline-data-agent
-        - qa-e2e-agent
-        - release-ci-agent
-        - review-agent
-        - ai-lead-agent
+        - fast
+        - full
+    validations:
+      required: true
+  - type: dropdown
+    id: owner-hat
+    attributes:
+      label: Owner Hat
+      description: Select the responsibility hat currently owning execution.
+      options:
+        - lead
+        - frontend-visualization
+        - frontend-integration
+        - backend-api
+        - pipeline-data
+        - qa-e2e
+        - release-ci
+        - review
     validations:
       required: true
   - type: input
-    id: epic
+    id: coordination-issue
     attributes:
-      label: Epic Issue
-      description: Link the parent Epic issue.
-      placeholder: "#120"
+      label: Coordination Issue
+      description: Link the Epic/coordination issue if this is Full Path. Use "none" for standalone Fast Path work.
+      placeholder: "#120 or none"
     validations:
       required: true
   - type: textarea
     id: goal
     attributes:
       label: Goal
-      description: What user-visible or engineering outcome should this issue deliver?
-      placeholder: "Deliver the frontend visualization for..."
+      description: State the deliverable outcome in one or two sentences.
+      placeholder: "Fix the Admin retry error classification for..."
+    validations:
+      required: true
+  - type: textarea
+    id: current-state
+    attributes:
+      label: Current State
+      description: State what is true now. Keep this current as status changes.
+      value: |
+        - Path:
+        - Current judgment:
+        - Branch:
+        - PR:
+        - Blocker:
+        - Next:
+    validations:
+      required: true
+  - type: textarea
+    id: decisions
+    attributes:
+      label: Decisions
+      description: Record settled decisions only. Copy DECISION comments here when they change execution.
+      value: |
+        - Pending.
+    validations:
+      required: true
+  - type: textarea
+    id: execution-contract
+    attributes:
+      label: Execution Contract
+      description: Inline the contract. Do not rely on unresolved "depends on #..." pointers as the only source of scope.
+      value: |
+        - Branch:
+        - Allowed Scope:
+          -
+        - Forbidden Scope:
+          -
+        - Contract Snapshot:
+          -
+        - Dependencies:
+          -
     validations:
       required: true
   - type: textarea
     id: prd-source
     attributes:
       label: PRD Source
-      description: Link the PRD file and stable requirement IDs. Do not paste long PRD sections.
+      description: Required for product behavior. Use "none - fast path bugfix" only when no PRD or product contract changes.
       value: |
         - PRD:
         - Requirement IDs:
           - PRD-AREA-FEATURE-001
+        - PRD status: approved | PRD-CHANGE needed | none
     validations:
       required: true
   - type: textarea
-    id: prd-slice
+    id: acceptance
     attributes:
-      label: PRD Slice
-      description: State which part of the PRD this issue covers and which parts are assigned elsewhere.
+      label: Acceptance Criteria
+      description: List the exact checks that make this deliverable complete.
       value: |
-        Included:
-        -
-
-        Excluded:
-        -
-    validations:
-      required: true
-  - type: textarea
-    id: acceptance-mapping
-    attributes:
-      label: Acceptance Criteria Mapping
-      description: Map PRD criteria to this issue so the Agent does not overbuild.
-      value: |
-        | PRD Criteria | This Issue |
-        | --- | --- |
-        |  |  |
-    validations:
-      required: true
-  - type: textarea
-    id: allowed-scope
-    attributes:
-      label: Allowed Scope
-      description: Files, modules, routes, or behavior this Agent may change.
-      placeholder: "- frontend/src/..."
-    validations:
-      required: true
-  - type: textarea
-    id: forbidden-scope
-    attributes:
-      label: Forbidden Scope
-      description: Files, modules, routes, or behavior this Agent must not change.
-      placeholder: "- backend migrations\n- scheduler dispatch logic"
+        - [ ] Define the acceptance check.
     validations:
       required: true
   - type: textarea
@@ -105,14 +125,6 @@ body:
     validations:
       required: true
   - type: textarea
-    id: dependencies
-    attributes:
-      label: Dependencies
-      description: Issues, PRs, PRD decisions, or deployments that must happen first.
-      placeholder: "- Depends on #..."
-    validations:
-      required: false
-  - type: textarea
     id: context-links
     attributes:
       label: Context Links
@@ -124,7 +136,19 @@ body:
     id: handoff
     attributes:
       label: Handoff
-      description: What should the PR pass to the next Agent or to AI Lead review?
-      placeholder: "Return screenshot, changed routes, test command output, and known risks."
+      description: What should this deliverable pass to review, QA, release, or the next task?
+      placeholder: "Return changed routes, test command output, evidence links, and known risks."
     validations:
       required: true
+  - type: textarea
+    id: closure
+    attributes:
+      label: Closure
+      description: Complete this before closing. Use Completed, Won't Do, Split/Superseded, or Duplicate.
+      value: |
+        - Type:
+        - Reason:
+        - Linked PR/commit or replacement/canonical issue:
+        - Verification evidence:
+    validations:
+      required: false

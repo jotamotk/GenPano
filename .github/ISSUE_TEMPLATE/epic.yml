@@ -1,15 +1,14 @@
-name: AI Lead Epic
-description: Track one user request from PRD through Agent tasks and merge
-title: "[Epic] "
+name: Full Path Coordination
+description: Coordinate a Full Path request that needs PRD, visualization, or multiple deliverables
+title: "[Full Path] "
 labels:
   - type:epic
-  - agent:lead
   - status:briefing
 body:
   - type: markdown
     attributes:
       value: |
-        Use this template for one user request. The AI Lead owns this issue and links all child Agent task issues and PRs.
+        Use this template only when Fast Path is not enough. Split child issues by deliverable, not by agent role.
   - type: textarea
     id: user-need
     attributes:
@@ -22,66 +21,86 @@ body:
     id: current-state
     attributes:
       label: Current State
-      description: What is true today in product, code, deployment, or CI/CD?
-      placeholder: "Current behavior, known implementation, live URL, failing request, etc."
+      description: What is true today in product, code, deployment, or CI/CD? Keep this current.
+      value: |
+        - Path: full
+        - Current judgment:
+        - Active deliverable:
+        - Blocker:
+        - Next:
+    validations:
+      required: true
+  - type: textarea
+    id: decisions
+    attributes:
+      label: Decisions
+      description: Record settled decisions only. Copy DECISION comments here.
+      value: |
+        - Pending.
     validations:
       required: true
   - type: textarea
     id: prd-source
     attributes:
       label: PRD Source
-      description: Link PRD docs and stable requirement IDs. Add IDs before child issues are marked ready.
+      description: Link PRD docs and stable requirement IDs. Product behavior is not final until the product owner accepts the PRD change.
       value: |
         - PRD:
         - Requirement IDs:
           - PRD-AREA-FEATURE-001
+        - Open PRD-CHANGE requests:
+          -
     validations:
       required: true
   - type: textarea
-    id: frontend-visualization
+    id: visualization
     attributes:
-      label: Frontend Visualization Plan
-      description: Define the first real frontend page or state that will visualize the requirement.
+      label: Frontend Visualization
+      description: Required for material user-facing experience changes. Use "not needed" with reason when skipped.
       value: |
         - Visualization issue:
         - Page/route:
-        - Confirmation needed from user:
+        - Confirmation needed:
+        - Skip reason:
     validations:
       required: true
   - type: textarea
-    id: child-issues
+    id: deliverables
     attributes:
-      label: Child Agent Issues
-      description: Link all child Agent task issues and their owners.
+      label: Deliverable Issues
+      description: Link child issues by deliverable, not by hat.
       value: |
-        | Issue | Owner Agent | Purpose | Status |
-        | --- | --- | --- | --- |
-        |  |  |  |  |
+        | Issue | Path | Owner Hat | Deliverable | Current State |
+        | --- | --- | --- | --- | --- |
+        |  |  |  |  |  |
     validations:
       required: false
   - type: textarea
     id: success-criteria
     attributes:
       label: Success Criteria
-      description: What must be true before AI Lead can recommend merge?
+      description: What must be true before merge or closeout?
       value: |
-        - [ ] Page direction confirmed
-        - [ ] PRD requirement IDs linked
-        - [ ] Agent task issues complete
+        - [ ] PRD decisions accepted or explicitly not needed
+        - [ ] Visualization confirmed or explicitly not needed
+        - [ ] Deliverable issues complete
         - [ ] Required PRs reviewed
         - [ ] CI/CD understood
-        - [ ] Live Playwright E2E planned or completed
+        - [ ] Live Playwright E2E planned or completed if production-facing
     validations:
       required: true
   - type: textarea
     id: merge-plan
     attributes:
-      label: Merge Plan
-      description: AI Lead updates this when child PRs are ready.
+      label: Merge And Release Plan
+      description: Lead updates this when PRs are ready.
       value: |
         | PR | Depends On | CI | Risk | Merge Order |
         | --- | --- | --- | --- | --- |
         |  |  |  |  |  |
+
+        - Rollback:
+        - CD/deploy plan:
     validations:
       required: false
   - type: textarea
@@ -95,3 +114,15 @@ body:
         - Evidence:
     validations:
       required: true
+  - type: textarea
+    id: closure
+    attributes:
+      label: Closure
+      description: Complete before closing. Use Completed, Won't Do, Split/Superseded, or Duplicate.
+      value: |
+        - Type:
+        - Reason:
+        - Linked PR/commit or replacement/canonical issue:
+        - Verification evidence:
+    validations:
+      required: false
