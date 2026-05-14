@@ -9588,7 +9588,7 @@ function formatAttemptAnalyzerMetric(value, digits = 2) {
   return next.toFixed(digits).replace(/\.?0+$/, '');
 }
 
-function formatAttemptAnalyzerSummaryValue(value) {
+function formatAttemptAnalyzerSummaryValue(value, row) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return firstNonEmptyText(value);
   }
@@ -9596,7 +9596,12 @@ function formatAttemptAnalyzerSummaryValue(value) {
     if (value.status === 'defaulted' || value.score_source === 'response_analyses_defaulted') {
       return firstNonEmptyText(value.summary, '默认值');
     }
-    return firstNonEmptyText(value.summary, value.status === 'completed' ? 'metrics pending' : value.status);
+    const readinessReason = row ? firstAnalyzerReadinessReason(row) : '';
+    return firstNonEmptyText(
+      value.summary,
+      readinessReason,
+      value.status === 'completed' ? 'metrics pending' : value.status
+    );
   }
   const parts = [];
   const geoScore = formatAttemptAnalyzerMetric(value.geo_score);
@@ -9675,7 +9680,7 @@ function deriveAttemptAnalyzerState(row, responseText, attemptStatus) {
     nested.error,
     firstAnalyzerReadinessReason(row)
   );
-  const summaryValue = formatAttemptAnalyzerSummaryValue(row.analysis_summary);
+  const summaryValue = formatAttemptAnalyzerSummaryValue(row.analysis_summary, row);
   const summary = firstNonEmptyText(
     summaryValue,
     row.analyzer_summary,
