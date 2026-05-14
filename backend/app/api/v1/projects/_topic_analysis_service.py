@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 from collections import Counter, OrderedDict, defaultdict
 from dataclasses import dataclass
@@ -47,6 +46,39 @@ from app.api.v1.projects._topic_analysis_dto import (
     TopicMonitoringSummary,
     TopicPromptRow,
     TopicPromptsOut,
+)
+from app.api.v1.projects.topic_analysis.normalize import (
+    _as_float as _as_float,
+)
+from app.api.v1.projects.topic_analysis.normalize import (
+    _as_int as _as_int,
+)
+from app.api.v1.projects.topic_analysis.normalize import (
+    _coerce_json as _coerce_json,
+)
+from app.api.v1.projects.topic_analysis.normalize import (
+    _date_key as _date_key,
+)
+from app.api.v1.projects.topic_analysis.normalize import (
+    _iso as _iso,
+)
+from app.api.v1.projects.topic_analysis.normalize import (
+    _mean as _mean,
+)
+from app.api.v1.projects.topic_analysis.normalize import (
+    _normalize_key as _normalize_key,
+)
+from app.api.v1.projects.topic_analysis.normalize import (
+    _pct as _pct,
+)
+from app.api.v1.projects.topic_analysis.normalize import (
+    _response_preview as _response_preview,
+)
+from app.api.v1.projects.topic_analysis.normalize import (
+    _round as _round,
+)
+from app.api.v1.projects.topic_analysis.normalize import (
+    _timestamp_key as _timestamp_key,
 )
 from app.core.errors import not_found
 
@@ -100,81 +132,6 @@ def _dt_range(from_d: date, to_d: date) -> tuple[datetime, datetime]:
         datetime.combine(from_d, datetime.min.time()),
         datetime.combine(to_d, datetime.max.time()),
     )
-
-
-def _iso(value: Any) -> str | None:
-    if value is None:
-        return None
-    if hasattr(value, "isoformat"):
-        return str(value.isoformat())
-    return str(value)
-
-
-def _response_preview(value: Any, max_chars: int = 280) -> str | None:
-    if value is None:
-        return None
-    preview = " ".join(str(value).split())
-    if not preview:
-        return None
-    return preview[:max_chars]
-
-
-def _date_key(value: Any) -> str | None:
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        return value.date().isoformat()
-    if isinstance(value, date):
-        return value.isoformat()
-    return str(value)[:10]
-
-
-def _timestamp_key(value: Any) -> str:
-    if value is None:
-        return ""
-    if hasattr(value, "isoformat"):
-        return str(value.isoformat())
-    return str(value)
-
-
-def _as_float(value: Any) -> float | None:
-    if value is None:
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _as_int(value: Any) -> int | None:
-    if value is None:
-        return None
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _round(value: Any, digits: int = 4) -> float | None:
-    num = _as_float(value)
-    return round(num, digits) if num is not None else None
-
-
-def _mean(values: list[float]) -> float | None:
-    return round(sum(values) / len(values), 4) if values else None
-
-
-def _pct(numerator: int | float, denominator: int | float, digits: int = 4) -> float | None:
-    if not denominator:
-        return None
-    return round(float(numerator) / float(denominator), digits)
-
-
-def _normalize_key(value: Any) -> str | None:
-    if value is None:
-        return None
-    norm = str(value).strip().lower().replace("-", "_")
-    return norm or None
 
 
 def _success_status_condition(cols: set[str], alias: str = "q") -> str | None:
@@ -302,18 +259,6 @@ def _target_mention_condition(
     if not parts:
         return None
     return f"({' OR '.join(parts)})" if len(parts) > 1 else parts[0]
-
-
-def _coerce_json(value: Any) -> dict[str, Any]:
-    if isinstance(value, dict):
-        return value
-    if isinstance(value, str):
-        try:
-            parsed = json.loads(value)
-        except json.JSONDecodeError:
-            return {}
-        return parsed if isinstance(parsed, dict) else {}
-    return {}
 
 
 def _prompt_scope_from_row(row: dict[str, Any]) -> str:
