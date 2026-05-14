@@ -77,7 +77,7 @@ Required for user-reported bugs and UI-visible changes. Use `not applicable - re
 - [ ] Screenshot/video:
 - [ ] Playwright:
 - [ ] CI:
-- [ ] Live `http://116.62.36.173/` check if production-facing:
+- [ ] Live `http://116.62.36.173/` (test environment) check if live-facing:
 
 ## Risks
 

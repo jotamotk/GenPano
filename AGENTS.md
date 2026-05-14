@@ -28,14 +28,14 @@ session. Do not create process artifacts that do not improve execution.
 - The pruning hat is the subtraction view: it regularly asks what can be deleted
   or retired, but it reports candidates instead of deleting by automation.
 - In parallel or overlapping work, the Lead hat owns CD coordination: order
-  production deploys intentionally, monitor overlapping Build & Deploy runs,
+  live test-environment deploys intentionally, monitor overlapping Build & Deploy runs,
   cancel superseded deploy runs when safe, and verify the final live environment
   is running the intended latest `main` SHA.
 
 ### Evidence-First Debugging
 
 任何根因排查的第一步必须是从坏掉的 surface 直接抓真实响应/输出作为硬证据，并
-`grep` 全部调用者验证 prod 实际走的代码路径——禁止以"读代码推断行为"或
+`grep` 全部调用者验证 live test 环境实际走的代码路径——禁止以"读代码推断行为"或
 "假设端点走某段 SQL/handler"替代直接观察。
 
 Why this rule exists:
@@ -58,8 +58,8 @@ Minimum evidence checklist before opening a fix PR for a user-reported bug:
    whichever applies. Paste it into the issue or PR body.
 2. `grep` every caller of the function/handler/formatter you suspect; do not
    assume a single endpoint serves the surface.
-3. Read the SQL/code path that *production* actually executes for that
-   surface, not the one you think it executes.
+3. Read the SQL/code path that the *live test environment* actually executes
+   for that surface, not the one you think it executes.
 4. State the assumed cause-and-effect chain explicitly, then point at the
    evidence that confirms each link.
 
@@ -85,7 +85,7 @@ Use **Full Path** when any of these are true:
 - API, database, migration, scheduler, worker, CI/CD, or deployment contract
   changes across areas
 - multiple deliverables must be sequenced
-- production risk is high or the rollback path is unclear
+- release risk is high or the rollback path is unclear
 
 Full Path may use an Epic, PRD linkage, Frontend Visualization, and multiple
 deliverable issues. Fast Path should not create those artifacts unless they
@@ -179,7 +179,7 @@ E2E is required where it proves the acceptance claim, but it should be scoped.
   auth, scheduler, worker, or deployment boundaries interact.
 - `Tier 3`: full Playwright or release-gate E2E for high-risk changes,
   multi-PR releases, major user-facing workflows, migrations, auth, scheduler,
-  worker, or production deployment gates.
+  worker, or live test-environment deployment gates.
 
 Do not run full E2E as a ritual when a smaller replay proves the claim. Do not
 skip targeted replay and substitute unrelated green tests.
@@ -189,11 +189,12 @@ skip targeted replay and substitute unrelated green tests.
 Closed issues must say why they ended. Use one of these closure types:
 
 - `Human Input Accepted`: user accepted the online result and closed, or
-  explicitly delegated closure after reviewing the production evidence. Agents
-  should not close Human Input issues just because child tasks or PRs completed.
+  explicitly delegated closure after reviewing the live test-environment
+  evidence. Agents should not close Human Input issues just because child
+  tasks or PRs completed.
 - `Completed`: linked PR or commit, acceptance result, verification evidence,
-  and live Playwright or production evidence when relevant. Codex may close this
-  after required verification passes.
+  and live Playwright or live test-environment evidence when relevant. Codex
+  may close this after required verification passes.
 - `Won't Do`: reason, deciding person, accepted risk, and alternative path if
   any. This needs product-owner confirmation unless the issue is an obvious
   duplicate or mistaken artifact created by Codex.
@@ -237,8 +238,8 @@ outdated AGENTS.md rules.
 - The automation must not delete files, close issues, or change workflow rules
   by itself.
 - Low-risk docs/debug cleanup can become a Fast Path issue. Runtime, CI,
-  migration, data repair, production path, or product behavior removal needs a
-  scoped issue and explicit verification.
+  migration, data repair, live runtime path, or product behavior removal
+  needs a scoped issue and explicit verification.
 - Prefer real deletion over archive directories when git history is enough to
   recover the artifact. Archive only for compliance, audit, or active incident
   evidence.
@@ -260,7 +261,7 @@ worker task, branch, PR, or PRD by itself.
   merged, deployed, and verified on the relevant live route.
 - Final delivery is a `Ready for User Acceptance` comment on the Human Input
   issue with live URL, user-visible result, PRs, deploy SHA, Playwright or
-  production evidence, and known caveats.
+  live test-environment evidence, and known caveats.
 - The Human Input issue stays open until the user can verify the online result.
   The user closes it if the result is acceptable; Agents close it only when the
   user explicitly delegates closure.

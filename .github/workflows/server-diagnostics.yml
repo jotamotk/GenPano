@@ -82,7 +82,7 @@ on:
 
 jobs:
   diagnostics:
-    name: Inspect production server
+    name: Inspect live test-environment server
     if: ${{ inputs.scraper_mode != 'app_analytics_business_completeness' }}
     runs-on: ubuntu-latest
 

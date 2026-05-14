@@ -265,8 +265,9 @@ rules. It reports:
 
 ## Release And CI Handoff
 
-When CI/CD, deployment, or production state is uncertain, do not guess. Claude
-Code or the Release/CI hat should use GitHub Actions logs, deploy logs, server
+When CI/CD, deployment, or live test-environment state is uncertain, do not
+guess. Claude Code or the Release/CI hat should use GitHub Actions logs,
+deploy logs, server
 diagnostics, or live checks and return exact evidence.
 
 Release/CI handoff must include:
@@ -335,7 +336,7 @@ Before merge or user-facing completion, the Codex Lead verifies:
 - required Playwright or QA evidence matches the selected E2E tier
 - CI/CD is green or the blocker is explicitly accepted
 - deployment path is known
-- production-facing behavior is verified on `http://116.62.36.173/`
+- live-facing behavior is verified on the test environment `http://116.62.36.173/`
 - live Playwright E2E evidence is attached when applicable
 - Human Input has a `Ready for User Acceptance` record when applicable
 - issue closure type and closure record are ready; Human Input remains open for

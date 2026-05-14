@@ -14,7 +14,7 @@ body:
       label: Priority
       description: Select the shared Genpano issue priority. Apply the matching priority:p* label during triage.
       options:
-        - "P0 - Critical: production outage, data loss, security risk, or release blocker"
+        - "P0 - Critical: live test-environment outage, data loss, security risk, or release blocker"
         - "P1 - High: user-visible regression, committed delivery blocker, or urgent operator workflow"
         - "P2 - Medium: planned deliverable or important improvement that does not block the current release"
         - "P3 - Low: polish, cleanup, docs, or backlog work with no immediate delivery pressure"
@@ -59,7 +59,7 @@ body:
         - Convert actionable work into a scoped Fast Path issue, Full Path Coordination issue, deliverable issue, or PRD-change request.
         - Use PRD-CHANGE when the item changes product behavior or contract.
         - Link every child issue or PRD decision back with Refs #<this issue>.
-        - Coordinate child work until it is merged, deployed, and live-verifiable when production-facing.
+        - Coordinate child work until it is merged, deployed, and live-verifiable when live-facing.
         - Leave a triage receipt for every item.
         - Post Ready for User Acceptance with live URL, expected visible result, child issues/PRs, deploy SHA, and evidence.
         - Keep this issue open until the user accepts the online result and closes it, unless closure is explicitly delegated.

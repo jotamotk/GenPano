@@ -1,6 +1,6 @@
 name: Brand Search Diagnostics
 
-# Read-only prod probes to figure out why /api/v1/brands/search returns
+# Read-only live test-environment probes to figure out why /api/v1/brands/search returns
 # empty. Auto-runs once when the workflow file lands on main; can also
 # be re-triggered manually for any keyword.
 #
@@ -39,7 +39,7 @@ jobs:
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H "${{ secrets.SERVER_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
 
-      - name: Run diagnostic probes on prod
+      - name: Run diagnostic probes on live test environment
         id: probe
         run: |
           set +e

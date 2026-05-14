@@ -140,4 +140,4 @@ Push the branch, create PR, wait for checks, merge, and watch Build & Deploy.
 
 - [ ] **Step 4: Post-deploy CI/CD diagnostic**
 
-Run server diagnostics or a focused production probe to confirm the deployed image SHA and that quality-blocked runs are terminal with visible metrics.
+Run server diagnostics or a focused live test-environment probe to confirm the deployed image SHA and that quality-blocked runs are terminal with visible metrics.

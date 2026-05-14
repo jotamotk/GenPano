@@ -49,7 +49,7 @@ on:
         required: false
         default: false
       approval_ref:
-        description: "Required for apply: exact #760 issue-comment URL with trusted production-write approval"
+        description: "Required for apply: exact #760 issue-comment URL with trusted live-write approval"
         required: false
         default: ""
       aggregate_approval_ref:

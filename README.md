@@ -61,5 +61,7 @@ in [`AGENTS.md`](AGENTS.md). New work starts from an Epic issue
 (`.github/ISSUE_TEMPLATE/agent-task.yml`). PRs follow
 `.github/PULL_REQUEST_TEMPLATE.md`.
 
-Production target: `http://116.62.36.173/`. Frontend changes intended for
-production should include a Playwright check; see the PR template.
+Live test-environment target: `http://116.62.36.173/`. (There is currently
+no production environment — "live" = the test deploy.) Frontend changes
+intended to be visible there should include a Playwright check; see the PR
+template.

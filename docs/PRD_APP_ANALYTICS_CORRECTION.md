@@ -30,7 +30,7 @@ Requirement ID: `PRD-APP-ANALYTICS-000`.
 Metric calculation must not fallback. For App analytics metrics and chart data:
 
 - Do not use frontend mock arrays, sample data, or existing visualization data as
-  production metric truth.
+  live metric truth.
 - Do not use one metric as a proxy for another metric. Examples: SoV cannot
   stand in for mention rate; citation rate cannot stand in for citation share;
   a GEO/PANO score cannot stand in for missing component series.
@@ -272,7 +272,7 @@ Frontend cards and charts must render the backend state honestly:
 - `empty`: show empty state with selected filters and next diagnostic hint.
 - `error`: show error state with request ID when available.
 
-Frontend must not compute production values from unrelated endpoints or local
+Frontend must not compute live metric values from unrelated endpoints or local
 mock truth. Derived display formatting is allowed only after the backend
 provides a valid metric value and formula status.
 
@@ -283,7 +283,7 @@ QA may not accept the App analytics work with a smoke check such as
 
 Required gates:
 
-- Verify no metric calculation path contains silent fallback for production
+- Verify no metric calculation path contains silent fallback for live
   App analytics values.
 - Verify KPI values have plausible numerator, denominator, formula status, and
   evidence counts.
@@ -304,8 +304,8 @@ Required gates:
 ## Required Production Diagnostics Before Fixes
 
 Before backend/pipeline/frontend implementation PRs are marked ready, the
-Release/CI Agent must capture read-only production evidence for the affected
-project/brand/date range:
+Release/CI Agent must capture read-only live test-environment evidence for
+the affected project/brand/date range:
 
 - collected response count by engine/date
 - analyzer run count and failed analyzer count
@@ -331,8 +331,8 @@ Frontend Visualization:
 
 Release/CI:
 
-- Gather production evidence through GitHub Actions/server diagnostics.
-- Do not guess from local state when production data is uncertain.
+- Gather live test-environment evidence through GitHub Actions/server diagnostics.
+- Do not guess from local state when live test-environment data is uncertain.
 
 Pipeline/Data:
 
@@ -344,11 +344,11 @@ Backend API:
 
 - Enforce formula contracts, denominator correctness, evidence counts, and
   cross-page consistency.
-- Remove calculation fallback paths for production App analytics metrics.
+- Remove calculation fallback paths for live App analytics metrics.
 
 Frontend Integration:
 
-- Remove mock/proxy truth from production App cards/charts.
+- Remove mock/proxy truth from live App cards/charts.
 - Render backend states honestly across overview and sub-navigation pages.
 
 QA/E2E:

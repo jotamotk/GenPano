@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "Run read-only probes or apply approved production writes"
+        description: "Run read-only probes or apply approved live test-environment writes"
         type: choice
         required: true
         default: dry_run
@@ -28,7 +28,7 @@ on:
         required: false
         default: ""
       owner_user_id:
-        description: "Required in write mode; approved production App owner user_id"
+        description: "Required in write mode; approved live App owner user_id"
         required: false
         default: ""
       competitor_brand_id:
@@ -59,7 +59,7 @@ concurrency:
 
 jobs:
   runbook:
-    name: Run approved App analytics production runbook
+    name: Run approved App analytics live test-environment runbook
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -241,7 +241,7 @@ jobs:
             fi
 
             if [ "$MODE" = "write" ]; then
-              echo "=== WRITE GATE SATISFIED: applying approved production writes ==="
+              echo "=== WRITE GATE SATISFIED: applying approved live test-environment writes ==="
               echo "approval_ref=${APPROVAL_REF}"
 
               echo "=== Bootstrap write (#494 script) ==="
@@ -252,7 +252,7 @@ jobs:
                 run_canonical_repair_cli true
               fi
             else
-              echo "=== Dry-run mode complete; no production writes were requested ==="
+              echo "=== Dry-run mode complete; no live test-environment writes were requested ==="
             fi
 
             echo "=== Post-run read-only SQL summary ==="

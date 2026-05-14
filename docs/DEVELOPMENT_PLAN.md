@@ -375,7 +375,7 @@
   - tokens
   - logs
   - screenshots
-- 确认 production env。
+- 确认 live test env。
 
 验收：
 

@@ -49,7 +49,7 @@ on:
         required: false
         default: false
       approval_ref:
-        description: "Required for apply: #686 issue-comment URL plus explicit BestCoffer production-write approval wording"
+        description: "Required for apply: #686 issue-comment URL plus explicit BestCoffer live-write approval wording"
         required: false
         default: ""
 

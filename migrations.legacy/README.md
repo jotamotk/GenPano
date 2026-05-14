@@ -6,7 +6,7 @@
 
 ## What's here
 
-These 4 SQL files are the historical schema migrations that ran in production
+These 4 SQL files are the historical schema migrations that ran in the deployed environment
 before Alembic was set up:
 
 | File | Date | Tables / Columns | Now in Alembic |

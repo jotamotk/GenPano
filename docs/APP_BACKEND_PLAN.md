@@ -1949,7 +1949,7 @@ comms_announcements        # O3.2
 - Rate limit（PRD §7.1）：登录/注册 10/min/IP；通用 60/min/user，新建
   `backend/app/core/rate_limit.py`（基于 Redis token bucket）。
 - CORS：仅前端域 + admin 域。
-- HTTPS：preview / prod 强制（nginx）。
+- HTTPS：preview / live test env 强制（nginx）。
 - 多租户审计：每 endpoint 都有"用户 A 访问 B 的 project → 404" 测试。
 - OpenAPI 同步：FastAPI 自动 schema vs `docs/openapi.yaml` CI 校验。
 
@@ -2462,7 +2462,7 @@ Codecov / 自建（按团队选择）。
 - `models_drift_check` + `openapi_sync` 无飘移。
 - p95 端点 < 200ms；KG 1000 节点 ≥ 30 fps；报告 30 天 < 60s。
 - 安全：401 → `/login?redirect=`；403 → toast；越权 → 404；
-  rate limit 登录/注册 10/min/IP，通用 60/min/user；HTTPS prod 强制。
+  rate limit 登录/注册 10/min/IP，通用 60/min/user；HTTPS 在 live test env 强制。
 
 ---
 

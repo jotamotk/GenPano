@@ -4,7 +4,7 @@ Source of truth: `docs/PRD_APP_ANALYTICS_CORRECTION.md`, requirement IDs
 `PRD-APP-ANALYTICS-000` through `PRD-APP-ANALYTICS-010`.
 
 This runbook exists for issue #537. It gives Release/CI, AI Lead, and QA a
-safe way to capture production formula evidence before backend, pipeline,
+safe way to capture live test-environment formula evidence before backend, pipeline,
 frontend, or E2E issues accept App analytics output as trustworthy.
 
 ## Safety Contract
@@ -13,13 +13,13 @@ frontend, or E2E issues accept App analytics output as trustworthy.
 - The DB probe emits and runs `SELECT` statements inside
   `BEGIN TRANSACTION READ ONLY`.
 - `project_id` input is still validated as UUID-shaped, but DB probes compare
-  it as text so production `projects.id` columns stored as varchar/text do not
+  it as text so the live `projects.id` columns stored as varchar/text do not
   fail before evidence collection starts.
 - Response date filters use `llm_responses.collected_at`, then
   `queries.finished_at`, then `queries.created_at`; they do not reference
   `llm_responses.created_at` or `response_analyses.created_at`.
 - The API probe sends authenticated `GET` requests only.
-- There is no repair, backfill, aggregation refresh, mutation, or production
+- There is no repair, backfill, aggregation refresh, mutation, or live-DB
   write mode.
 - Secrets are never printed. `APP_ANALYTICS_BEARER_TOKEN` and
   `USER_JWT_SECRET` are masked before any probe runs.
@@ -28,7 +28,7 @@ frontend, or E2E issues accept App analytics output as trustworthy.
 
 ## Required Secrets
 
-- `SERVER_HOST`: production host for the SELECT-only DB probe over SSH.
+- `SERVER_HOST`: live test-environment host for the SELECT-only DB probe over SSH.
 - `SERVER_USER`: SSH user.
 - `SERVER_SSH_KEY`: SSH private key.
 - `APP_ANALYTICS_BEARER_TOKEN`: App user Bearer token for authenticated API
@@ -92,7 +92,7 @@ payload snippet, and any top-level `state`, `state_reason`, `missing_inputs`,
 
 ## Local Static Checks
 
-Generate the SQL locally without touching production:
+Generate the SQL locally without touching the live test environment:
 
 ```powershell
 py backend/scripts/app_analytics_readonly_evidence.py db-sql `

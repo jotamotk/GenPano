@@ -10,7 +10,7 @@ on:
       - ".github/PULL_REQUEST_TEMPLATE.md"
 
 concurrency:
-  group: production-deploy
+  group: live-deploy
   cancel-in-progress: false
 
 permissions:
@@ -282,7 +282,7 @@ jobs:
             {
               echo "## Build & Deploy skipped"
               echo ""
-              echo "- Result: stale main run skipped before production deploy."
+              echo "- Result: stale main run skipped before live deploy."
               echo "- Run SHA: \`${GITHUB_SHA}\`"
               echo "- Latest deploy-eligible main SHA: \`${latest_sha}\`"
               echo "- Reason: the run SHA does not contain the latest deploy-eligible product state."
@@ -295,7 +295,7 @@ jobs:
           {
             echo "## Build & Deploy pre-deploy guard"
             echo ""
-            echo "- Result: run still contains the latest deploy-eligible product state; production deploy may continue."
+            echo "- Result: run still contains the latest deploy-eligible product state; live deploy may continue."
             echo "- Run SHA: \`${GITHUB_SHA}\`"
             echo "- Latest deploy-eligible main SHA: \`${latest_sha}\`"
           } >> "$GITHUB_STEP_SUMMARY"
@@ -349,6 +349,10 @@ jobs:
             POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
             DATABASE_URL=postgresql+asyncpg://genpano:${{ secrets.POSTGRES_PASSWORD }}@postgres:5432/genpano
             REDIS_URL=redis://redis:6379/0
+            # GENPANO_ENVIRONMENT value is preserved as `production` because it
+            # controls runtime mode (caching, log level, debug flags), not which
+            # environment is deployed. The repo currently has only a test
+            # deploy at http://116.62.36.173/.
             GENPANO_ENVIRONMENT=production
             # Admin cookie Secure flag — explicit. Default 0 because the
             # current deployment serves the admin SPA over plain HTTP
@@ -626,7 +630,7 @@ jobs:
             {
               echo "## Build & Deploy failed"
               echo ""
-              echo "- Result: production deploy step did not complete successfully."
+              echo "- Result: live deploy step did not complete successfully."
               echo "- Attempted SHA: \`${GITHUB_SHA}\`"
             } >> "$GITHUB_STEP_SUMMARY"
             exit 0
