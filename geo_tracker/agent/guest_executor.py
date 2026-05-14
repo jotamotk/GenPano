@@ -1086,17 +1086,41 @@ class GuestQueryExecutor:
                             llm, page_obj
                         )
                         if doubao_reason:
-                            await _save_html(page_obj, query.id, doubao_reason)
-                            await _save_screenshot(page_obj, query.id, doubao_reason)
-                            await _save_runtime_snapshot(
-                                page_obj,
-                                query.id,
-                                doubao_reason,
-                                config=config,
-                                error=e,
-                                matched_selector=matched_selector,
-                                runtime_events=runtime_events,
-                            )
+                            try:
+                                await _save_html(page_obj, query.id, doubao_reason)
+                            except Exception as artifact_error:
+                                logger.warning(
+                                    "[%s] failed to save %s load-failure html: %s",
+                                    llm,
+                                    doubao_reason,
+                                    artifact_error,
+                                )
+                            try:
+                                await _save_screenshot(page_obj, query.id, doubao_reason)
+                            except Exception as artifact_error:
+                                logger.warning(
+                                    "[%s] failed to save %s load-failure screenshot: %s",
+                                    llm,
+                                    doubao_reason,
+                                    artifact_error,
+                                )
+                            try:
+                                await _save_runtime_snapshot(
+                                    page_obj,
+                                    query.id,
+                                    doubao_reason,
+                                    config=config,
+                                    error=e,
+                                    matched_selector=matched_selector,
+                                    runtime_events=runtime_events,
+                                )
+                            except Exception as artifact_error:
+                                logger.warning(
+                                    "[%s] failed to save %s load-failure runtime snapshot: %s",
+                                    llm,
+                                    doubao_reason,
+                                    artifact_error,
+                                )
                     self.last_error_reason = self.last_error_reason or "page_load_failed"
                     return None
 
