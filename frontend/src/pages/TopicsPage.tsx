@@ -28,7 +28,10 @@ import {
 } from '../hooks/useTopicAnalysis'
 import { resolveLiveProjectId } from '../lib/liveProject'
 import {
+  asFiniteNumber,
   buildMetricTrustState,
+  isOkAnalyticsState,
+  isOkFormulaStatus,
   type MetricFormulaEvidence,
   type MetricTrustState,
   type AnalyticsContractMetadata,
@@ -408,6 +411,15 @@ function topicMetricEvidence(
   return null
 }
 
+function isPartialCoverage(coverage: LooseRecord | null | undefined): boolean {
+  if (!coverage) return false
+  const eligible = asFiniteNumber(coverage.eligible_response_count)
+  const analyzed = asFiniteNumber(coverage.analyzed_response_count)
+  const missing = asFiniteNumber(coverage.missing_response_count)
+  if (eligible != null && analyzed != null && eligible > analyzed) return true
+  return missing != null && missing > 0
+}
+
 function topicMetricTrustState(
   source: (AnalyticsContractMetadata & LooseRecord) | null | undefined,
   metric: keyof typeof TOPIC_METRIC_ALIASES,
@@ -422,6 +434,37 @@ function topicMetricTrustState(
     evidence?.analyzer_coverage ||
     source?.analyzer_coverage ||
     (hasSourceMetricProof ? null : fallback?.analyzer_coverage)
+  // When the table-level contract is fully ok (state="ok" AND formula_status="ok")
+  // and the row carries concrete numeric values without row-level
+  // metric_formula_evidence, trust the top-level contract and render the value.
+  // This handles the production payload shape where rows have numeric metrics
+  // (mention_rate, visibility_rate, citation_rate) but no per-row evidence map.
+  const rowHasEvidenceMap = Boolean(source?.metric_formula_evidence)
+  const rowFormulaStatus = source?.formula_status as string | null | undefined
+  const rowDeclaresNonOk = Boolean(rowFormulaStatus) && !isOkFormulaStatus(rowFormulaStatus)
+  const numericValue = asFiniteNumber(value)
+  const rowAnalyzerCoverage = source?.analyzer_coverage
+  const fallbackAnalyzerCoverage = fallback?.analyzer_coverage
+  const rowCoveragePartial = isPartialCoverage(rowAnalyzerCoverage)
+  const fallbackCoveragePartial = isPartialCoverage(fallbackAnalyzerCoverage)
+  if (
+    !rowHasEvidenceMap &&
+    !rowDeclaresNonOk &&
+    !rowCoveragePartial &&
+    !fallbackCoveragePartial &&
+    isOkAnalyticsState(fallback?.state) &&
+    isOkFormulaStatus(fallback?.formula_status) &&
+    numericValue != null
+  ) {
+    return {
+      tone: 'ok',
+      label: 'Ready',
+      summary: 'Metric is supported by the table-level ok contract.',
+      details: [],
+      reasonLabels: [],
+      canShowValue: true,
+    }
+  }
   if (!evidence && !coverage && !source?.formula_status && !fallback?.formula_status) return null
   return buildMetricTrustState({
     metricKey: metric,

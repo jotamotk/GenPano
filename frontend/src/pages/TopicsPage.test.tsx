@@ -540,6 +540,104 @@ describe('TopicsPage live brand override', () => {
     expect(within(row).queryByText('Valid zero proof missing')).not.toBeInTheDocument()
   })
 
+  it('renders concrete row metric values when table contract is ok and row carries no per-row evidence', () => {
+    topicHooks.useTopicMonitoring.mockReturnValue({
+      data: {
+        summary: {
+          topic_count: 4,
+          prompt_count: 9,
+          query_count: 72,
+          response_count: 72,
+          citation_count: 467,
+          last_collected: '2026-05-14T03:52:53.599995',
+        },
+        formula_status: 'ok',
+        missing_inputs: [],
+        missing_sources: [],
+        topics: [
+          {
+            topic_id: 153,
+            topic_name: '企业级AI数据脱敏工具选购指南',
+            dimension: 'product',
+            associated_brand: 'bestCoffer',
+            prompt_count: 9,
+            query_count: 72,
+            response_count: 72,
+            mention_rate: 0.0,
+            visibility_rate: 0.0,
+            sov: 0.4949,
+            citation_count: 467,
+            citation_rate: 0.9028,
+            last_collected: '2026-05-14T03:52:53.599995',
+          },
+        ],
+        intent_matrix: [],
+        state: 'ok',
+      },
+      isLoading: false,
+    })
+
+    renderTopicsPage('/brand/topics?brandId=24&range=30d&profileGroup=all')
+
+    const row = screen
+      .getByText('企业级AI数据脱敏工具选购指南')
+      .closest('tr') as HTMLElement
+    expect(within(row).getByText('0.0%')).toBeInTheDocument()
+    expect(within(row).getByText('90.3%')).toBeInTheDocument()
+    expect(within(row).getByText('467')).toBeInTheDocument()
+    expect(within(row).getByText('9')).toBeInTheDocument()
+    expect(within(row).getByText('72')).toBeInTheDocument()
+    expect(within(row).queryByText('Valid zero proof missing')).not.toBeInTheDocument()
+    expect(within(row).queryByText('Pending proof')).not.toBeInTheDocument()
+  })
+
+  it('suppresses concrete zero row metric values when table contract is partial and row carries no evidence', () => {
+    topicHooks.useTopicMonitoring.mockReturnValue({
+      data: {
+        summary: {
+          topic_count: 4,
+          prompt_count: 9,
+          query_count: 72,
+          response_count: 72,
+          citation_count: 467,
+          last_collected: '2026-05-14T03:52:53.599995',
+        },
+        formula_status: 'partial',
+        missing_inputs: ['missing_analyzer_rows'],
+        missing_sources: [],
+        topics: [
+          {
+            topic_id: 153,
+            topic_name: '企业级AI数据脱敏工具选购指南',
+            dimension: 'product',
+            associated_brand: 'bestCoffer',
+            prompt_count: 9,
+            query_count: 72,
+            response_count: 72,
+            mention_rate: 0.0,
+            visibility_rate: 0.0,
+            sov: 0.4949,
+            citation_count: 467,
+            citation_rate: 0.9028,
+            last_collected: '2026-05-14T03:52:53.599995',
+          },
+        ],
+        intent_matrix: [],
+        state: 'partial',
+      },
+      isLoading: false,
+    })
+
+    renderTopicsPage('/brand/topics?brandId=24&range=30d&profileGroup=all')
+
+    const row = screen
+      .getByText('企业级AI数据脱敏工具选购指南')
+      .closest('tr') as HTMLElement
+    expect(within(row).queryByText('0.0%')).not.toBeInTheDocument()
+    expect(within(row).queryByText('90.3%')).not.toBeInTheDocument()
+    expect(within(row).getAllByText('Limited proof').length).toBeGreaterThan(0)
+  })
+
   it('uses backend visibility_rate ahead of legacy mention or sov fields', () => {
     topicHooks.useTopicMonitoring.mockReturnValue({
       data: {
