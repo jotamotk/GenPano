@@ -40,6 +40,12 @@ from app.api.v1.projects.contracts.format import (
     ratio_decimal,
     score_0_100,
 )
+from app.api.v1.projects.contracts.metrics import (
+    metric_blocking_inputs_from_evidence,
+    metric_evidence_for,
+    metric_formula_status,
+    metric_missing_inputs,
+)
 from app.api.v1.projects.contracts.models import (
     AnalyticsContractContext,
     DataFreshness,
@@ -122,8 +128,12 @@ __all__ = [
     "_status_from_package",
     "_target_response_ids",
     "formula_diagnostics_for",
+    "metric_blocking_inputs_from_evidence",
     "metric_definition",
     "metric_definitions",
+    "metric_evidence_for",
+    "metric_formula_status",
+    "metric_missing_inputs",
     "percent_display",
     "ratio_decimal",
     "score_0_100",

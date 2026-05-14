@@ -101,6 +101,18 @@ from app.api.v1.projects.contracts.format import (
 from app.api.v1.projects.contracts.format import (
     score_0_100 as score_0_100,
 )
+from app.api.v1.projects.contracts.metrics import (
+    metric_blocking_inputs_from_evidence as metric_blocking_inputs_from_evidence,
+)
+from app.api.v1.projects.contracts.metrics import (
+    metric_evidence_for as metric_evidence_for,
+)
+from app.api.v1.projects.contracts.metrics import (
+    metric_formula_status as metric_formula_status,
+)
+from app.api.v1.projects.contracts.metrics import (
+    metric_missing_inputs as metric_missing_inputs,
+)
 from app.api.v1.projects.contracts.models import (
     AnalyticsContractContext as AnalyticsContractContext,
 )
@@ -669,88 +681,6 @@ async def _analyzer_fact_rollup(
         ),
     }
     return metric_evidence, counts, reason_codes
-
-
-def metric_evidence_for(
-    context: AnalyticsContractContext, metric_key: str | None
-) -> dict[str, Any] | None:
-    if not metric_key:
-        return None
-    if metric_key in {"sov", "avg_sov"}:
-        return context.metric_formula_evidence.get("sov")
-    if metric_key in {"sentiment", "avg_sentiment"}:
-        return context.metric_formula_evidence.get("sentiment")
-    if metric_key in {"citation", "citation_rate", "avg_citation_rate"}:
-        return context.metric_formula_evidence.get("citation")
-    if metric_key in {"geo_score", "avg_geo_score", "pano_score", "final_geo_score"}:
-        return context.metric_formula_evidence.get("pano_geo")
-    if metric_key in {"mention_rate", "avg_mention_rate"}:
-        return context.metric_formula_evidence.get("coverage")
-    return None
-
-
-def metric_formula_status(
-    context: AnalyticsContractContext,
-    metric_key: str | None,
-    default: str | None = None,
-) -> str | None:
-    evidence = metric_evidence_for(context, metric_key)
-    if not evidence:
-        return default
-    return str(evidence.get("formula_status") or default or FORMULA_NO_EVIDENCE_STATUS)
-
-
-def metric_blocking_inputs_from_evidence(
-    metric_key: str | None,
-    evidence: dict[str, Any] | None,
-) -> list[str]:
-    if not metric_key or not evidence:
-        return []
-    status = str(evidence.get("formula_status") or FORMULA_NO_EVIDENCE_STATUS)
-    if status == FORMULA_OK_STATUS:
-        return []
-    evidence_key = (
-        "sov"
-        if metric_key in {"sov", "avg_sov"}
-        else "sentiment"
-        if metric_key in {"sentiment", "avg_sentiment"}
-        else "citation"
-        if metric_key in {"citation", "citation_rate", "avg_citation_rate"}
-        else "pano_geo"
-        if metric_key in {"geo_score", "avg_geo_score", "pano_score", "final_geo_score"}
-        else "coverage"
-        if metric_key in {"mention_rate", "avg_mention_rate"}
-        else metric_key
-    )
-    blocking_reasons = {
-        *_COMMON_METRIC_BLOCKING_REASONS,
-        *_METRIC_BLOCKING_REASONS.get(evidence_key, set()),
-    }
-    reasons = [str(reason) for reason in evidence.get("reason_codes", []) if reason]
-    if evidence_key == "sov":
-        denominator = int(evidence.get("denominator_count") or 0)
-        numerator = int(evidence.get("numerator_count") or 0)
-        if denominator > numerator:
-            blocking_reasons = {
-                reason
-                for reason in blocking_reasons
-                if reason
-                not in {
-                    "missing_competitive_extraction",
-                    "target_only_sov",
-                    "sov_empty",
-                    "sov_missing_required_inputs",
-                }
-            }
-    return _unique([reason for reason in reasons if reason in blocking_reasons])
-
-
-def metric_missing_inputs(
-    context: AnalyticsContractContext,
-    metric_key: str | None,
-) -> list[str]:
-    evidence = metric_evidence_for(context, metric_key)
-    return metric_blocking_inputs_from_evidence(metric_key, evidence)
 
 
 async def _competitor_ids(session: AsyncSession, project: Project) -> list[int]:
