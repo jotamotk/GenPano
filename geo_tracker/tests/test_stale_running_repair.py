@@ -8,7 +8,10 @@ from sqlalchemy import exists, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from geo_tracker.db.models import Base, LLMResponse, Query, QueryStatus
-from geo_tracker.tasks.stale_running_repair import repair_stale_running_queries
+from geo_tracker.tasks.stale_running_repair import (
+    repair_stale_pending_dispatch_queries,
+    repair_stale_running_queries,
+)
 
 
 @pytest_asyncio.fixture
@@ -134,3 +137,60 @@ async def test_stale_running_with_existing_response_is_not_destroyed(
     assert response.raw_text == "This is a valid saved response that must not be overwritten."
     assert no_response.status == QueryStatus.FAILED.value
     assert no_response.retry_reason == "stale_running_timeout"
+
+
+@pytest.mark.asyncio
+async def test_stale_queued_pending_no_response_becomes_failed_dispatch_timeout(
+    session: AsyncSession,
+) -> None:
+    now = datetime(2026, 5, 14, 4, 45, 0)
+    stale_queued = _query(
+        184974,
+        target_llm="doubao",
+        status=QueryStatus.PENDING.value,
+        event_at=now - timedelta(hours=2),
+    )
+    stale_queued.started_at = None
+    stale_queued.executed_at = None
+    fresh_queued = _query(
+        184975,
+        target_llm="doubao",
+        status=QueryStatus.PENDING.value,
+        event_at=now - timedelta(minutes=5),
+    )
+    fresh_queued.started_at = None
+    fresh_queued.executed_at = None
+    unqueued = _query(
+        184976,
+        target_llm="doubao",
+        status=QueryStatus.PENDING.value,
+        event_at=now - timedelta(hours=2),
+    )
+    unqueued.queued_at = None
+    unqueued.started_at = None
+    unqueued.executed_at = None
+    session.add_all([stale_queued, fresh_queued, unqueued])
+    await session.commit()
+
+    applied = await repair_stale_pending_dispatch_queries(
+        session,
+        brand_id=24,
+        target_llm="doubao",
+        max_age_seconds=3600,
+        now=now,
+    )
+
+    assert applied.matched == 1
+    assert applied.repaired == 1
+    assert applied.query_ids == [184974]
+    assert applied.by_engine == {"doubao": 1}
+
+    await session.refresh(stale_queued)
+    await session.refresh(fresh_queued)
+    await session.refresh(unqueued)
+    assert stale_queued.status == QueryStatus.FAILED.value
+    assert stale_queued.retry_reason == "pending_dispatch_timeout"
+    assert stale_queued.finished_at == now
+    assert stale_queued.latency_ms is None
+    assert fresh_queued.status == QueryStatus.PENDING.value
+    assert unqueued.status == QueryStatus.PENDING.value

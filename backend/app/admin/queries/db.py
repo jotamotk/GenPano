@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import Any
 
 from sqlalchemy import text
@@ -45,6 +46,111 @@ async def _table_exists(session: AsyncSession, name: str) -> bool:
     except Exception:
         return False
     return row is not None
+
+
+def _env_seconds(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    try:
+        value = int(raw) if raw is not None else default
+    except (TypeError, ValueError):
+        return default
+    return max(60, value)
+
+
+def _changed_count(result: Any) -> int:
+    rows = result.mappings().all() if hasattr(result, "mappings") else []
+    changed = len(rows)
+    if changed == 0:
+        changed = max(0, int(getattr(result, "rowcount", 0) or 0))
+    return changed
+
+
+async def reconcile_stale_tracker_query_states(
+    session: AsyncSession,
+    *,
+    running_max_age_seconds: int | None = None,
+    pending_max_age_seconds: int | None = None,
+) -> dict[str, int]:
+    """Repair Tracker rows that no worker can currently own.
+
+    This is intentionally conservative: it never dispatches work and it only
+    rewrites rows with no saved response evidence.
+    """
+    if not await _table_exists(session, "queries"):
+        return {"running": 0, "pending": 0, "total": 0}
+    if not await _table_exists(session, "llm_responses"):
+        return {"running": 0, "pending": 0, "total": 0}
+
+    running_seconds = int(
+        running_max_age_seconds or _env_seconds("QUERY_STALE_RUNNING_SECONDS", 660)
+    )
+    pending_seconds = int(
+        pending_max_age_seconds or _env_seconds("QUERY_PENDING_DISPATCH_SECONDS", running_seconds)
+    )
+
+    running_result = await session.execute(
+        text(
+            """
+            UPDATE queries q
+               SET status = 'failed',
+                   finished_at = NOW(),
+                   retry_reason = 'stale_running_timeout',
+                   latency_ms = CASE
+                       WHEN q.started_at IS NULL THEN q.latency_ms
+                       ELSE GREATEST(
+                           0,
+                           FLOOR(EXTRACT(EPOCH FROM (NOW() - q.started_at)) * 1000)::int
+                       )
+                   END
+             WHERE LOWER(status) = 'running'
+               AND COALESCE(q.started_at, q.executed_at, q.queued_at, q.created_at)
+                   < NOW() - (CAST(:running_seconds AS text) || ' seconds')::interval
+               AND NOT EXISTS (
+                   SELECT 1
+                     FROM llm_responses r
+                    WHERE r.query_id = q.id
+               )
+            RETURNING q.id
+            """
+        ),
+        {"running_seconds": max(60, running_seconds)},
+    )
+    running_changed = _changed_count(running_result)
+
+    pending_result = await session.execute(
+        text(
+            """
+            UPDATE queries q
+               SET status = 'failed',
+                   finished_at = NOW(),
+                   retry_reason = 'pending_dispatch_timeout',
+                   latency_ms = NULL
+             WHERE LOWER(status) = 'pending'
+               AND q.queued_at IS NOT NULL
+               AND q.started_at IS NULL
+               AND q.queued_at
+                   < NOW() - (CAST(:pending_seconds AS text) || ' seconds')::interval
+               AND NOT EXISTS (
+                   SELECT 1
+                     FROM llm_responses r
+                    WHERE r.query_id = q.id
+               )
+            RETURNING q.id
+            """
+        ),
+        {"pending_seconds": max(60, pending_seconds)},
+    )
+    pending_changed = _changed_count(pending_result)
+
+    total = running_changed + pending_changed
+    if total:
+        await session.commit()
+        logger.info(
+            "Reconciled Tracker query states: running=%s pending=%s",
+            running_changed,
+            pending_changed,
+        )
+    return {"running": running_changed, "pending": pending_changed, "total": total}
 
 
 _CORE_SCORE_FIELDS = ("geo_score", "visibility_score", "sentiment_score")
@@ -328,6 +434,7 @@ async def fetch_status_stats(session: AsyncSession) -> dict[str, Any]:
     empty = {"total": 0, "done": 0, "pending": 0, "running": 0, "failed": 0}
     if not await _table_exists(session, "queries"):
         return empty
+    await reconcile_stale_tracker_query_states(session)
     sql = text(
         "SELECT UPPER(status) AS status, COUNT(*) AS count FROM queries GROUP BY UPPER(status)"
     )
@@ -369,6 +476,7 @@ async def list_queries(
     """
     if not await _table_exists(session, "queries"):
         return [], (0 if include_count else None), ({} if include_count else None)
+    await reconcile_stale_tracker_query_states(session)
 
     where: list[str] = []
     params: dict[str, Any] = {"limit": int(limit), "offset": int(offset)}
@@ -1092,5 +1200,6 @@ __all__ = [
     "format_attempt_analysis_fields",
     "list_queries",
     "mark_query_failed",
+    "reconcile_stale_tracker_query_states",
     "retry_query",
 ]

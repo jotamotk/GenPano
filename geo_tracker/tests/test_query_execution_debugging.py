@@ -1560,6 +1560,60 @@ def test_execute_query_enqueues_chatgpt_new_account_when_pool_has_no_active(
     ]
 
 
+def test_execute_query_skips_failed_row_after_state_reconciliation(
+    monkeypatch,
+    tmp_path,
+):
+    _install_fake_playwright(monkeypatch)
+
+    from geo_tracker.tasks import celery_tasks
+
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'skip-reconciled-failed.db'}"
+    query_id = 184974
+
+    async def seed_database():
+        engine = create_async_engine(db_url, future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        maker = async_sessionmaker(engine, expire_on_commit=False)
+        async with maker() as session:
+            session.add(
+                Query(
+                    id=query_id,
+                    target_llm="doubao",
+                    query_text="bestCoffer stale dispatch",
+                    status=QueryStatus.FAILED.value,
+                    retry_reason="pending_dispatch_timeout",
+                )
+            )
+            await session.commit()
+        await engine.dispose()
+
+    asyncio.run(seed_database())
+
+    def create_engine():
+        return create_async_engine(db_url, future=True)
+
+    def get_session(engine):
+        return _TaskSessionContext(async_sessionmaker(engine, expire_on_commit=False))
+
+    async def fail_if_account_path_runs(*_args, **_kwargs):
+        raise AssertionError("reconciled failed query should not enter execution")
+
+    monkeypatch.setattr(celery_tasks, "create_task_engine", create_engine)
+    monkeypatch.setattr(celery_tasks, "get_task_async_session", get_session)
+    monkeypatch.setattr(celery_tasks, "acquire_query_account", fail_if_account_path_runs)
+
+    result = celery_tasks.execute_query.run(query_id)
+
+    assert result == {
+        "skipped": True,
+        "reason": "status_not_pending",
+        "query_id": query_id,
+        "status": QueryStatus.FAILED.value,
+    }
+
+
 def test_auto_login_chatgpt_manual_challenge_does_not_create_account(
     monkeypatch,
     tmp_path,

@@ -60,7 +60,9 @@ from geo_tracker.tasks.query_failure import (
 )
 from geo_tracker.tasks.query_lifecycle import mark_query_finished, mark_query_started
 from geo_tracker.tasks.stale_running_repair import (
+    DEFAULT_PENDING_DISPATCH_SECONDS,
     DEFAULT_STALE_RUNNING_SECONDS,
+    repair_stale_pending_dispatch_queries,
     repair_stale_running_queries,
 )
 
@@ -688,6 +690,13 @@ def execute_query(self, query_id: int) -> dict:
 
             if query.status == QueryStatus.DONE.value:
                 return {"skipped": True, "reason": "already_done"}
+            if query.status != QueryStatus.PENDING.value:
+                return {
+                    "skipped": True,
+                    "reason": "status_not_pending",
+                    "query_id": query_id,
+                    "status": query.status,
+                }
 
             # 更新状态为 RUNNING
             started_at = mark_query_started(query)
@@ -1089,6 +1098,19 @@ def dispatch_batch(limit: int = 50) -> dict:
                     "Repaired %s stale running queries before dispatch_batch: %s",
                     stale_report.repaired,
                     stale_report.to_dict(),
+                )
+            pending_report = await repair_stale_pending_dispatch_queries(
+                db,
+                max_age_seconds=_env_int(
+                    "QUERY_PENDING_DISPATCH_SECONDS",
+                    DEFAULT_PENDING_DISPATCH_SECONDS,
+                ),
+            )
+            if pending_report.repaired:
+                logger.warning(
+                    "Repaired %s stale pending dispatch queries before dispatch_batch: %s",
+                    pending_report.repaired,
+                    pending_report.to_dict(),
                 )
             # Debug: raw SQL count to verify DB connectivity and status values
             raw = await db.execute(
