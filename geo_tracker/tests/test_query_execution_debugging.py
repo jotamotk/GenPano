@@ -1064,6 +1064,126 @@ async def test_doubao_no_response_extraction_path_prefers_auth_over_visual_chall
     assert executor.last_error_reason == "doubao_not_logged_in"
 
 
+@pytest.mark.asyncio
+async def test_doubao_page_load_artifact_failure_preserves_promoted_reason(
+    monkeypatch,
+):
+    _install_fake_playwright(monkeypatch)
+
+    from geo_tracker.agent import guest_executor
+    from geo_tracker.agent.guest_executor import GuestQueryExecutor
+
+    async def _noop_artifact(*args, **kwargs):
+        return None
+
+    async def _save_html(page, query_id, suffix=""):
+        if suffix == "doubao_image_challenge_load_failed":
+            raise RuntimeError("page torn down during artifact save")
+        return None
+
+    async def _cleanup_browser_resources(*args, **kwargs):
+        return None
+
+    class FakePage:
+        url = "https://www.doubao.com/chat/"
+
+        def on(self, *args, **kwargs):
+            return None
+
+        async def add_init_script(self, *args, **kwargs):
+            return None
+
+        async def goto(self, *args, **kwargs):
+            raise RuntimeError("page load failed")
+
+        async def wait_for_selector(self, *args, **kwargs):
+            raise RuntimeError("not attached")
+
+        async def wait_for_timeout(self, *args, **kwargs):
+            return None
+
+        async def title(self):
+            return "Doubao"
+
+        async def evaluate(self, script, *args):
+            if "document.body?.innerText" in str(script):
+                return (
+                    "bestCoffer portable coffee maker advantages\n"
+                    "\u9700\u8981\u7535\u529b\u9a71\u52a8\u7684\u4e1c\u897f\n"
+                    "\u8bf7\u9009\u62e9\u6240\u6709\u7b26\u5408\u4e0a\u6587\u63cf\u8ff0\u7684\u56fe\u7247\uff0c"
+                    "\u5e76\u62d6\u62fd\u5230\u4e0b\u65b9\n"
+                    "\u56fe\u7247\u52a0\u8f7d\u5931\u8d25\uff0c\u8bf7\u5237\u65b0\u91cd\u8bd5[5202]\n"
+                    "\u5237\u65b0\n\u53cd\u9988\n\u63d0\u4ea4"
+                )
+            return ""
+
+        async def content(self):
+            return """
+            <main>
+              <textarea>bestCoffer portable coffee maker advantages</textarea>
+            </main>
+            <div role="dialog" class="verify-modal">
+              <h2>\u9700\u8981\u7535\u529b\u9a71\u52a8\u7684\u4e1c\u897f</h2>
+              <p>\u8bf7\u9009\u62e9\u6240\u6709\u7b26\u5408\u4e0a\u6587\u63cf\u8ff0\u7684\u56fe\u7247\uff0c\u5e76\u62d6\u62fd\u5230\u4e0b\u65b9</p>
+              <p>\u56fe\u7247\u52a0\u8f7d\u5931\u8d25\uff0c\u8bf7\u5237\u65b0\u91cd\u8bd5[5202]</p>
+              <button>\u5237\u65b0</button><button>\u53cd\u9988</button><button>\u63d0\u4ea4</button>
+            </div>
+            """
+
+    class FakeContext:
+        async def route(self, *args, **kwargs):
+            return None
+
+        async def new_page(self):
+            return FakePage()
+
+    class FakeBrowser:
+        async def new_context(self, *args, **kwargs):
+            return FakeContext()
+
+    class FakeChromium:
+        async def launch(self, *args, **kwargs):
+            return FakeBrowser()
+
+    class FakePlaywright:
+        chromium = FakeChromium()
+
+    class FakePlaywrightFactory:
+        async def start(self):
+            return FakePlaywright()
+
+    monkeypatch.setattr(guest_executor, "async_playwright", FakePlaywrightFactory)
+    monkeypatch.setattr(guest_executor, "_save_html", _save_html)
+    monkeypatch.setattr(guest_executor, "_save_screenshot", _noop_artifact)
+    monkeypatch.setattr(guest_executor, "_save_runtime_snapshot", _noop_artifact)
+    monkeypatch.setattr(
+        guest_executor, "cleanup_browser_resources", _cleanup_browser_resources
+    )
+
+    executor = GuestQueryExecutor()
+    response = await executor._execute_once(
+        Query(
+            id=184863,
+            query_text="bestCoffer portable coffee maker advantages",
+            target_llm="doubao",
+        ),
+        {
+            "url": "https://www.doubao.com/chat/",
+            "input_selector": "textarea",
+            "response_selector": "[data-testid='receive_message']",
+            "submit_button": "",
+            "wait_after_submit": 0,
+            "load_wait": 1,
+            "login_redirect_domains": [],
+            "requires_login": False,
+        },
+        use_proxy=False,
+    )
+
+    assert response is None
+    assert executor.last_error_reason == "doubao_image_challenge_load_failed"
+
+
 def test_doubao_visual_challenge_does_not_penalize_llm_account():
     assert _should_report_account_failure("doubao_visual_challenge") is False
     assert _should_report_account_failure("doubao_image_challenge_load_failed") is False
