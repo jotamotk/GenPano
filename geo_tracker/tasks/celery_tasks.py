@@ -1007,7 +1007,13 @@ def execute_query(self, query_id: int) -> dict:
                     return {"query_id": query_id, "status": "failed", "reason": f"{failure_reason}:{resp_len}"}
 
             except AccountSessionLockTimeout as e:
-                failure_reason = "browser_timeout"
+                # Refs #928: AccountSessionLockTimeout means the Celery task could
+                # not enter the per-account scraper session lock within the deadline
+                # (Redis lock contention from concurrent Doubao queries on the same
+                # account). It is NOT a browser timeout, so do not mislabel it as
+                # "browser_timeout" — that hides the real lock-contention signal
+                # operators need to size accounts / worker pool. See related #920.
+                failure_reason = "scraper_session_lock_timeout"
                 logger.warning(
                     "Query %s delayed by scraper account session lock: %s",
                     query_id,

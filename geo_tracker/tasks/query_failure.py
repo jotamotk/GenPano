@@ -26,6 +26,7 @@ INFRASTRUCTURE_FAILURE_REASONS = frozenset(
         "proxy_no_available_nodes",
         "proxy_source_group_unavailable",
         "proxy_unavailable",
+        "scraper_session_lock_timeout",
         "soft_time_limit",
     }
 )

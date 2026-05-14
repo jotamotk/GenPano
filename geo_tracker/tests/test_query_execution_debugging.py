@@ -5,6 +5,7 @@ import types
 import asyncio
 import json
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 from sqlalchemy import select
@@ -2462,3 +2463,39 @@ def test_classify_execution_failure_unchanged_for_existing_callers():
         classify_execution_failure(RuntimeError("plain failure"))
         == "browser_exception"
     )
+
+
+# Refs #928: the AccountSessionLockTimeout caught at celery_tasks.py used to
+# hardcode failure_reason="browser_timeout", masking Redis session-lock
+# contention as if it were a Playwright timeout. The new value
+# "scraper_session_lock_timeout" is reserved as infrastructure-class so it
+# still bypasses account-level failure reporting (no false account flags).
+def test_scraper_session_lock_timeout_is_infrastructure_reason():
+    from geo_tracker.tasks.query_failure import (
+        INFRASTRUCTURE_FAILURE_REASONS,
+        _should_report_account_failure,
+    )
+
+    assert "scraper_session_lock_timeout" in INFRASTRUCTURE_FAILURE_REASONS
+    # Infrastructure reasons MUST NOT trigger account-level failure escalation;
+    # otherwise a worker pool / lock contention storm would erroneously cool
+    # down or expire accounts.
+    assert _should_report_account_failure("scraper_session_lock_timeout") is False
+    # And the old name is still infrastructure (unchanged for unrelated callers).
+    assert _should_report_account_failure("browser_timeout") is False
+
+
+def test_account_session_lock_timeout_celery_handler_uses_distinct_reason():
+    # We do not import celery_tasks end-to-end here (it requires Celery + Redis
+    # + Playwright import chain that the unit-test layer does not have); but we
+    # can pin the source contract that the AccountSessionLockTimeout handler
+    # writes a value distinguishable from generic browser_timeout, so admin
+    # Tracker and the #930 diagnostic recipe can separate the two failure modes.
+    source_path = (
+        Path(__file__).resolve().parent.parent / "tasks" / "celery_tasks.py"
+    )
+    source = source_path.read_text(encoding="utf-8")
+    # The exact assignment line — drift here means the rename was reverted.
+    assert 'failure_reason = "scraper_session_lock_timeout"' in source
+    # And the misleading hardcoded "browser_timeout" assignment is gone.
+    assert 'failure_reason = "browser_timeout"' not in source
