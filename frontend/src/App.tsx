@@ -1,7 +1,7 @@
 import React from 'react'
 import { Routes, Route, Navigate, useParams, useLocation } from 'react-router-dom'
 import DashboardLayout from './layouts/DashboardLayout'
-import LandingPage from './pages/LandingPage'
+import LandingPage from './pages/landing/LandingPage'
 import AuthPage from './pages/AuthPage'
 import OnboardingPage from './pages/OnboardingPage'
 import EmailSentPage from './pages/EmailSentPage'
