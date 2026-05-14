@@ -340,7 +340,7 @@ async def _seed_v4_analysis(
         "mentions": [
             {
                 "mention_key": "mention_bestcoffer",
-                "target_entity_key": "entity_bestcoffer",
+                "entity_key": "entity_bestcoffer",
                 "mention_type": "brand",
                 "position": "ranked",
                 "sentiment_label": "positive",
@@ -356,7 +356,7 @@ async def _seed_v4_analysis(
                 "url": "https://coffee.example/v4-bestcoffer",
                 "domain": "coffee.example",
                 "title": "BestCoffer v4 source",
-                "source_type": "article",
+                "source_type": "media",
                 "attribution_method": "co_occurrence",
                 "mentioned_entity_keys": ["entity_bestcoffer"] if linked else [],
                 "linked_fact_keys": ["mention_bestcoffer"] if linked else [],
@@ -469,6 +469,303 @@ async def test_apply_materializes_attributable_analyzer_v4_citation(
     assert v4_package["citations"][0]["citation_source_id"] == citation.id
     assert v4_package["citations"][0]["mention_id"] == 7622
     assert v4_package["citations"][0]["materialization_status"] == "attributed"
+
+
+@pytest.mark.asyncio
+async def test_apply_processes_v3_and_v4_packages_in_same_raw_analysis_json(
+    session: AsyncSession,
+) -> None:
+    await _seed_scope(session)
+    analysis = (
+        await session.execute(select(ResponseAnalysis).where(ResponseAnalysis.response_id == 7610))
+    ).scalar_one()
+    raw = dict(analysis.raw_analysis_json)
+    raw["analyzer_v4"] = {
+        "analysis_meta": {
+            "schema_version": "analyzer_v4",
+            "input_response_id": 7610,
+            "input_query_id": 7603,
+            "validator_status": "passed",
+        },
+        "entities": [
+            {
+                "entity_key": "entity_bestcoffer",
+                "entity_type": "brand",
+                "raw_name": "BestCoffer",
+                "canonical_id": "24",
+                "canonical_name": "BestCoffer",
+                "canonicalization_status": "matched",
+            }
+        ],
+        "mentions": [
+            {
+                "mention_key": "mention_bestcoffer",
+                "entity_key": "entity_bestcoffer",
+                "mention_type": "brand",
+                "position": "ranked",
+                "sentiment_label": "positive",
+                "confidence": 0.8,
+            }
+        ],
+        "sentiment_drivers": [],
+        "product_features": [],
+        "relations": [],
+        "citations": [
+            {
+                "citation_key": "citation_v4_bestcoffer",
+                "url": "https://coffee.example/v4-bestcoffer",
+                "domain": "coffee.example",
+                "title": "BestCoffer v4 source",
+                "source_type": "media",
+                "attribution_method": "co_occurrence",
+                "mentioned_entity_keys": ["entity_bestcoffer"],
+                "linked_fact_keys": ["mention_bestcoffer"],
+                "evidence_quote": "BestCoffer source",
+                "confidence": 0.9,
+            }
+        ],
+        "quality_flags": [],
+    }
+    analysis.raw_analysis_json = raw
+    await session.commit()
+
+    report = await build_bestcoffer_citation_geo_followup_report(
+        session,
+        BestCofferCitationGeoScope(
+            project_id="7380c0e0-8798-4a5f-998f-42010a7d9caa",
+            brand_id=24,
+            competitor_brand_ids=(2,),
+            response_ids=(7610,),
+            date_from="2026-05-12",
+            date_to="2026-05-12",
+            limit=10,
+        ),
+        apply=True,
+        approval_ref=APPROVAL_REF,
+        approval_comment_fetcher=_approval_fetcher,
+    )
+
+    assert report["citation_plan"]["candidate_citation_count"] == 3
+    assert report["citation_plan"]["v4_citation_count"] == 1
+    assert report["citation_plan"]["resolvable_citation_count"] == 2
+    assert report["citation_plan"]["insert_citation_source_count"] == 3
+
+    citations = (
+        await session.execute(
+            select(CitationSource).where(CitationSource.response_id == 7610)
+        )
+    ).scalars().all()
+    assert len(citations) == 3
+    assert any(
+        citation.url == "https://coffee.example/v4-bestcoffer"
+        and citation.mention_id == 7620
+        for citation in citations
+    )
+
+    analysis = (
+        await session.execute(select(ResponseAnalysis).where(ResponseAnalysis.response_id == 7610))
+    ).scalar_one()
+    v4_citation = analysis.raw_analysis_json["analyzer_v4"]["citations"][0]
+    assert v4_citation["mention_id"] == 7620
+    assert v4_citation["materialization_status"] == "attributed"
+
+
+@pytest.mark.asyncio
+async def test_apply_resolves_v4_citation_with_brand_and_product_links(
+    session: AsyncSession,
+) -> None:
+    await _seed_scope(session)
+    session.add(
+        BrandMention(
+            id=7622,
+            response_id=7611,
+            brand_id=24,
+            brand_name="BestCoffer",
+            is_target=True,
+            position_type="ranked",
+            position_rank=1,
+            detail_level="detailed",
+            sentiment="positive",
+            sentiment_score=0.8,
+            mention_count=1,
+        )
+    )
+    package = {
+        "analysis_meta": {
+            "schema_version": "analyzer_v4",
+            "input_response_id": 7611,
+            "input_query_id": 7604,
+            "validator_status": "passed_with_flags",
+        },
+        "entities": [
+            {
+                "entity_key": "entity_bestcoffer",
+                "entity_type": "brand",
+                "raw_name": "BestCoffer",
+                "canonical_id": "24",
+                "canonical_name": "BestCoffer",
+                "canonicalization_status": "matched",
+            },
+            {
+                "entity_key": "entity_machine",
+                "entity_type": "product",
+                "raw_name": "Office Brewer",
+                "canonical_id": None,
+                "canonical_name": "Office Brewer",
+                "canonicalization_status": "suggested",
+            },
+        ],
+        "mentions": [
+            {
+                "mention_key": "mention_bestcoffer",
+                "entity_key": "entity_bestcoffer",
+                "mention_type": "brand",
+                "position": "ranked",
+                "sentiment_label": "positive",
+                "confidence": 0.8,
+            },
+            {
+                "mention_key": "mention_machine",
+                "entity_key": "entity_machine",
+                "mention_type": "product",
+                "position": "mentioned",
+                "sentiment_label": "positive",
+                "confidence": 0.7,
+            },
+        ],
+        "sentiment_drivers": [],
+        "product_features": [
+            {
+                "feature_key": "feature_machine",
+                "product_entity_key": "entity_machine",
+                "brand_entity_key": "entity_bestcoffer",
+                "feature_type": "quality",
+                "feature_name": "office brewing",
+                "sentiment_label": "positive",
+                "evidence_quote": "BestCoffer office brewing",
+                "confidence": 0.75,
+            }
+        ],
+        "relations": [
+            {
+                "relation_key": "relation_brand_product",
+                "subject_entity_key": "entity_machine",
+                "relation_type": "belongs_to_brand",
+                "object_entity_key": "entity_bestcoffer",
+                "direction": "directed",
+                "evidence_quote": "Office Brewer by BestCoffer",
+                "confidence": 0.8,
+            }
+        ],
+        "citations": [
+            {
+                "citation_key": "citation_brand_product",
+                "url": "https://coffee.example/v4-brand-product",
+                "domain": "coffee.example",
+                "title": "BestCoffer product source",
+                "source_type": "media",
+                "attribution_method": "co_occurrence",
+                "mentioned_entity_keys": ["entity_bestcoffer", "entity_machine"],
+                "linked_fact_keys": [
+                    "mention_machine",
+                    "feature_machine",
+                    "relation_brand_product",
+                ],
+                "evidence_quote": "BestCoffer product source",
+                "confidence": 0.9,
+            }
+        ],
+        "quality_flags": [
+            {
+                "flag_key": "flag_optional_product_context",
+                "severity": "warning",
+                "code": "missing_optional_collection",
+                "message": "Optional product context is partial.",
+                "target_type": "product",
+                "target_key": "entity_machine",
+                "blocks_metric_readiness": False,
+            }
+        ],
+    }
+    session.add(
+        ResponseAnalysis(
+            id=7631,
+            response_id=7611,
+            dimension_industry="coffee",
+            dimension_category="category",
+            target_brand_mentioned=True,
+            target_brand_sentiment="positive",
+            visibility_score=80,
+            sentiment_score=80,
+            sov_score=50,
+            citation_score=0,
+            geo_score=0,
+            analyzed_at=datetime(2026, 5, 12, 10, 0),
+            raw_analysis_json={"analyzer_v4": package},
+        )
+    )
+    await session.commit()
+
+    report = await build_bestcoffer_citation_geo_followup_report(
+        session,
+        BestCofferCitationGeoScope(
+            project_id="7380c0e0-8798-4a5f-998f-42010a7d9caa",
+            brand_id=24,
+            competitor_brand_ids=(2,),
+            response_ids=(7611,),
+            date_from="2026-05-12",
+            date_to="2026-05-12",
+            limit=10,
+        ),
+        apply=True,
+        approval_ref=APPROVAL_REF,
+        approval_comment_fetcher=_approval_fetcher,
+    )
+
+    assert report["citation_plan"]["candidate_citation_count"] == 1
+    assert report["citation_plan"]["resolvable_citation_count"] == 1
+    assert report["citation_plan"]["unresolved_citation_count"] == 0
+
+    citation = (
+        await session.execute(select(CitationSource).where(CitationSource.response_id == 7611))
+    ).scalar_one()
+    assert citation.mention_id == 7622
+
+
+@pytest.mark.asyncio
+async def test_dry_run_skips_failed_validator_v4_package(
+    session: AsyncSession,
+) -> None:
+    await _seed_scope(session)
+    await _seed_v4_analysis(session)
+    analysis = (
+        await session.execute(select(ResponseAnalysis).where(ResponseAnalysis.response_id == 7611))
+    ).scalar_one()
+    raw = dict(analysis.raw_analysis_json)
+    package = dict(raw["analyzer_v4"])
+    meta = dict(package["analysis_meta"])
+    meta["validator_status"] = "failed"
+    package["analysis_meta"] = meta
+    raw["analyzer_v4"] = package
+    analysis.raw_analysis_json = raw
+    await session.commit()
+
+    report = await build_bestcoffer_citation_geo_followup_report(
+        session,
+        BestCofferCitationGeoScope(
+            project_id="7380c0e0-8798-4a5f-998f-42010a7d9caa",
+            brand_id=24,
+            competitor_brand_ids=(2,),
+            response_ids=(7611,),
+            date_from="2026-05-12",
+            date_to="2026-05-12",
+            limit=10,
+        ),
+    )
+
+    assert report["citation_plan"]["candidate_citation_count"] == 0
+    assert report["citation_plan"]["v4_citation_count"] == 0
+    assert report["missing_v3_package_response_ids"] == [7611]
 
 
 @pytest.mark.asyncio
