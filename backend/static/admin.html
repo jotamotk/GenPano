@@ -6593,8 +6593,12 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                             <span class="w-5 h-5 flex items-center justify-center rounded text-[10px] cursor-pointer"
                                   :class="att.hasHtml ? 'bg-accent/10 text-accent' : 'bg-gray-100 text-gray-300'"
                                   @click.stop="openDebugDrawer(att)" title="Response / Debug HTML">D</span>
-                            <span class="w-5 h-5 flex items-center justify-center rounded text-[10px]"
-                                  :class="att.hasScreenshot ? 'bg-accent/10 text-accent cursor-pointer' : 'bg-gray-100 text-gray-300'" title="截图">S</span>
+                            <button type="button"
+                                    class="w-5 h-5 flex items-center justify-center rounded text-[10px]"
+                                    :data-testid="'attempt-screenshot-' + att.queryDbId"
+                                    :class="attemptScreenshotBadgeClass(att)"
+                                    :title="attemptScreenshotTitle(att)"
+                                    @click.stop="openScreenshotEvidence(att)">S</button>
                             <span class="w-5 h-5 flex items-center justify-center rounded text-[10px]"
                                   :class="att.hasConsole ? 'bg-accent/10 text-accent cursor-pointer' : 'bg-gray-100 text-gray-300'" title="Console">C</span>
                           </div>
@@ -8016,8 +8020,14 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
         <template x-if="debugTab==='screenshots'">
           <div>
             <div x-show="debugScreenshotsLoading" class="text-center py-8 text-[12px] text-ink-muted">加载中…</div>
-            <div x-show="!debugScreenshotsLoading && debugScreenshots.length === 0"
-                 class="text-center py-8 text-[12px] text-ink-muted">（无截图）</div>
+            <div x-show="!debugScreenshotsLoading && debugScreenshotsError"
+                 data-testid="debug-screenshot-error-state"
+                 class="rounded-card border border-danger/20 bg-danger/5 p-3 text-[12px] text-danger"
+                 x-text="debugScreenshotsError"></div>
+            <div x-show="!debugScreenshotsLoading && !debugScreenshotsError && debugScreenshots.length === 0"
+                 data-testid="debug-screenshot-empty-state"
+                 class="rounded-card border border-b-card bg-surface-page p-3 text-[12px] text-ink-muted"
+                 x-text="debugScreenshotEmptyMessage()"></div>
             <template x-if="!debugScreenshotsLoading && debugScreenshots.length > 0">
               <div class="space-y-2">
                 <template x-for="(s, idx) in debugScreenshots" :key="s.url">
@@ -8672,10 +8682,13 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
               <div class="font-semibold">原始 HTML</div>
               <div class="text-[10px] mt-0.5" x-text="attemptDrawer.hasHtml ? 'DOM 查看 + 元素高亮' : '未采集'"></div>
             </button>
-            <button class="p-3 rounded-card border text-left text-[12px]"
-                    :class="attemptDrawer.hasScreenshot ? 'border-accent/30 bg-accent/5 text-accent hover:bg-accent/10' : 'border-b-card bg-surface-page text-ink-muted cursor-not-allowed'">
+            <button data-testid="attempt-drawer-screenshot-action"
+                    class="p-3 rounded-card border text-left text-[12px]"
+                    :class="attemptScreenshotBadgeClass(attemptDrawer)"
+                    :title="attemptScreenshotTitle(attemptDrawer)"
+                    @click="openScreenshotEvidence(attemptDrawer)">
               <div class="font-semibold">页面截图</div>
-              <div class="text-[10px] mt-0.5" x-text="attemptDrawer.hasScreenshot ? '可放大 · 含时间戳水印' : '未采集'"></div>
+              <div class="text-[10px] mt-0.5" x-text="attemptScreenshotSubtitle(attemptDrawer)"></div>
             </button>
             <button class="p-3 rounded-card border text-left text-[12px]"
                     :class="attemptDrawer.hasConsole ? 'border-accent/30 bg-accent/5 text-accent hover:bg-accent/10' : 'border-b-card bg-surface-page text-ink-muted cursor-not-allowed'">
@@ -9690,6 +9703,49 @@ function deriveAttemptAnalyzerState(row, responseText, attemptStatus) {
   };
 }
 
+function booleanLike(value) {
+  if (value === true || value === 1) return true;
+  if (value === false || value === 0) return false;
+  const text = String(value == null ? '' : value).trim().toLowerCase();
+  if (['true', '1', 'yes', 'y'].includes(text)) return true;
+  if (['false', '0', 'no', 'n'].includes(text)) return false;
+  return null;
+}
+
+function deriveAttemptScreenshotState(row) {
+  const path = firstNonEmptyText(
+    row.screenshot_path,
+    row.screenshotPath,
+    row.page_screenshot_path,
+    row.debug_screenshot_path
+  );
+  const declared = booleanLike(
+    row.has_screenshot ?? row.hasScreenshot ?? row.screenshot_available ?? row.has_page_screenshot
+  );
+  if (path || declared === true) {
+    return {
+      hasScreenshot: true,
+      state: 'available',
+      path: path || '',
+      reason: 'screenshot_artifact_available',
+    };
+  }
+  if (declared === false) {
+    return {
+      hasScreenshot: false,
+      state: 'missing',
+      path: '',
+      reason: 'api_reported_no_screenshot',
+    };
+  }
+  return {
+    hasScreenshot: false,
+    state: 'unknown',
+    path: '',
+    reason: 'artifact_lookup_required',
+  };
+}
+
 // Map a row from /api/queries into the shape the prototype's Alpine template
 // expects for an 'attempt'. Fields missing from the DB row (because the worker
 // hasn't been upgraded yet) fall back to null and render as '—' in the UI.
@@ -9712,6 +9768,7 @@ function mapQueryRowToAttempt(r) {
   const mappedStatus = statusMap[rawStatus] || rawStatus;
   const responseText = firstNonEmptyText(r.response, r.response_text, r.raw_text, r.response_preview);
   const responseId = finitePositiveId(r.response_id, r.responseId, r.llm_response_id);
+  const screenshotState = deriveAttemptScreenshotState(r);
   const rt = (r.latency_ms != null)
     ? Number(r.latency_ms)
     : (r.finished_at && r.started_at)
@@ -9737,7 +9794,10 @@ function mapQueryRowToAttempt(r) {
     responseTokens: 0,
     hasHar: false,
     hasHtml: !!r.response,
-    hasScreenshot: false,
+    hasScreenshot: screenshotState.hasScreenshot,
+    screenshotState: screenshotState.state,
+    screenshotPath: screenshotState.path,
+    screenshotReason: screenshotState.reason,
     hasConsole: false,
     retryOf: null,
     retryStrategy: null,
@@ -18909,10 +18969,41 @@ function adminApp() {
     debugDrawer: null,
     debugScreenshots: [],
     debugScreenshotsLoading: false,
-    openDebugDrawer(att) {
+    debugScreenshotsError: '',
+    attemptScreenshotState(att) {
+      if (!att) return 'unknown';
+      return att.screenshotState || (att.hasScreenshot ? 'available' : 'unknown');
+    },
+    attemptScreenshotBadgeClass(att) {
+      const state = this.attemptScreenshotState(att);
+      if (state === 'available') return 'border-accent/30 bg-accent/5 text-accent hover:bg-accent/10 cursor-pointer';
+      if (state === 'missing') return 'border-warning/30 bg-warning/5 text-warning hover:bg-warning/10 cursor-pointer';
+      return 'border-b-card bg-surface-page text-ink-muted hover:bg-surface-page/80 cursor-pointer';
+    },
+    attemptScreenshotTitle(att) {
+      const state = this.attemptScreenshotState(att);
+      if (state === 'available') return '打开页面截图';
+      if (state === 'missing') return '接口声明未采集截图；点击查看缺失说明';
+      return '点击查询截图证据';
+    },
+    attemptScreenshotSubtitle(att) {
+      const state = this.attemptScreenshotState(att);
+      if (state === 'available') return '可打开 · 查看失败时页面证据';
+      if (state === 'missing') return '未采集 · 点击查看原因';
+      return '待查询 · 点击检查截图目录';
+    },
+    openScreenshotEvidence(att) {
+      if (!att) return;
+      if (this.attemptDrawer && Number(this.attemptDrawer.queryDbId) === Number(att.queryDbId)) {
+        this.attemptDrawer = null;
+      }
+      this.openDebugDrawer(att, { tab: 'screenshots' });
+    },
+    openDebugDrawer(att, options = {}) {
       this.debugDrawer = att;
       this.debugScreenshots = [];
-      this.debugTab = 'response';
+      this.debugScreenshotsError = '';
+      this.debugTab = options.tab || 'response';
       this.$nextTick(() => lucide.createIcons());
       // Pull the latest debug artifacts (PNG/JPG) for this query. SCREENSHOT_DIR
       // lives on the worker host — image is served binary via /api/screenshot.
@@ -18920,8 +19011,12 @@ function adminApp() {
     },
 
     async loadDebugScreenshots(queryId) {
-      if (!queryId) return;
+      if (!queryId) {
+        this.debugScreenshotsError = '缺少 Query ID，无法查询页面截图。';
+        return;
+      }
       this.debugScreenshotsLoading = true;
+      this.debugScreenshotsError = '';
       try {
         const res = await fetch(API_BASE + '/html_files?query_id=' + queryId, { credentials: 'same-origin' });
         if (!res.ok) throw new Error('HTTP ' + res.status);
@@ -18937,9 +19032,19 @@ function adminApp() {
           }));
       } catch (e) {
         this.debugScreenshots = [];
+        this.debugScreenshotsError = '截图清单加载失败：' + (e.message || e);
       } finally {
         this.debugScreenshotsLoading = false;
       }
+    },
+
+    debugScreenshotEmptyMessage() {
+      const queryId = this.debugDrawer && this.debugDrawer.queryId ? this.debugDrawer.queryId : '当前 Query';
+      const reason = this.debugDrawer && this.debugDrawer.screenshotReason;
+      if (reason === 'api_reported_no_screenshot') {
+        return queryId + ' 的接口状态为未采集截图；请交给 Pipeline/Data 确认保存链路。';
+      }
+      return queryId + ' 未找到页面截图。可能是 worker 未保存截图、SCREENSHOT_DIR 中没有匹配图片，或接口尚未返回截图字段。';
     },
 
     // ═══════════════════════════════════════════════════════════════════
