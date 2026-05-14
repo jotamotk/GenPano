@@ -269,6 +269,8 @@ def _apply_metric_series_contract(
                 item.metric,
                 item.formula_status,
             )
+            if item.metric == "sov" and item.points and item.formula_status == FORMULA_OK_STATUS:
+                formula_status = FORMULA_OK_STATUS
             out.append(item.model_copy(update={"formula_status": formula_status}))
             continue
         formula_status = metric_formula_status(
