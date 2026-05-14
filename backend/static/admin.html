@@ -9500,6 +9500,7 @@ const ATTEMPT_ANALYZER_STATUS_META = {
   skipped: { label: '已跳过', badgeClass: 'bg-gray-100 text-gray-600', tone: 'muted' },
   unavailable: { label: '不可分析', badgeClass: 'bg-gray-100 text-gray-600', tone: 'muted' },
   partial: { label: '部分完成', badgeClass: 'bg-warning/10 text-warning', tone: 'warning' },
+  defaulted: { label: '默认值', badgeClass: 'bg-warning/10 text-warning', tone: 'warning' },
 };
 
 function attemptAnalyzerStatusMeta(status) {
@@ -9527,6 +9528,9 @@ function normalizeAttemptAnalyzerStatus(value) {
     error: 'failed',
     partial: 'partial',
     partial_success: 'partial',
+    defaulted: 'defaulted',
+    default: 'defaulted',
+    fallback: 'defaulted',
     skipped: 'skipped',
     skip: 'skipped',
     missing: 'missing',
@@ -9576,6 +9580,9 @@ function formatAttemptAnalyzerSummaryValue(value) {
     return firstNonEmptyText(value);
   }
   if (value.scores_explicit === false) {
+    if (value.status === 'defaulted' || value.score_source === 'response_analyses_defaulted') {
+      return firstNonEmptyText(value.summary, '默认值');
+    }
     return firstNonEmptyText(value.summary, value.status === 'completed' ? 'metrics pending' : value.status);
   }
   const parts = [];
@@ -9614,7 +9621,9 @@ function isAttemptAnalyzerGateError(error) {
 function deriveAttemptAnalyzerState(row, responseText, attemptStatus) {
   const nested = row && typeof row.analysis === 'object' && row.analysis ? row.analysis : {};
   const task = row && typeof row.analysis_task === 'object' && row.analysis_task ? row.analysis_task : {};
+  const nestedEvidenceStatus = nested && nested.scores_explicit === false ? nested.status : '';
   const rawStatus = firstNonEmptyText(
+    nestedEvidenceStatus,
     row.analysis_status,
     row.analyzer_status,
     row.analysisStatus,
@@ -9660,6 +9669,7 @@ function deriveAttemptAnalyzerState(row, responseText, attemptStatus) {
     nested.summary,
     status === 'done' || status === 'already_analyzed' ? '分析完成，可查看摘要' : '',
     status === 'partial' ? '部分完成，可重新分析补齐' : '',
+    status === 'defaulted' ? '分析指标为默认值，等待有效证据' : '',
     status === 'failed' ? (error || '分析失败，可重新分析') : '',
     status === 'running' ? '分析任务正在处理' : '',
     status === 'pending' || status === 'queued' ? '等待分析任务处理' : '',

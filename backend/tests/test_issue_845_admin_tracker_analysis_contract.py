@@ -2,6 +2,14 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
+
+def _admin_html() -> str:
+    return (Path(__file__).resolve().parents[1] / "static" / "admin.html").read_text(
+        encoding="utf-8"
+    )
+
 
 def _format(row: dict):
     from app.admin.queries.db import format_attempt_analysis_fields
@@ -149,3 +157,21 @@ def test_tracker_analysis_contract_completed_nonzero_metrics_are_explicit() -> N
     assert item["analysis_summary"]["geo_score"] == 0.82
     assert item["analysis_summary"]["visibility_score"] == 0.5
     assert item["analysis_summary"]["sentiment_score"] == 0.25
+
+
+def test_admin_tracker_ui_prefers_nested_defaulted_status_over_done_shadow() -> None:
+    html = _admin_html()
+    meta_start = html.index("const ATTEMPT_ANALYZER_STATUS_META")
+    meta_end = html.index("function attemptAnalyzerStatusMeta", meta_start)
+    normalize_start = html.index("function normalizeAttemptAnalyzerStatus")
+    normalize_end = html.index("function formatAttemptAnalyzerMetric", normalize_start)
+    derive_start = html.index("function deriveAttemptAnalyzerState")
+    derive_end = html.index("// Map a row from /api/queries", derive_start)
+
+    status_meta = html[meta_start:meta_end]
+    normalize_body = html[normalize_start:normalize_end]
+    derive_body = html[derive_start:derive_end]
+
+    assert "defaulted:" in status_meta
+    assert "defaulted: 'defaulted'" in normalize_body
+    assert derive_body.index("nested.status") < derive_body.index("row.analysis_status")
