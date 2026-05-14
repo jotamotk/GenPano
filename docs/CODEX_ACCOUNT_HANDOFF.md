@@ -13,7 +13,8 @@ GitHub:
 - PRD documents and stable PRD requirement IDs
 - GitHub Epic issues and Agent task issues
 - pull requests, review comments, and CI/CD runs
-- deployment logs, server diagnostics, and live Playwright evidence
+- deployment logs, server diagnostics, Verification Evidence Ledgers, and live
+  Playwright evidence
 
 Chat is useful for clarification, but it is not the source of truth.
 
@@ -28,14 +29,17 @@ repo document. The note must include:
 - owner Agent role
 - files changed or expected to change
 - allowed scope and forbidden scope
-- current verification state
+- Acceptance Matrix status and coverage gaps
+- Verification Evidence Ledger rows completed or blocked
+- Test Integrity Statement, if tests changed
 - CI/CD run links or blocker summary
 - production URL or route being verified
+- User-Symptom Replay target and evidence, if user-reported or UI-visible
 - exact next action
 - unresolved questions or risks
 
-If the work is production-facing or user-visible, include the live verification
-target: `http://116.62.36.173/`.
+If the work is production-facing or user-visible, include the E2E tier selected
+and the live verification target: `http://116.62.36.173/`.
 
 ## After Switching Accounts
 
@@ -52,8 +56,9 @@ durable state:
 6. Inspect the current branch and worktree status before editing.
 7. If production behavior is uncertain, use GitHub Actions, deployment logs,
    server diagnostics, or live checks instead of guessing.
-8. After deployed functionality is merged, verify online behavior with
-   Playwright E2E against `http://116.62.36.173/`.
+8. After deployed functionality is merged, verify online behavior with the
+   smallest E2E tier that proves the acceptance claim against
+   `http://116.62.36.173/`.
 
 ## Handoff Template
 
@@ -71,8 +76,11 @@ durable state:
 - Allowed scope:
 - Forbidden scope:
 - Changed files:
-- Verification completed:
-- Verification not completed:
+- Acceptance Matrix:
+- Coverage gaps:
+- Verification Evidence Ledger:
+- User-Symptom Replay:
+- Test Integrity:
 - CI/CD or deploy state:
 - Live URL or route:
 - Blockers:
@@ -102,6 +110,7 @@ Then inspect durable GitHub state:
 - PR:
 - latest CI/CD run:
 - latest deploy or server diagnostics evidence:
+- latest Verification Evidence Ledger:
 - latest Playwright/live verification evidence:
 
 Rules:
@@ -109,10 +118,12 @@ Rules:
 - Chat history is not source of truth.
 - Do not guess when production behavior is uncertain; use GitHub Actions,
   deploy logs, server diagnostics, or live checks.
+- Do not treat "tests passed" as acceptance unless the issue has a source-backed
+  Acceptance Matrix and a Verification Evidence Ledger.
 - Before changing Admin UI, verify the actual Admin shell and route boundary.
 - Worker Agents do not merge. AI Lead owns merge sequencing.
-- After merged production-facing work, verify online with Playwright E2E against
-  http://116.62.36.173/.
+- After merged production-facing work, verify online with the required E2E tier
+  against http://116.62.36.173/.
 
 Start by posting a concise takeover receipt:
 - files read

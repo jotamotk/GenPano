@@ -92,16 +92,60 @@ evidence supports it, what changed, and what happens next?
 - Downstream issues must inline their execution contract. Do not rely on
   unresolved pointers such as "depends on #123" as the only source of scope.
 - Execution contracts should include Goal, Path (`fast` or `full`), Owner Hat,
-  Allowed Scope, Forbidden Scope, Contract Snapshot, Acceptance Criteria,
-  Verification, Dependencies, and Handoff when relevant.
+  Allowed Scope, Forbidden Scope, Contract Snapshot, Acceptance Matrix,
+  Verification Evidence Ledger, Dependencies, and Handoff when relevant.
 - PRDs are product-owner-approved facts. If implementation reveals a PRD problem,
   Codex must request a `PRD-CHANGE`; it must not silently rewrite PRD intent.
-- PRs must include: Linked Issue, Owner Hat, Summary, Scope, Verification,
-  Risks, Handoff, and PRD Coverage when product behavior is involved.
+- PRs must include: Linked Issue, Owner Hat, Summary, Scope, Acceptance Matrix
+  status, Verification Evidence Ledger, Test Integrity Statement, Risks,
+  Handoff, and PRD Coverage when product behavior is involved.
 - Use `Refs #123` before final acceptance. Use `Closes #123` only when the issue
   closure path is approved for completion.
 - Issue text describes intent; code and live behavior describe reality. If they
   conflict, stop and raise the conflict in the issue.
+
+### Acceptance And Verification Evidence
+
+Testing output is evidence only when it is tied to an acceptance claim. "Tests
+passed" by itself is not enough.
+
+- Before implementation starts, the Lead hat translates PRD requirements, user
+  reports, and accepted Human Input decisions into an `Acceptance Matrix`.
+- Each acceptance row must cite its source: PRD ID, user-reported symptom,
+  Human Input disposition, issue `DECISION`, or approved `PRD-CHANGE`.
+- No source means the acceptance row is invalid. If the PRD requires behavior
+  that has no row, record it as a coverage gap before coding.
+- If translation is ambiguous, post one `QUESTION` with all choices and wait
+  unless a safe default is explicit in the issue.
+- Every checked verification item must include command, exit code, key output,
+  scope covered, artifact or link, and commit SHA. No evidence means unchecked.
+- User-reported bugs require a `User-Symptom Replay` check against the exact
+  route, row, brand, query, request, action, or visible result when available.
+  If the exact replay is impossible, mark it `BLOCKER` instead of claiming
+  acceptance from adjacent tests.
+- Do not make tests green by deleting assertions, skipping cases, weakening
+  expectations, swallowing exceptions, or moving checks away from the user path.
+  If a test is wrong or obsolete, stop with `BLOCKER` or `PRD-CHANGE` and get
+  the decision before relaxing it.
+- PR handoff must declare test integrity: test files changed, assertions
+  removed or relaxed, skips added, and any unverified acceptance rows.
+
+### Tiered E2E
+
+E2E is required where it proves the acceptance claim, but it should be scoped.
+
+- `Tier 0`: static checks, unit tests, contract tests, and focused backend or
+  frontend tests for the touched layer.
+- `Tier 1`: targeted user-symptom replay for the exact reported bug or changed
+  user path. This is the default UI-visible Fast Path E2E.
+- `Tier 2`: focused smoke across adjacent contracts when frontend, backend,
+  auth, scheduler, worker, or deployment boundaries interact.
+- `Tier 3`: full Playwright or release-gate E2E for high-risk changes,
+  multi-PR releases, major user-facing workflows, migrations, auth, scheduler,
+  worker, or production deployment gates.
+
+Do not run full E2E as a ritual when a smaller replay proves the claim. Do not
+skip targeted replay and substitute unrelated green tests.
 
 ### Issue Closure
 

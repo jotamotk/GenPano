@@ -53,6 +53,20 @@ body:
     validations:
       required: true
   - type: textarea
+    id: acceptance-translation
+    attributes:
+      label: Acceptance Translation
+      description: Lead translates PRD/user decisions into acceptance before implementation. Do not let child tasks invent acceptance after coding.
+      value: |
+        | Requirement/User Decision | Acceptance Row(s) | Coverage Gap | Decision Needed |
+        | --- | --- | --- | --- |
+        |  |  |  |  |
+
+        Open QUESTION items:
+        -
+    validations:
+      required: true
+  - type: textarea
     id: visualization
     attributes:
       label: Frontend Visualization
@@ -83,10 +97,14 @@ body:
       value: |
         - [ ] PRD decisions accepted or explicitly not needed
         - [ ] Visualization confirmed or explicitly not needed
+        - [ ] Acceptance Translation complete before implementation
+        - [ ] Coverage gaps accepted or converted to questions
         - [ ] Deliverable issues complete
         - [ ] Required PRs reviewed
-        - [ ] CI/CD understood
-        - [ ] Live Playwright E2E planned or completed if production-facing
+        - [ ] Verification Evidence Ledgers complete on child PRs
+        - [ ] Test Integrity Statements complete on child PRs
+        - [ ] CI/CD tied to current head SHA and understood
+        - [ ] Tiered E2E planned or completed if production-facing
     validations:
       required: true
   - type: textarea
@@ -110,6 +128,8 @@ body:
       description: Required production-facing validation after merge.
       value: |
         - Target: http://116.62.36.173/
+        - E2E tier: Tier 0 | Tier 1 | Tier 2 | Tier 3
+        - User-Symptom Replay scenario:
         - Playwright scenario:
         - Evidence:
     validations:

@@ -64,8 +64,8 @@ Fast Path issue shape:
 - Current State
 - Decisions
 - Execution Contract
-- Acceptance Criteria
-- Verification
+- Acceptance Matrix
+- Verification Evidence Ledger
 - Closure
 
 Fast Path should not create an Epic, Frontend Visualization issue, or role-based
@@ -123,9 +123,9 @@ Recommended issue body sections:
 
 ## Execution Contract
 
-## Acceptance Criteria
+## Acceptance Matrix
 
-## Verification
+## Verification Evidence Ledger
 
 ## Closure
 ```
@@ -165,10 +165,27 @@ Recommended contract:
   -
 - Contract Snapshot:
   -
-- Acceptance Criteria:
-  -
-- Verification:
-  -
+- Acceptance Matrix:
+  | AC | Source | User Path | Machine Check | Evidence Required | Status |
+  | --- | --- | --- | --- | --- | --- |
+  | AC-1 |  |  |  |  | pending |
+- Coverage Gaps:
+  | Source Requirement | Missing Coverage | Decision Needed |
+  | --- | --- | --- |
+  |  |  |  |
+- Verification Evidence Ledger:
+  | Check | Command/Run | Exit | Key Output | Scope Covered | Artifact/Link | Commit |
+  | --- | --- | --- | --- | --- | --- | --- |
+  |  |  |  |  |  |  |  |
+- User-Symptom Replay:
+  - Exact route/row/brand/query/action:
+  - Expected visible result:
+  - Evidence or blocker:
+- Test Integrity:
+  - Test files changed:
+  - Assertions removed/relaxed:
+  - Skips added:
+  - Exceptions swallowed:
 - Dependencies:
   -
 - Handoff:
@@ -178,6 +195,172 @@ Recommended contract:
 `Contract Snapshot` is the frozen instruction for this issue. It should include
 the relevant user-facing behavior, API shape, data rule, or PRD slice that the
 worker should execute without chasing unresolved upstream comments.
+
+## Acceptance Translation Gate
+
+Acceptance criteria are translated from approved sources before implementation.
+They are not invented by the implementer after the work is done.
+
+Allowed acceptance sources:
+
+- stable PRD requirement ID
+- user-reported symptom captured in the issue
+- accepted Human Input disposition
+- issue `DECISION`
+- approved `PRD-CHANGE`
+- existing contract or regression test that is explicitly cited
+
+Acceptance Matrix:
+
+```md
+| AC | Source | User Path | Machine Check | Evidence Required | Status |
+| --- | --- | --- | --- | --- | --- |
+| AC-1 | PRD-ADM-SCHED-001 | Admin scheduler retry row 184576 | Playwright targeted replay | trace, screenshot, console/network summary, command exit | pending |
+```
+
+Rules:
+
+- Every row needs a source. A row without a source is not valid acceptance.
+- Every product-facing PRD requirement in scope needs at least one acceptance
+  row. Missing rows go into `Coverage Gaps` before coding.
+- Acceptance rows should name the user path when the work is UI-visible.
+- For docs-only or tooling-only work, state `none - no product behavior change`
+  and define the documentation or tooling acceptance evidence instead.
+- If translation is ambiguous, ask one `QUESTION` that lists all known choices,
+  recommended default if safe, and the impact of each choice.
+- Product-owner role confirms PRD and ambiguous translations. The product owner
+  does not need to write machine-checkable acceptance criteria; Codex translates
+  them and records the source.
+
+Coverage Gap table:
+
+```md
+| Source Requirement | Missing Coverage | Decision Needed |
+| --- | --- | --- |
+| PRD-APP-DASH-002 | no check for empty competitor chart state | ask product owner whether this release owns it |
+```
+
+## Verification Evidence Protocol
+
+Verification is evidence, not a declaration. A checked item must leave enough
+proof for a future Codex session to understand what was actually covered.
+
+Evidence Ledger:
+
+```md
+| Check | Command/Run | Exit | Key Output | Scope Covered | Artifact/Link | Commit |
+| --- | --- | --- | --- | --- | --- | --- |
+| Unit | `pytest backend/tests/test_retry.py -q` | 0 | `6 passed` | retry error classification | local log | abc1234 |
+| E2E | GitHub run #123456 | 0 | Admin retry replay passed | query 184576 retry UI | trace URL | abc1234 |
+```
+
+Required fields:
+
+- command or CI/CD run URL
+- exit code or job conclusion
+- key output, not full logs
+- exact scope covered
+- artifact, trace, screenshot, API readback, server diagnostic, or run link
+  when available
+- commit SHA tested
+
+No evidence means the item is unchecked. Do not mark a row complete based on an
+intention to test later.
+
+### Test Integrity Rule
+
+Tests must not be changed just to make a PR green.
+
+Forbidden without an explicit `BLOCKER` or approved `PRD-CHANGE`:
+
+- deleting failing assertions
+- replacing strong assertions with weaker existence checks
+- adding skips, xfails, broad mocks, or swallowed exceptions to hide a defect
+- moving verification away from the user path that the issue is supposed to fix
+- changing tests and implementation from the same mistaken assumption without
+  an external source
+
+Every PR handoff must include:
+
+- test files added, modified, or deleted
+- assertions removed or relaxed
+- skips or xfails added
+- exceptions swallowed or converted into success paths
+- acceptance rows not verified
+
+If a test is truly obsolete, stop and record why in the issue. The Lead or
+product owner decides whether the contract changed.
+
+## Tiered E2E And User-Symptom Replay
+
+E2E is expensive, so use the smallest tier that proves the acceptance claim.
+Skipping the exact user path because full E2E is expensive is not acceptable.
+
+### Tier 0: Focused Local Checks
+
+Use for narrow code changes and as the baseline for every implementation PR:
+
+- lint or type checks for touched code
+- unit tests for changed logic
+- contract tests for changed API shape
+- focused component or backend tests
+
+### Tier 1: Targeted Symptom Replay
+
+Default for user-reported UI-visible bugs and Fast Path fixes.
+
+Record:
+
+- exact base URL
+- route, row id, brand id, query id, request id, or payload
+- user action
+- expected visible result
+- Playwright command or CI run
+- screenshot, trace, console errors, failed requests, or API readback
+
+If the exact replay cannot be performed, post `BLOCKER` with what evidence is
+missing and what adjacent checks were run. Do not claim the issue is accepted.
+
+### Tier 2: Contract Smoke
+
+Use when a change crosses a frontend/backend/API/auth/scheduler/worker boundary
+but does not need the whole release gate.
+
+Examples:
+
+- one API endpoint plus one UI render path
+- auth/session check plus changed protected page
+- scheduler enqueue plus operator-visible status
+- worker classification plus admin retry display
+
+### Tier 3: Full E2E Or Release Gate
+
+Use when risk or release shape justifies the time cost:
+
+- new or materially changed user-facing workflow
+- auth, scheduler, worker, migration, data repair, or deploy behavior
+- multiple PRs merged into one release window
+- production-facing incident closeout
+- before declaring a high-risk release complete
+
+Tier 3 should run in CI when possible so pass/fail is a machine artifact tied to
+a commit SHA. Local full E2E can supplement CI but does not replace current-head
+CI for ready-to-review or merge decisions when CI is required.
+
+## Ready-To-Review Gate
+
+A PR cannot be marked ready because tests are green. It can be ready only when:
+
+- Acceptance Matrix exists and each row is complete, blocked, or explicitly out
+  of scope with source
+- Coverage Gaps are empty or accepted by the Lead/product owner
+- Verification Evidence Ledger includes command/run, exit/conclusion, key
+  output, scope, artifact/link when available, and commit SHA
+- user-reported symptoms have targeted replay evidence or a `BLOCKER`
+- Test Integrity Statement is filled out
+- current PR head SHA has required CI passing, or the missing CI is explicitly
+  blocked and accepted
+- linked issue `## Current State` and `## Decisions` are current
 
 ## Issue Comment Writing Standard
 
@@ -467,7 +650,10 @@ Required PR sections:
 - Owner Hat
 - Summary
 - Scope
-- Verification
+- Acceptance Matrix status
+- Verification Evidence Ledger
+- User-Symptom Replay when user-reported or UI-visible
+- Test Integrity Statement
 - Risks
 - Handoff
 - PRD Coverage when product behavior is involved
@@ -476,8 +662,8 @@ Use `Refs #123` while the PR is under review. Use `Closes #123` only when the
 closure type is `Completed` and the PR is intended to close the issue on merge.
 
 Draft PRs are preferred while verification is incomplete. A PR can be ready only
-when the issue's verification checklist is complete or any missing verification
-is explicitly blocked and accepted.
+when the Ready-To-Review Gate is satisfied or any missing verification is
+explicitly blocked and accepted in the linked issue.
 
 ## Review Rules
 
@@ -522,8 +708,10 @@ Do not merge PRs that:
 - are not mapped to PRD IDs when product behavior is involved
 - modify unrelated scope
 - have unexplained failing CI
-- lack required verification
-- skip needed live Playwright E2E for production-facing changes
+- lack required verification evidence
+- skip the user-symptom replay for a user-reported bug
+- skip the required E2E tier for production-facing changes
+- omit the Test Integrity Statement
 - leave the linked issue body stale
 
 The Lead hat produces a merge plan before merge:
