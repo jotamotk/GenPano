@@ -30,6 +30,69 @@ from app.api.v1.projects._topic_analysis_service import (
     legacy_table_columns,
     legacy_table_exists,
 )
+from app.api.v1.projects.contracts.constants import (
+    _BLOCKING_REASON_CODES as _BLOCKING_REASON_CODES,
+)
+from app.api.v1.projects.contracts.constants import (
+    _COMMON_METRIC_BLOCKING_REASONS as _COMMON_METRIC_BLOCKING_REASONS,
+)
+from app.api.v1.projects.contracts.constants import (
+    _METRIC_BLOCKING_REASONS as _METRIC_BLOCKING_REASONS,
+)
+from app.api.v1.projects.contracts.constants import (
+    ANALYSIS_MISSING_REASON as ANALYSIS_MISSING_REASON,
+)
+from app.api.v1.projects.contracts.constants import (
+    ANALYZER_FACT_PACKAGE_SOURCE as ANALYZER_FACT_PACKAGE_SOURCE,
+)
+from app.api.v1.projects.contracts.constants import (
+    ANALYZER_FACT_PACKAGE_V3_SOURCE as ANALYZER_FACT_PACKAGE_V3_SOURCE,
+)
+from app.api.v1.projects.contracts.constants import (
+    FORMULA_MISSING_INPUTS_STATUS as FORMULA_MISSING_INPUTS_STATUS,
+)
+from app.api.v1.projects.contracts.constants import (
+    FORMULA_NO_EVIDENCE_STATUS as FORMULA_NO_EVIDENCE_STATUS,
+)
+from app.api.v1.projects.contracts.constants import (
+    FORMULA_OK_STATUS as FORMULA_OK_STATUS,
+)
+from app.api.v1.projects.contracts.constants import (
+    FORMULA_PARTIAL_STATUS as FORMULA_PARTIAL_STATUS,
+)
+from app.api.v1.projects.contracts.constants import (
+    FORMULA_PENDING_SOURCE as FORMULA_PENDING_SOURCE,
+)
+from app.api.v1.projects.contracts.constants import (
+    FORMULA_PENDING_STATUS as FORMULA_PENDING_STATUS,
+)
+from app.api.v1.projects.contracts.constants import (
+    MISSING_PROJECT_BRAND_BINDING_REASON as MISSING_PROJECT_BRAND_BINDING_REASON,
+)
+from app.api.v1.projects.contracts.constants import (
+    NO_AGGREGATE_ROWS_REASON as NO_AGGREGATE_ROWS_REASON,
+)
+from app.api.v1.projects.contracts.constants import (
+    PROJECT_UNBOUND_REASON as PROJECT_UNBOUND_REASON,
+)
+from app.api.v1.projects.contracts.definitions import (
+    formula_diagnostics_for as formula_diagnostics_for,
+)
+from app.api.v1.projects.contracts.definitions import (
+    metric_definition as metric_definition,
+)
+from app.api.v1.projects.contracts.definitions import (
+    metric_definitions as metric_definitions,
+)
+from app.api.v1.projects.contracts.format import (
+    percent_display as percent_display,
+)
+from app.api.v1.projects.contracts.format import (
+    ratio_decimal as ratio_decimal,
+)
+from app.api.v1.projects.contracts.format import (
+    score_0_100 as score_0_100,
+)
 from app.api.v1.projects.contracts.models import (
     AnalyticsContractContext as AnalyticsContractContext,
 )
@@ -55,75 +118,6 @@ from app.api.v1.projects.contracts.models import (
     ValueRange as ValueRange,
 )
 
-FORMULA_OK_STATUS = "ok"
-FORMULA_PARTIAL_STATUS = "partial"
-FORMULA_PENDING_STATUS = "formula_pending_upstream"
-FORMULA_MISSING_INPUTS_STATUS = "missing_required_inputs"
-FORMULA_NO_EVIDENCE_STATUS = "no_evidence"
-FORMULA_PENDING_SOURCE = "upstream_formula_provenance"
-ANALYZER_FACT_PACKAGE_SOURCE = "response_analyses.raw_analysis_json.analyzer_fact_packages"
-ANALYZER_FACT_PACKAGE_V3_SOURCE = "response_analyses.raw_analysis_json.analyzer_fact_package_v3"
-PROJECT_UNBOUND_REASON = "project_unbound"
-MISSING_PROJECT_BRAND_BINDING_REASON = "missing_project_brand_binding"
-ANALYSIS_MISSING_REASON = "analysis_missing"
-NO_AGGREGATE_ROWS_REASON = "no_aggregate_rows"
-_BLOCKING_REASON_CODES = {
-    PROJECT_UNBOUND_REASON,
-    MISSING_PROJECT_BRAND_BINDING_REASON,
-    ANALYSIS_MISSING_REASON,
-    NO_AGGREGATE_ROWS_REASON,
-}
-_COMMON_METRIC_BLOCKING_REASONS = {
-    PROJECT_UNBOUND_REASON,
-    MISSING_PROJECT_BRAND_BINDING_REASON,
-    ANALYSIS_MISSING_REASON,
-    NO_AGGREGATE_ROWS_REASON,
-    "missing_analyzer_fact_packages",
-}
-_METRIC_BLOCKING_REASONS = {
-    "coverage": {
-        "missing_analyzer_rows",
-        "partial_analyzer_coverage",
-        "eligible_response_denominator",
-    },
-    "sov": {
-        "missing_competitive_extraction",
-        "target_only_sov",
-        "sov_empty",
-        "sov_missing_required_inputs",
-        "brand_mentions.competitive_set",
-    },
-    "sentiment": {
-        "missing_sentiment_score_or_label",
-        "missing_sentiment_label",
-        "missing_sentiment_driver_quote",
-        "missing_competitor_sentiment_evidence",
-        "sentiment_empty",
-        "sentiment_component_empty",
-        "brand_mentions.sentiment_score",
-    },
-    "citation": {
-        "unresolved_citation_attribution",
-        "citation_empty",
-        "citation_partial",
-        "citation_sources",
-        "citation_sources.mention_id",
-        "citation_component_partial",
-        "citation_component_empty",
-    },
-    "pano_geo": {
-        "missing_analyzer_rows",
-        "pano_component_empty",
-        "visibility_component_empty",
-        "sentiment_component_empty",
-        "sov_component_empty",
-        "citation_component_empty",
-        "sov_missing_required_inputs",
-        "citation_component_partial",
-        "sentiment_component_partial",
-    },
-}
-
 
 def _unique(values: list[str]) -> list[str]:
     out: list[str] = []
@@ -133,179 +127,6 @@ def _unique(values: list[str]) -> list[str]:
             out.append(value)
             seen.add(value)
     return out
-
-
-def ratio_decimal(value: float | int | None) -> float | None:
-    """Normalize ratio-like values to 0..1.
-
-    Legacy aggregate rows may already store percent-like values such as 38.4.
-    The project APIs expose ratio series as decimals, so those are converted to
-    0.384 while existing decimal rows remain unchanged.
-    """
-    if value is None:
-        return None
-    raw = float(value)
-    if abs(raw) > 1.0 and abs(raw) <= 100.0:
-        raw = raw / 100.0
-    return round(raw, 4)
-
-
-def percent_display(value: float | int | None) -> float:
-    if value is None:
-        return 0.0
-    raw = float(value)
-    if abs(raw) > 100.0 and abs(raw) <= 10000.0:
-        raw = raw / 100.0
-    decimal = ratio_decimal(raw)
-    if decimal is None:
-        return 0.0
-    return round(decimal * 100.0, 1)
-
-
-def score_0_100(value: float | int | None) -> float | None:
-    if value is None:
-        return None
-    raw = float(value)
-    if 0.0 <= raw <= 1.0:
-        raw *= 100.0
-    return round(raw, 2)
-
-
-def metric_definition(metric_key: str, *, display_percent: bool = False) -> MetricDefinition:
-    source = "geo_score_daily"
-    formula_status = FORMULA_OK_STATUS
-    if metric_key in {"mention_rate", "avg_mention_rate"}:
-        unit = "percent" if display_percent else "ratio"
-        value_scale = "percent" if display_percent else "decimal"
-        value_range = ValueRange(min=0.0, max=100.0 if display_percent else 1.0)
-        return MetricDefinition(
-            metric_key=metric_key,
-            unit=unit,
-            value_scale=value_scale,
-            value_range=value_range,
-            numerator_label="target brand mentioned eligible responses",
-            denominator_label="eligible non-brand/category responses",
-            source=source,
-            formula_status=formula_status,
-        )
-    if metric_key in {"sov", "avg_sov"}:
-        unit = "percent" if display_percent else "ratio"
-        value_scale = "percent" if display_percent else "decimal"
-        value_range = ValueRange(min=0.0, max=100.0 if display_percent else 1.0)
-        return MetricDefinition(
-            metric_key=metric_key,
-            unit=unit,
-            value_scale=value_scale,
-            value_range=value_range,
-            numerator_label="target brand mentioned competitive-set responses",
-            denominator_label="competitive-set brand-mentioned responses",
-            source=source,
-            formula_status=formula_status,
-        )
-    if metric_key in {"citation", "citation_rate", "avg_citation_rate"}:
-        return MetricDefinition(
-            metric_key=metric_key,
-            unit="ratio",
-            value_scale="decimal",
-            value_range=ValueRange(min=0.0, max=1.0),
-            numerator_label="citation-backed brand mentions/responses",
-            denominator_label="eligible brand mentions/responses",
-            source=source,
-            formula_status=formula_status,
-        )
-    if metric_key in {"geo_score", "avg_geo_score", "pano_score"}:
-        return MetricDefinition(
-            metric_key=metric_key,
-            unit="score",
-            value_scale="score_0_100",
-            value_range=ValueRange(min=0.0, max=100.0),
-            source=source,
-            formula_status=formula_status,
-        )
-    if metric_key in {"rank", "avg_position_rank"}:
-        return MetricDefinition(
-            metric_key=metric_key,
-            unit="rank",
-            value_scale="ordinal",
-            value_range=ValueRange(min=1.0, max=1000.0),
-            numerator_label="mentioned responses only",
-            denominator_label="mentioned responses only",
-            source=source,
-            formula_status=formula_status,
-        )
-    if metric_key == "avg_sentiment":
-        return MetricDefinition(
-            metric_key=metric_key,
-            unit="score",
-            value_scale="score_0_100",
-            value_range=ValueRange(min=0.0, max=100.0),
-            source="geo_score_daily.avg_sentiment",
-            formula_status=formula_status,
-        )
-    if metric_key == "sentiment":
-        return MetricDefinition(
-            metric_key=metric_key,
-            unit="score",
-            value_scale="raw_-1_1",
-            value_range=ValueRange(min=-1.0, max=1.0),
-            source="response_analyses.sentiment_score",
-            formula_status=formula_status,
-        )
-    return MetricDefinition(
-        metric_key=metric_key,
-        unit="value",
-        value_scale="raw",
-        value_range=ValueRange(min=0.0, max=1.0),
-        source=source,
-        formula_status=formula_status,
-    )
-
-
-def metric_definitions(
-    metric_keys: list[str],
-    *,
-    display_percent: bool = False,
-) -> dict[str, MetricDefinition]:
-    return {key: metric_definition(key, display_percent=display_percent) for key in metric_keys}
-
-
-def formula_diagnostics_for(
-    status: str,
-    *,
-    missing_inputs: list[str] | None = None,
-) -> FormulaDiagnostics:
-    if status == FORMULA_OK_STATUS:
-        return FormulaDiagnostics(status=FORMULA_OK_STATUS)
-    if status == FORMULA_NO_EVIDENCE_STATUS:
-        return FormulaDiagnostics(
-            status=FORMULA_NO_EVIDENCE_STATUS,
-            details=["No eligible evidence exists for the selected analytics filters."],
-        )
-    if status == FORMULA_MISSING_INPUTS_STATUS:
-        return FormulaDiagnostics(
-            status=FORMULA_MISSING_INPUTS_STATUS,
-            pending_sources=list(missing_inputs or []),
-            details=["Required formula inputs are missing; metric values are withheld."],
-        )
-    if status == FORMULA_PARTIAL_STATUS:
-        return FormulaDiagnostics(
-            status=FORMULA_PARTIAL_STATUS,
-            pending_sources=list(missing_inputs or []),
-            details=[
-                "Analyzer fact packages are present, but at least one metric has "
-                "partial or missing formula proof."
-            ],
-        )
-    return FormulaDiagnostics(
-        status=FORMULA_PENDING_STATUS,
-        pending_sources=[FORMULA_PENDING_SOURCE],
-        details=[
-            "Upstream aggregate provenance is pending review for PRD mention-rate "
-            "and SoV denominators.",
-            "Treat geo_score_daily ratio values as formula-pending until analyzer/data "
-            "PRs are patched.",
-        ],
-    )
 
 
 def _repair_entries(payload: Any) -> list[dict[str, Any]]:
