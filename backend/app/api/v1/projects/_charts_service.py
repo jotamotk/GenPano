@@ -106,6 +106,14 @@ from app.api.v1.projects.charts._contracts import (
     _metric_evidence_dict,
     _with_chart_contract,
 )
+from app.api.v1.projects.charts.authority import (
+    _target_authority_points_from_facts,
+    _with_authority_trend_contract,
+)
+from app.api.v1.projects.charts.citation import (
+    _target_citation_composition_rows,
+    _with_citation_composition_contract,
+)
 from app.api.v1.projects.charts.sentiment import (
     _fact_sentiment_score_response_count,
     _label_for_polarity,
@@ -134,63 +142,6 @@ def _state_reason(state: str, empty_reason: str) -> str:
 def _response_evidence_count(rows: list[dict[str, Any]]) -> int:
     response_ids = {_as_int(row.get("response_id")) for row in rows}
     return len({rid for rid in response_ids if rid is not None})
-
-
-async def _with_authority_trend_contract(
-    out: AuthorityTrendOut,
-    session: AsyncSession,
-    project: Project,
-    from_d: date,
-    to_d: date,
-    *,
-    source_provenance: list[str],
-    brand_id: int | None = None,
-) -> AuthorityTrendOut:
-    update = await _chart_contract_update(
-        session,
-        project,
-        from_d,
-        to_d,
-        out,
-        metric_keys=["citation"],
-        source_provenance=source_provenance,
-        brand_id=brand_id,
-        require_analyzer_package=True,
-    )
-    if not update:
-        return out
-    if _contract_metric_blocked(update, "citation"):
-        update["points"] = []
-    return out.model_copy(update=update)
-
-
-async def _with_citation_composition_contract(
-    out: CitationCompositionOut,
-    session: AsyncSession,
-    project: Project,
-    from_d: date,
-    to_d: date,
-    *,
-    source_provenance: list[str],
-    brand_id: int | None = None,
-) -> CitationCompositionOut:
-    update = await _chart_contract_update(
-        session,
-        project,
-        from_d,
-        to_d,
-        out,
-        metric_keys=["citation"],
-        source_provenance=source_provenance,
-        brand_id=brand_id,
-        require_analyzer_package=True,
-    )
-    if not update:
-        return out
-    if _contract_metric_blocked(update, "citation"):
-        update["segments"] = []
-        update["total"] = 0
-    return out.model_copy(update=update)
 
 
 def _apply_engine_metric_contract(
@@ -282,111 +233,6 @@ def _fact_response_day_map(rows: list[dict[str, Any]]) -> dict[int, str]:
         if day is not None:
             response_days[rid] = day
     return response_days
-
-
-async def _target_citation_composition_rows(
-    session: AsyncSession,
-    *,
-    brand_id: int,
-    response_ids: list[int],
-) -> tuple[list[CitationCompositionRow], int]:
-    if not response_ids:
-        return [], 0
-    brand_filter = await brand_mention_match_condition(session, brand_id)
-    rows = (
-        await session.execute(
-            select(DomainAuthority.tier, func.count())
-            .select_from(CitationSource)
-            .join(BrandMention, BrandMention.id == CitationSource.mention_id)
-            .outerjoin(DomainAuthority, DomainAuthority.domain == CitationSource.domain)
-            .where(
-                and_(
-                    CitationSource.response_id.in_(response_ids),
-                    CitationSource.domain.isnot(None),
-                    brand_filter,
-                )
-            )
-            .group_by(DomainAuthority.tier)
-        )
-    ).all()
-    total = sum(int(row[1] or 0) for row in rows)
-    label_for = {
-        1: "Tier 1",
-        2: "Tier 2",
-        3: "Tier 3",
-        4: "Tier 4",
-        None: "Untiered",
-    }
-    by_tier = {row[0]: int(row[1] or 0) for row in rows}
-    return (
-        [
-            CitationCompositionRow(
-                label=label_for[tier],
-                tier=tier,
-                count=count,
-                pct=round(count / total * 100, 1) if total else 0.0,
-            )
-            for tier in (1, 2, 3, 4, None)
-            if (count := by_tier.get(tier, 0)) or tier is not None
-        ],
-        total,
-    )
-
-
-async def _target_authority_points_from_facts(
-    session: AsyncSession,
-    *,
-    brand_id: int,
-    response_days: dict[int, str],
-) -> tuple[list[AuthorityTrendPoint], int]:
-    if not response_days:
-        return [], 0
-    brand_filter = await brand_mention_match_condition(session, brand_id)
-    rows = (
-        await session.execute(
-            select(
-                CitationSource.response_id,
-                DomainAuthority.tier,
-                func.count().label("cnt"),
-            )
-            .select_from(CitationSource)
-            .join(BrandMention, BrandMention.id == CitationSource.mention_id)
-            .outerjoin(DomainAuthority, DomainAuthority.domain == CitationSource.domain)
-            .where(
-                and_(
-                    CitationSource.response_id.in_(sorted(response_days)),
-                    CitationSource.domain.isnot(None),
-                    brand_filter,
-                )
-            )
-            .group_by(CitationSource.response_id, DomainAuthority.tier)
-        )
-    ).all()
-    by_day: dict[str, dict[int | None, int]] = OrderedDict()
-    total_count = 0
-    for response_id, tier, count in rows:
-        day = response_days.get(int(response_id))
-        if day is None:
-            continue
-        value = int(count or 0)
-        by_day.setdefault(day, defaultdict(int))[tier] += value
-        total_count += value
-    points: list[AuthorityTrendPoint] = []
-    for day, tier_map in by_day.items():
-        total = sum(tier_map.values())
-        if total <= 0:
-            continue
-        points.append(
-            AuthorityTrendPoint(
-                date=day,
-                tier1_pct=round(tier_map.get(1, 0) / total * 100, 1),
-                tier2_pct=round(tier_map.get(2, 0) / total * 100, 1),
-                tier3_pct=round(tier_map.get(3, 0) / total * 100, 1),
-                tier4_pct=round(tier_map.get(4, 0) / total * 100, 1),
-                untiered_pct=round(tier_map.get(None, 0) / total * 100, 1),
-            )
-        )
-    return points, total_count
 
 
 async def _sentiment_contract_evidence_count(
