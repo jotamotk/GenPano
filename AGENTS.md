@@ -66,6 +66,29 @@ Minimum evidence checklist before opening a fix PR for a user-reported bug:
 Inferred behaviour without these four steps is a hypothesis, not a diagnosis.
 Do not ship a fix on a hypothesis.
 
+### Evidence-First Shipping
+
+When you change a value that crosses a boundary (API field, enum, schema,
+URL param, contract status), don't merge until you've traced one real value
+through the consumer.
+
+Why this rule exists:
+
+- #948 needed a follow-up PR #960 because the original #953 changed the
+  backend to emit `formula_status: partial` for trustworthy values without
+  verifying the frontend gate `canUseContractMetricValue` accepted that new
+  value. Backend + frontend test suites both passed; the bug surfaced only
+  when the user hand-traced a live API response into the consumer function.
+  Symmetric failure to Evidence-First Debugging — "tests green" is not
+  enough when a contract value set changes.
+
+Minimum evidence in the PR body before merge: one new value the producer
+emits, plus the consumer's return for that input, pasted not assumed. If
+multiple consumers exist, repeat or cite a grep proving one consumer
+covers all values in the new set.
+
+If you can't paste that trace, the PR isn't ready.
+
 ### Fast Path And Full Path
 
 Not every request needs Epic -> Frontend Visualization -> PRD -> split issues.
