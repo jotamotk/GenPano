@@ -298,6 +298,94 @@ async def _seed_scope(session: AsyncSession) -> None:
     await session.commit()
 
 
+async def _seed_v4_analysis(
+    session: AsyncSession,
+    *,
+    response_id: int = 7611,
+    mention_id: int = 7622,
+    linked: bool = True,
+) -> None:
+    session.add(
+        BrandMention(
+            id=mention_id,
+            response_id=response_id,
+            brand_id=24,
+            brand_name="BestCoffer",
+            is_target=True,
+            position_type="ranked",
+            position_rank=1,
+            detail_level="detailed",
+            sentiment="positive",
+            sentiment_score=0.8,
+            mention_count=1,
+        )
+    )
+    package = {
+        "analysis_meta": {
+            "schema_version": "analyzer_v4",
+            "input_response_id": response_id,
+            "input_query_id": 7604,
+            "validator_status": "passed",
+        },
+        "entities": [
+            {
+                "entity_key": "entity_bestcoffer",
+                "entity_type": "brand",
+                "raw_name": "BestCoffer",
+                "canonical_id": "24",
+                "canonical_name": "BestCoffer",
+                "canonicalization_status": "matched",
+            }
+        ],
+        "mentions": [
+            {
+                "mention_key": "mention_bestcoffer",
+                "target_entity_key": "entity_bestcoffer",
+                "mention_type": "brand",
+                "position": "ranked",
+                "sentiment_label": "positive",
+                "confidence": 0.8,
+            }
+        ],
+        "sentiment_drivers": [],
+        "product_features": [],
+        "relations": [],
+        "citations": [
+            {
+                "citation_key": "citation_bestcoffer",
+                "url": "https://coffee.example/v4-bestcoffer",
+                "domain": "coffee.example",
+                "title": "BestCoffer v4 source",
+                "source_type": "article",
+                "attribution_method": "co_occurrence",
+                "mentioned_entity_keys": ["entity_bestcoffer"] if linked else [],
+                "linked_fact_keys": ["mention_bestcoffer"] if linked else [],
+                "evidence_quote": "BestCoffer source",
+                "confidence": 0.9,
+            }
+        ],
+        "quality_flags": [],
+    }
+    session.add(
+        ResponseAnalysis(
+            id=7631,
+            response_id=response_id,
+            dimension_industry="coffee",
+            dimension_category="category",
+            target_brand_mentioned=True,
+            target_brand_sentiment="positive",
+            visibility_score=80,
+            sentiment_score=80,
+            sov_score=50,
+            citation_score=0,
+            geo_score=0,
+            analyzed_at=datetime(2026, 5, 12, 10, 0),
+            raw_analysis_json={"analyzer_v4": package},
+        )
+    )
+    await session.commit()
+
+
 @pytest.mark.asyncio
 async def test_dry_run_reports_exact_missing_analyzer_rows_and_safety(
     session: AsyncSession,
@@ -337,6 +425,202 @@ async def test_dry_run_reports_exact_missing_analyzer_rows_and_safety(
         await session.execute(select(func.count()).select_from(CitationSource))
     ).scalar_one()
     assert citation_count == 0
+
+
+@pytest.mark.asyncio
+async def test_apply_materializes_attributable_analyzer_v4_citation(
+    session: AsyncSession,
+) -> None:
+    await _seed_scope(session)
+    await _seed_v4_analysis(session)
+
+    report = await build_bestcoffer_citation_geo_followup_report(
+        session,
+        BestCofferCitationGeoScope(
+            project_id="7380c0e0-8798-4a5f-998f-42010a7d9caa",
+            brand_id=24,
+            competitor_brand_ids=(2,),
+            response_ids=(7611,),
+            date_from="2026-05-12",
+            date_to="2026-05-12",
+            limit=10,
+        ),
+        apply=True,
+        approval_ref=APPROVAL_REF,
+        approval_comment_fetcher=_approval_fetcher,
+    )
+
+    assert report["citation_plan"]["candidate_citation_count"] == 1
+    assert report["citation_plan"]["resolvable_citation_count"] == 1
+    assert report["citation_plan"]["insert_citation_source_count"] == 1
+    assert report["citation_plan"]["v4_citation_count"] == 1
+    assert report["citation_plan"]["patched_response_analysis_count"] == 1
+
+    citation = (
+        await session.execute(select(CitationSource).where(CitationSource.response_id == 7611))
+    ).scalar_one()
+    assert citation.mention_id == 7622
+    assert citation.url == "https://coffee.example/v4-bestcoffer"
+
+    analysis = (
+        await session.execute(select(ResponseAnalysis).where(ResponseAnalysis.response_id == 7611))
+    ).scalar_one()
+    v4_package = analysis.raw_analysis_json["analyzer_v4"]
+    assert v4_package["citations"][0]["citation_source_id"] == citation.id
+    assert v4_package["citations"][0]["mention_id"] == 7622
+    assert v4_package["citations"][0]["materialization_status"] == "attributed"
+
+
+@pytest.mark.asyncio
+async def test_apply_resolves_existing_unattributed_analyzer_v4_citation_source(
+    session: AsyncSession,
+) -> None:
+    await _seed_scope(session)
+    await _seed_v4_analysis(session)
+    session.add(
+        CitationSource(
+            response_id=7611,
+            mention_id=None,
+            url="https://coffee.example/v4-bestcoffer",
+            domain="coffee.example",
+            title="BestCoffer v4 source",
+            citation_index=None,
+            source_type="article",
+        )
+    )
+    await session.commit()
+
+    report = await build_bestcoffer_citation_geo_followup_report(
+        session,
+        BestCofferCitationGeoScope(
+            project_id="7380c0e0-8798-4a5f-998f-42010a7d9caa",
+            brand_id=24,
+            competitor_brand_ids=(2,),
+            response_ids=(7611,),
+            date_from="2026-05-12",
+            date_to="2026-05-12",
+            limit=10,
+        ),
+        apply=True,
+        approval_ref=APPROVAL_REF,
+        approval_comment_fetcher=_approval_fetcher,
+    )
+
+    assert report["citation_plan"]["insert_citation_source_count"] == 0
+    assert report["citation_plan"]["resolved_existing_citation_source_count"] == 1
+    assert report["citation_plan"]["patched_response_analysis_count"] == 1
+
+    citation = (
+        await session.execute(select(CitationSource).where(CitationSource.response_id == 7611))
+    ).scalar_one()
+    assert citation.mention_id == 7622
+
+    analysis = (
+        await session.execute(select(ResponseAnalysis).where(ResponseAnalysis.response_id == 7611))
+    ).scalar_one()
+    v4_citation = analysis.raw_analysis_json["analyzer_v4"]["citations"][0]
+    assert v4_citation["citation_source_id"] == citation.id
+    assert v4_citation["mention_id"] == 7622
+    assert v4_citation["materialization_status"] == "attributed"
+
+
+@pytest.mark.asyncio
+async def test_apply_keeps_conflicting_analyzer_v4_citation_unresolved(
+    session: AsyncSession,
+) -> None:
+    await _seed_scope(session)
+    await _seed_v4_analysis(session)
+    session.add(
+        BrandMention(
+            id=7623,
+            response_id=7611,
+            brand_id=2,
+            brand_name="AcmeGrind",
+            is_target=False,
+            position_type="ranked",
+            position_rank=2,
+            detail_level="brief",
+            sentiment="neutral",
+            sentiment_score=0.4,
+            mention_count=1,
+        )
+    )
+    session.add(
+        CitationSource(
+            response_id=7611,
+            mention_id=7623,
+            url="https://coffee.example/v4-bestcoffer",
+            domain="coffee.example",
+            title="BestCoffer v4 source",
+            citation_index=None,
+            source_type="article",
+        )
+    )
+    await session.commit()
+
+    report = await build_bestcoffer_citation_geo_followup_report(
+        session,
+        BestCofferCitationGeoScope(
+            project_id="7380c0e0-8798-4a5f-998f-42010a7d9caa",
+            brand_id=24,
+            competitor_brand_ids=(2,),
+            response_ids=(7611,),
+            date_from="2026-05-12",
+            date_to="2026-05-12",
+            limit=10,
+        ),
+        apply=True,
+        approval_ref=APPROVAL_REF,
+        approval_comment_fetcher=_approval_fetcher,
+    )
+
+    assert report["citation_plan"]["conflicting_existing_citation_source_count"] == 1
+    assert report["citation_plan"]["unresolved_reason_counts"] == {
+        "conflicting_existing_mention_id": 1
+    }
+    citation = (
+        await session.execute(select(CitationSource).where(CitationSource.response_id == 7611))
+    ).scalar_one()
+    assert citation.mention_id == 7623
+
+    analysis = (
+        await session.execute(select(ResponseAnalysis).where(ResponseAnalysis.response_id == 7611))
+    ).scalar_one()
+    v4_citation = analysis.raw_analysis_json["analyzer_v4"]["citations"][0]
+    assert v4_citation["mention_id"] is None
+    assert v4_citation["materialization_status"] == "unresolved"
+    assert (
+        v4_citation["unresolved_materialization_reason"]
+        == "conflicting_existing_mention_id"
+    )
+
+
+@pytest.mark.asyncio
+async def test_dry_run_reports_unresolved_analyzer_v4_citation_reason(
+    session: AsyncSession,
+) -> None:
+    await _seed_scope(session)
+    await _seed_v4_analysis(session, linked=False)
+
+    report = await build_bestcoffer_citation_geo_followup_report(
+        session,
+        BestCofferCitationGeoScope(
+            project_id="7380c0e0-8798-4a5f-998f-42010a7d9caa",
+            brand_id=24,
+            competitor_brand_ids=(2,),
+            response_ids=(7611,),
+            date_from="2026-05-12",
+            date_to="2026-05-12",
+            limit=10,
+        ),
+    )
+
+    assert report["citation_plan"]["candidate_citation_count"] == 1
+    assert report["citation_plan"]["resolvable_citation_count"] == 0
+    assert report["citation_plan"]["unresolved_reason_counts"] == {
+        "missing_v4_citation_entity_link": 1
+    }
+    assert report["citation_plan"]["rows"][0]["action"] == "report_unresolved_v4_citation"
 
 
 @pytest.mark.asyncio
