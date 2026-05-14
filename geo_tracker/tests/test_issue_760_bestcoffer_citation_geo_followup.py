@@ -522,6 +522,76 @@ async def test_apply_resolves_missing_v3_citation_brand_name_from_marker_context
 
 
 @pytest.mark.asyncio
+async def test_apply_keeps_repeated_v3_marker_context_ambiguous(
+    session: AsyncSession,
+) -> None:
+    await _seed_scope(session)
+    response = (
+        await session.execute(select(LLMResponse).where(LLMResponse.id == 7610))
+    ).scalar_one()
+    response.raw_text = (
+        "BestCoffer is the office coffee pick supported by this source [2]. "
+        + ("neutral spacing " * 20)
+        + "AcmeGrind is the competing option supported by the same source [2]."
+    )
+    await session.commit()
+
+    report = await build_bestcoffer_citation_geo_followup_report(
+        session,
+        BestCofferCitationGeoScope(
+            project_id="7380c0e0-8798-4a5f-998f-42010a7d9caa",
+            brand_id=24,
+            competitor_brand_ids=(2,),
+            response_ids=(7610,),
+            date_from="2026-05-12",
+            date_to="2026-05-12",
+            limit=10,
+        ),
+        apply=True,
+        approval_ref=APPROVAL_REF,
+        approval_comment_fetcher=_approval_fetcher,
+    )
+
+    assert report["citation_plan"]["resolvable_citation_count"] == 1
+    assert report["citation_plan"]["unresolved_citation_count"] == 1
+    assert report["citation_plan"]["unresolved_reason_counts"] == {
+        "ambiguous_response_marker_context": 1
+    }
+    marker_row = [
+        row
+        for row in report["citation_plan"]["rows"]
+        if row["url"].endswith("general-guide")
+    ][0]
+    assert marker_row["resolved_mention_id"] is None
+    assert marker_row["unresolved_reason"] == "ambiguous_response_marker_context"
+    assert marker_row["resolution_method"] is None
+    assert marker_row["action"] == "skip_ambiguous_response_marker_context"
+
+    citations = (
+        await session.execute(
+            select(CitationSource).where(CitationSource.response_id == 7610)
+        )
+    ).scalars().all()
+    assert len(citations) == 1
+    assert citations[0].url.endswith("bestcoffer-review")
+    assert citations[0].mention_id == 7620
+
+    analysis = (
+        await session.execute(
+            select(ResponseAnalysis).where(ResponseAnalysis.response_id == 7610)
+        )
+    ).scalar_one()
+    package = analysis.raw_analysis_json["analyzer_fact_package_v3"]
+    assert package["citations"]["attributed_citations"][0]["url"].endswith(
+        "bestcoffer-review"
+    )
+    unresolved = package["citations"]["unresolved_citations"]
+    assert len(unresolved) == 1
+    assert unresolved[0]["url"].endswith("general-guide")
+    assert unresolved[0]["mention_id"] is None
+
+
+@pytest.mark.asyncio
 async def test_apply_resolves_missing_v3_citation_brand_name_from_safe_query_context(
     session: AsyncSession,
 ) -> None:

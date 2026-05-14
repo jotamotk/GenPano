@@ -609,30 +609,30 @@ def _resolve_mention_id(
     return None, "no_matching_brand_mention"
 
 
-def _citation_marker_context(
+def _citation_marker_contexts(
     response_text: str | None,
     citation_index: object,
     *,
     radius: int = CITATION_CONTEXT_RADIUS,
-) -> str | None:
+) -> list[str]:
     if not response_text or citation_index is None:
-        return None
+        return []
     index = str(citation_index).strip()
     if not index:
-        return None
+        return []
     patterns = [
         rf"\[\s*{re.escape(index)}\s*\]",
         rf"\(\s*{re.escape(index)}\s*\)",
         rf"\u3010\s*{re.escape(index)}\s*\u3011",
         rf"\uff08\s*{re.escape(index)}\s*\uff09",
     ]
+    windows: list[tuple[int, str]] = []
     for pattern in patterns:
-        match = re.search(pattern, response_text)
-        if match:
+        for match in re.finditer(pattern, response_text):
             start = max(0, match.start() - radius)
             end = min(len(response_text), match.end() + radius)
-            return response_text[start:end]
-    return None
+            windows.append((match.start(), response_text[start:end]))
+    return [window for _, window in sorted(windows, key=lambda item: item[0])]
 
 
 def _mentions_matching_context(
@@ -723,16 +723,20 @@ def _resolve_v3_mention_id(
     if unresolved_reason != "missing_citation_brand_name":
         return None, unresolved_reason, None
 
-    marker_context = _citation_marker_context(
+    marker_contexts = _citation_marker_contexts(
         candidate.raw_text,
         citation.get("citation_index"),
     )
-    if marker_context:
-        matches = _mentions_matching_context(marker_context, mentions)
+    if marker_contexts:
+        matches_by_id: dict[int, BrandMention] = {}
+        for marker_context in marker_contexts:
+            for match in _mentions_matching_context(marker_context, mentions):
+                if match.id is not None:
+                    matches_by_id.setdefault(int(match.id), match)
+        matches = list(matches_by_id.values())
         if len(matches) == 1:
             return int(matches[0].id), None, "response_marker_context"
-        if len(matches) > 1:
-            return None, "ambiguous_response_marker_context", None
+        return None, "ambiguous_response_marker_context", None
 
     return _resolve_context_brand_mention(
         candidate,
@@ -1113,13 +1117,23 @@ async def _citation_plan_or_apply(
                     stats["resolvable_citation_count"] += 1
 
                 source = source_by_key.get(key) or source_by_key.get((key[0], None))
+                skip_ambiguous_marker_source = (
+                    mention_id is None
+                    and unresolved_reason == "ambiguous_response_marker_context"
+                )
                 planned_action = (
                     "report_unresolved_v4_citation"
                     if package_kind == "v4" and mention_id is None
+                    else "skip_ambiguous_response_marker_context"
+                    if skip_ambiguous_marker_source
                     else "noop_existing"
                 )
                 conflict = False
-                if source is None and not (package_kind == "v4" and mention_id is None):
+                if (
+                    source is None
+                    and not skip_ambiguous_marker_source
+                    and not (package_kind == "v4" and mention_id is None)
+                ):
                     stats["insert_citation_source_count"] += 1
                     planned_action = "insert_citation_source"
                     if apply:
