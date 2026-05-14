@@ -2499,3 +2499,25 @@ def test_account_session_lock_timeout_celery_handler_uses_distinct_reason():
     assert 'failure_reason = "scraper_session_lock_timeout"' in source
     # And the misleading hardcoded "browser_timeout" assignment is gone.
     assert 'failure_reason = "browser_timeout"' not in source
+
+
+# Refs PR #933 Codex review (P2): execute() retries _execute_once across
+# proxy-rotation attempts without resetting self.last_error_reason between
+# attempts. resolve_execution_failure_reason preserves any prior value, so
+# attempt N raising a fresh Playwright exception with no in-attempt reason
+# set would otherwise inherit attempt N-1's stale reason and mask the real
+# current-attempt failure. _execute_once must reset the field at entry.
+def test_execute_once_resets_last_error_reason_at_entry():
+    source_path = (
+        Path(__file__).resolve().parent.parent / "agent" / "guest_executor.py"
+    )
+    source = source_path.read_text(encoding="utf-8")
+    sig_idx = source.index("async def _execute_once(")
+    body_until_first_try = source[sig_idx : source.index("try:", sig_idx)]
+    # The reset must appear before any other self.last_error_reason write or
+    # before any operation that may set the field via inner branches.
+    assert "self.last_error_reason = None" in body_until_first_try, (
+        "_execute_once must reset self.last_error_reason at entry to prevent "
+        "stale reasons from a prior retry attempt leaking through "
+        "resolve_execution_failure_reason."
+    )

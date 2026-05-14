@@ -534,6 +534,13 @@ class GuestQueryExecutor:
         self, query: Query, config: dict, *, use_proxy: bool
     ) -> Optional[LLMResponse]:
         """执行一次查询尝试（可能因 Cloudflare 拦截返回 None）"""
+        # Refs PR #933 review (Codex P2): execute() retries _execute_once in a
+        # proxy-rotation loop without clearing self.last_error_reason between
+        # attempts. resolve_execution_failure_reason() preserves any prior value,
+        # so without this per-attempt reset, attempt N would inherit attempt
+        # N-1's stale reason and mask the real exception of attempt N. Scope
+        # the preservation to within a single _execute_once invocation.
+        self.last_error_reason = None
         llm = query.target_llm
         proxy_cfg = {"server": self.proxy_url} if use_proxy else None
         proxy_diagnostic = _proxy_runtime_diagnostic(llm, self.proxy_url, bool(use_proxy))
