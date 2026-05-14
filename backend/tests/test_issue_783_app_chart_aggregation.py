@@ -26,6 +26,8 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.projects import _analytics_contract as analytics_contract
+from app.api.v1.projects import _metrics_service as metrics_service
+from app.api.v1.projects._metrics_dto import MetricSeries, MetricSeriesPoint
 from app.user_auth.jwt import sign_user_access_token
 
 os.environ.setdefault("USER_JWT_SECRET", "x" * 64)
@@ -529,6 +531,59 @@ async def test_engine_metrics_use_first_class_v4_facts_without_raw_json_package(
             "sentiment": 0.7,
         }
     ]
+
+
+def test_sov_series_with_points_and_no_missing_inputs_keeps_ok_status() -> None:
+    context = analytics_contract.AnalyticsContractContext(
+        project_scope=analytics_contract.ProjectScope(
+            project_id="project-898",
+            primary_brand_id=12,
+            requested_brand_id=12,
+            competitor_brand_ids=[99],
+        ),
+        state="ok",
+        state_reason="data_available",
+        missing_inputs=[],
+        missing_sources=[],
+        missing_reasons=[],
+        evidence_counts={
+            "competitive_mention_count": 4,
+            "admin_fact_response_count": 4,
+        },
+        formula_status="missing_required_inputs",
+        formula_diagnostics=analytics_contract.formula_diagnostics_for("missing_required_inputs"),
+        metric_formula_evidence={
+            "sov": {
+                "formula_status": "missing_required_inputs",
+                "reason_codes": [],
+                "numerator_count": 2,
+                "denominator_count": 4,
+                "source_tables": ["brand_mentions"],
+            }
+        },
+        source_provenance=["admin_facts"],
+    )
+    series = [
+        MetricSeries(
+            metric="sov",
+            points=[MetricSeriesPoint(date=DAY.date(), value=0.5)],
+            formula_status="ok",
+            missing_inputs=[],
+            state="ok",
+            evidence_count=1,
+        )
+    ]
+
+    [sov_series] = metrics_service._apply_metric_series_contract(
+        series,
+        context,
+        evidence_source="admin_facts",
+    )
+
+    assert sov_series.state == "ok"
+    assert sov_series.points
+    assert sov_series.missing_inputs == []
+    assert sov_series.formula_status == "ok"
 
 
 @pytest.mark.asyncio
