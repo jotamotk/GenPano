@@ -223,6 +223,12 @@ def _apply_kpi_contract(
                 card.metric_key,
                 card.formula_status,
             )
+            if (
+                card.metric_key == "sov"
+                and card.value is not None
+                and card.formula_status == FORMULA_OK_STATUS
+            ):
+                formula_status = FORMULA_OK_STATUS
             out.append(card.model_copy(update={"formula_status": formula_status}))
             continue
         formula_status = metric_formula_status(

@@ -27,7 +27,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.projects import _analytics_contract as analytics_contract
 from app.api.v1.projects import _metrics_service as metrics_service
+from app.api.v1.projects import _overview_service as overview_service
 from app.api.v1.projects._metrics_dto import MetricSeries, MetricSeriesPoint
+from app.api.v1.projects._overview_dto import KpiCard
 from app.user_auth.jwt import sign_user_access_token
 
 os.environ.setdefault("USER_JWT_SECRET", "x" * 64)
@@ -584,6 +586,61 @@ def test_sov_series_with_points_and_no_missing_inputs_keeps_ok_status() -> None:
     assert sov_series.points
     assert sov_series.missing_inputs == []
     assert sov_series.formula_status == "ok"
+
+
+def test_sov_kpi_with_value_and_no_missing_inputs_keeps_ok_status() -> None:
+    context = analytics_contract.AnalyticsContractContext(
+        project_scope=analytics_contract.ProjectScope(
+            project_id="project-898",
+            primary_brand_id=12,
+            requested_brand_id=12,
+            competitor_brand_ids=[99],
+        ),
+        state="ok",
+        state_reason="data_available",
+        missing_inputs=[],
+        missing_sources=[],
+        missing_reasons=[],
+        evidence_counts={
+            "competitive_mention_count": 4,
+            "admin_fact_response_count": 4,
+            "analyzer_sov_numerator_target_mentions": 2,
+            "analyzer_sov_denominator_competitive_mentions": 4,
+            "analyzer_sov_competitor_count": 1,
+        },
+        formula_status="missing_required_inputs",
+        formula_diagnostics=analytics_contract.formula_diagnostics_for("missing_required_inputs"),
+        metric_formula_evidence={
+            "sov": {
+                "formula_status": "missing_required_inputs",
+                "reason_codes": [],
+                "numerator_count": 2,
+                "denominator_count": 4,
+                "competitor_count": 1,
+                "source_tables": ["brand_mentions"],
+            }
+        },
+        source_provenance=["admin_facts"],
+    )
+    cards = [
+        KpiCard(
+            label="Share of Voice",
+            label_en="Share of Voice",
+            label_zh="声量份额",
+            metric_key="sov",
+            value=43.3,
+            formula_status="ok",
+        )
+    ]
+
+    [sov_card] = overview_service._apply_kpi_contract(
+        cards,
+        context,
+        evidence_source="admin_facts",
+    )
+
+    assert sov_card.value == pytest.approx(43.3)
+    assert sov_card.formula_status == "ok"
 
 
 @pytest.mark.asyncio
