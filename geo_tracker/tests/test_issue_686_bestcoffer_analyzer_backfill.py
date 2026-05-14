@@ -516,6 +516,121 @@ async def test_apply_recovers_stale_active_analyzer_run_before_selected_response
 
 
 @pytest.mark.asyncio
+async def test_issue_844_apply_recovers_exact_id_stale_active_run_with_existing_analysis(
+    session: AsyncSession,
+) -> None:
+    await _seed_bestcoffer_scope(session)
+    response = await session.get(LLMResponse, 2410)
+    assert response is not None
+    response.analysis_status = AnalysisStatus.RUNNING.value
+    stale_run = AnalyzerRun(
+        id=8441,
+        response_id=2410,
+        schema_version="analyzer_v4",
+        status="running",
+        trigger_source="pipeline",
+        started_at=_utcnow_naive() - timedelta(hours=2),
+    )
+    session.add_all(
+        [
+            stale_run,
+            ResponseAnalysis(
+                response_id=2410,
+                dimension_industry="coffee",
+                dimension_category="category",
+                target_brand_mentioned=True,
+                raw_analysis_json={"source": "issue-844-existing-analysis"},
+            ),
+        ]
+    )
+    await session.commit()
+    analyzed: list[int] = []
+
+    async def fake_analyze(session, response, brand, competitors, intent):
+        analyzed.append(response.id)
+        response.analysis_status = AnalysisStatus.DONE.value
+        await session.commit()
+        return {"response_id": response.id, "status": "done"}
+
+    report = await build_bestcoffer_analyzer_backfill_report(
+        session,
+        BestCofferAnalyzerBackfillScope(
+            brand_id=24,
+            response_ids=(2410,),
+        ),
+        apply=True,
+        approval_ref=EXPLICIT_PROD_APPROVAL_REF,
+        analyze_func=fake_analyze,
+    )
+
+    assert analyzed == [2410]
+    recovery = report["analyzer_run_recoveries"][0]
+    assert recovery["active_run_id"] == 8441
+    assert recovery["has_analysis"] is True
+    assert recovery["recovered"] is True
+    assert recovery["reason"] == "stale_active_analyzer_run_recovered"
+    await session.refresh(stale_run)
+    assert stale_run.status == "failed"
+    assert stale_run.failure_code == "stale_active_analyzer_run_recovered"
+
+
+@pytest.mark.asyncio
+async def test_issue_844_apply_blocks_date_window_recovery_with_existing_analysis(
+    session: AsyncSession,
+) -> None:
+    await _seed_bestcoffer_scope(session)
+    response = await session.get(LLMResponse, 2410)
+    assert response is not None
+    response.analysis_status = AnalysisStatus.RUNNING.value
+    active_run = AnalyzerRun(
+        id=8442,
+        response_id=2410,
+        schema_version="analyzer_v4",
+        status="running",
+        trigger_source="pipeline",
+        started_at=_utcnow_naive() - timedelta(hours=2),
+    )
+    session.add_all(
+        [
+            active_run,
+            ResponseAnalysis(
+                response_id=2410,
+                dimension_industry="coffee",
+                dimension_category="category",
+                target_brand_mentioned=True,
+                raw_analysis_json={"source": "issue-844-existing-analysis"},
+            ),
+        ]
+    )
+    await session.commit()
+    analyzed: list[int] = []
+
+    async def fake_analyze(session, response, brand, competitors, intent):
+        analyzed.append(response.id)
+        return {"response_id": response.id, "status": "done"}
+
+    with pytest.raises(AnalyzerBackfillApplyError) as exc:
+        await build_bestcoffer_analyzer_backfill_report(
+            session,
+            BestCofferAnalyzerBackfillScope(
+                brand_id=24,
+                date_from="2026-04-24",
+                date_to="2026-04-24",
+            ),
+            apply=True,
+            approval_ref=EXPLICIT_PROD_APPROVAL_REF,
+            analyze_func=fake_analyze,
+        )
+
+    assert analyzed == []
+    report = exc.value.report
+    assert report["failure_reason"] == "active_run_has_existing_analysis"
+    assert report["safe_selection"]["selected_by_response_ids"] is False
+    await session.refresh(active_run)
+    assert active_run.status == "running"
+
+
+@pytest.mark.asyncio
 async def test_apply_blocks_fresh_active_analyzer_run_without_calling_analyzer(
     session: AsyncSession,
 ) -> None:
