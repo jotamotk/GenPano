@@ -7,6 +7,17 @@ This package is being filled incrementally; see Epic #885 and tracking issue
 
 from __future__ import annotations
 
+from app.api.v1.projects.contracts.builder import (
+    _analyzer_fact_rollup,
+    _competitor_ids,
+    _empty_evidence,
+    _first_class_analyzer_fact_rollup,
+    _latest_runs_by_response,
+    _quality_flag_reasons_by_metric,
+    build_contract_context,
+    context_dump,
+    context_update,
+)
 from app.api.v1.projects.contracts.constants import (
     _BLOCKING_REASON_CODES,
     _COMMON_METRIC_BLOCKING_REASONS,
@@ -105,11 +116,16 @@ __all__ = [
     "MetricValue",
     "ProjectScope",
     "ValueRange",
+    "_analyzer_fact_rollup",
     "_as_package",
     "_as_v3_package",
     "_blocking_metric_evidence",
+    "_competitor_ids",
+    "_empty_evidence",
     "_evidence_source_tables",
+    "_first_class_analyzer_fact_rollup",
     "_json_int",
+    "_latest_runs_by_response",
     "_merge_status",
     "_metric_evidence_template",
     "_package_date_in_window",
@@ -119,6 +135,7 @@ __all__ = [
     "_package_target_brand_id",
     "_pinned_topic_response_ids",
     "_project_eligible_response_ids",
+    "_quality_flag_reasons_by_metric",
     "_repair_entries",
     "_rollup_citations",
     "_rollup_coverage",
@@ -127,6 +144,9 @@ __all__ = [
     "_rollup_sov",
     "_status_from_package",
     "_target_response_ids",
+    "build_contract_context",
+    "context_dump",
+    "context_update",
     "formula_diagnostics_for",
     "metric_blocking_inputs_from_evidence",
     "metric_definition",
