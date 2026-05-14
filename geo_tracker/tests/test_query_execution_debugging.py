@@ -712,6 +712,35 @@ async def test_doubao_auth_state_overrides_generic_browser_timeout(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_doubao_page_load_failure_promotes_login_reason(monkeypatch):
+    _install_fake_playwright(monkeypatch)
+
+    from geo_tracker.agent.guest_executor import GuestQueryExecutor
+
+    class FakePage:
+        async def evaluate(self, script):
+            assert "innerText" in script
+            return "\u767b\u5f55\u4ee5\u89e3\u9501\u66f4\u591a\u529f\u80fd\n\u624b\u673a\u53f7\n\u626b\u7801\u767b\u5f55\n\u767b\u5f55"
+
+        async def content(self):
+            return """
+            <div role="dialog">
+              <h2>\u767b\u5f55\u4ee5\u89e3\u9501\u66f4\u591a\u529f\u80fd</h2>
+              <input placeholder="\u624b\u673a\u53f7" />
+              <button class="login-button">\u767b\u5f55</button>
+            </div>
+            """
+
+    executor = GuestQueryExecutor()
+    executor.last_error_reason = "page_load_failed"
+
+    reason = await executor._prefer_doubao_load_failure_reason("doubao", FakePage())
+
+    assert reason == "doubao_not_logged_in"
+    assert executor.last_error_reason == "doubao_not_logged_in"
+
+
+@pytest.mark.asyncio
 async def test_doubao_page_load_failure_promotes_visual_challenge_reason(monkeypatch):
     _install_fake_playwright(monkeypatch)
 
