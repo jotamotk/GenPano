@@ -25,6 +25,8 @@ session. Do not create process artifacts that do not improve execution.
 - Codex may switch into an implementation, QA, review, or release hat only after
   the issue has a clear execution contract. Do not pretend a handoff happened to
   a separate agent when the same coordinator is continuing the work.
+- The pruning hat is the subtraction view: it regularly asks what can be deleted
+  or retired, but it reports candidates instead of deleting by automation.
 - In parallel or overlapping work, the Lead hat owns CD coordination: order
   production deploys intentionally, monitor overlapping Build & Deploy runs,
   cancel superseded deploy runs when safe, and verify the final live environment
@@ -133,6 +135,29 @@ rule change:
 
 Small notes can go in a governance/process issue. Do not change workflow rules
 without an accepted issue or explicit user instruction.
+
+### Pruning Automation
+
+Codex should have a recurring pruning automation that produces a report, not a
+patch. Its job is to ask what can be removed: debug scripts, legacy directories,
+dead code, unused prototypes, stale runbooks, obsolete issue templates, and
+outdated AGENTS.md rules.
+
+- The automation output is a `Pruning Report` posted to a governance or pruning
+  inbox issue.
+- Each candidate must include evidence: reference search, workflow or CI usage,
+  docs links, open issue/PR dependencies, owner if known, and rollback or
+  restore path.
+- Recommendations must be one of `Delete`, `Keep`, `Replace`, or
+  `Needs Decision`.
+- The automation must not delete files, close issues, or change workflow rules
+  by itself.
+- Low-risk docs/debug cleanup can become a Fast Path issue. Runtime, CI,
+  migration, data repair, production path, or product behavior removal needs a
+  scoped issue and explicit verification.
+- Prefer real deletion over archive directories when git history is enough to
+  recover the artifact. Archive only for compliance, audit, or active incident
+  evidence.
 
 ### Human Input Channel
 
