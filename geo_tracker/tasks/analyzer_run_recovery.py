@@ -81,6 +81,7 @@ async def summarize_active_analyzer_run(
     response_id: int,
     now: datetime | None = None,
     stale_after_seconds: int = DEFAULT_STALE_ACTIVE_ANALYZER_RUN_SECONDS,
+    allow_existing_analysis_recovery: bool = False,
 ) -> AnalyzerRunRecoveryResult:
     now = now or _utcnow_naive()
     run = await find_active_analyzer_run(session, response_id)
@@ -98,6 +99,7 @@ async def summarize_active_analyzer_run(
         age_seconds=age_seconds,
         stale_after_seconds=stale_after_seconds,
         has_analysis=has_analysis,
+        allow_existing_analysis_recovery=allow_existing_analysis_recovery,
     )
     return AnalyzerRunRecoveryResult(
         response_id=int(response_id),
@@ -117,6 +119,7 @@ async def recover_stale_active_analyzer_run(
     response_id: int,
     now: datetime | None = None,
     stale_after_seconds: int = DEFAULT_STALE_ACTIVE_ANALYZER_RUN_SECONDS,
+    allow_existing_analysis_recovery: bool = False,
 ) -> AnalyzerRunRecoveryResult:
     now = now or _utcnow_naive()
     run = await find_active_analyzer_run(session, response_id)
@@ -134,6 +137,7 @@ async def recover_stale_active_analyzer_run(
         age_seconds=age_seconds,
         stale_after_seconds=stale_after_seconds,
         has_analysis=has_analysis,
+        allow_existing_analysis_recovery=allow_existing_analysis_recovery,
     )
     if blocked_reason is not None:
         return AnalyzerRunRecoveryResult(
@@ -205,13 +209,14 @@ def _active_run_block_reason(
     age_seconds: float | None,
     stale_after_seconds: int,
     has_analysis: bool,
+    allow_existing_analysis_recovery: bool,
 ) -> str | None:
     if str(run.status or "").lower() not in ACTIVE_ANALYZER_RUN_STATUSES:
         return "active_run_status_not_active"
-    if has_analysis:
-        return "active_run_has_existing_analysis"
     if age_seconds is None:
         return "active_run_started_at_missing"
     if age_seconds < stale_after_seconds:
         return "active_analyzer_run_in_progress"
+    if has_analysis and not allow_existing_analysis_recovery:
+        return "active_run_has_existing_analysis"
     return None

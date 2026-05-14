@@ -257,6 +257,7 @@ async def collect_candidate_responses(
     response_ids = [int(response.id) for response, _query, _prompt, _topic in rows]
     analysis_response_ids: set[int] = set()
     active_run_summaries: dict[int, dict] = {}
+    allow_existing_analysis_recovery = bool(scope.normalized_response_ids())
     if response_ids:
         analyses = (
             await session.execute(
@@ -270,6 +271,7 @@ async def collect_candidate_responses(
             summary = await summarize_active_analyzer_run(
                 session,
                 response_id=int(response_id),
+                allow_existing_analysis_recovery=allow_existing_analysis_recovery,
             )
             if summary.active_run_id is not None:
                 active_run_summaries[int(response_id)] = summary.to_dict()
@@ -426,6 +428,7 @@ async def build_bestcoffer_analyzer_backfill_report(
             "selected_by_brand_date_window": not (
                 scope.normalized_response_ids() or scope.normalized_query_ids()
             ),
+            "active_run_existing_analysis_recovery_requires_response_ids": True,
             "limit": int(scope.limit),
         },
         "selected_response_ids": [row.response_id for row in selected],
@@ -473,6 +476,7 @@ async def build_bestcoffer_analyzer_backfill_report(
             session,
             response_id=candidate.response_id,
             stale_after_seconds=DEFAULT_STALE_ACTIVE_ANALYZER_RUN_SECONDS,
+            allow_existing_analysis_recovery=bool(scope.normalized_response_ids()),
         )
         if recovery.active_run_id is not None:
             recovery_row = recovery.to_dict()
