@@ -32,9 +32,6 @@ from genpano_models import (
 from sqlalchemy import and_, case, desc, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.projects._analytics_contract import (
-    metric_blocking_inputs_from_evidence,
-)
 from app.api.v1.projects._charts_dto import (
     AuthorityRadarOut,
     AuthorityRadarRow,
@@ -86,7 +83,6 @@ from app.api.v1.projects._topic_analysis_service import (
     _as_float,
     _as_int,
     _date_key,
-    _fact_all_mention_count,
     _fact_rows,
     _fact_target_mention_count,
     get_topic_monitoring,
@@ -103,7 +99,6 @@ from app.api.v1.projects.charts._common import (
 from app.api.v1.projects.charts._contracts import (
     _chart_contract_update,
     _contract_metric_blocked,
-    _metric_evidence_dict,
     _with_chart_contract,
 )
 from app.api.v1.projects.charts.authority import (
@@ -114,6 +109,11 @@ from app.api.v1.projects.charts.citation import (
     _target_citation_composition_rows,
     _with_citation_composition_contract,
 )
+from app.api.v1.projects.charts.engine_metric import (
+    _engine_metric_rows_from_facts,
+    _with_engine_metric_contract,
+)
+from app.api.v1.projects.charts.position import _position_distribution_from_facts
 from app.api.v1.projects.charts.sentiment import (
     _fact_sentiment_score_response_count,
     _label_for_polarity,
@@ -124,6 +124,7 @@ from app.api.v1.projects.charts.sentiment import (
     _with_sentiment_by_engine_contract,
     _with_sentiment_trend_contract,
 )
+from app.api.v1.projects.charts.topic_heatmap import _topic_heatmap_from_facts
 
 
 def _needs_admin_filter(
@@ -142,68 +143,6 @@ def _state_reason(state: str, empty_reason: str) -> str:
 def _response_evidence_count(rows: list[dict[str, Any]]) -> int:
     response_ids = {_as_int(row.get("response_id")) for row in rows}
     return len({rid for rid in response_ids if rid is not None})
-
-
-def _apply_engine_metric_contract(
-    items: list[EngineMetricRow],
-    update: dict[str, Any],
-) -> list[EngineMetricRow]:
-    evidence = update.get("metric_formula_evidence") or {}
-
-    return [
-        item.model_copy(
-            update={
-                "mention_rate": None
-                if metric_blocking_inputs_from_evidence(
-                    "mention_rate", _metric_evidence_dict(evidence, "coverage")
-                )
-                else item.mention_rate,
-                "sov": None
-                if metric_blocking_inputs_from_evidence(
-                    "sov", _metric_evidence_dict(evidence, "sov")
-                )
-                else item.sov,
-                "citation_rate": None
-                if metric_blocking_inputs_from_evidence(
-                    "citation", _metric_evidence_dict(evidence, "citation")
-                )
-                else item.citation_rate,
-                "sentiment": None
-                if metric_blocking_inputs_from_evidence(
-                    "sentiment", _metric_evidence_dict(evidence, "sentiment")
-                )
-                else item.sentiment,
-            }
-        )
-        for item in items
-    ]
-
-
-async def _with_engine_metric_contract(
-    out: EngineMetricsOut,
-    session: AsyncSession,
-    project: Project,
-    from_d: date,
-    to_d: date,
-    *,
-    source_provenance: list[str],
-    brand_id: int | None = None,
-) -> EngineMetricsOut:
-    update = await _chart_contract_update(
-        session,
-        project,
-        from_d,
-        to_d,
-        out,
-        metric_keys=["mention_rate", "sov", "citation", "sentiment"],
-        source_provenance=source_provenance,
-        brand_id=brand_id,
-        require_analyzer_package=True,
-    )
-    if not update:
-        return out
-    update["items"] = _apply_engine_metric_contract(out.items, update)
-    return out.model_copy(update=update)
 
 
 def _coalesce_sql(expressions: list[str]) -> str | None:
@@ -327,212 +266,6 @@ async def _recover_after_swallowed_db_error(session: AsyncSession, project: Proj
     # before fallback reads build the analyzer contract context.
     await session.rollback()
     await session.refresh(project)
-
-
-def _engine_metric_rows_from_facts(
-    fact_rows: list[dict[str, Any]],
-) -> tuple[list[EngineMetricRow], int]:
-    engine_bucket: dict[str, dict[str, Any]] = defaultdict(
-        lambda: {
-            "responses": set(),
-            "denominator_response_ids": set(),
-            "target_response_ids": set(),
-            "cited_target_response_ids": set(),
-            "has_citation_input": False,
-            "target_mentions": 0,
-            "all_mentions": 0,
-            "sentiment": [],
-        }
-    )
-    seen: set[int] = set()
-    for row in fact_rows:
-        rid = _as_int(row.get("response_id"))
-        if rid is None or rid in seen:
-            continue
-        seen.add(rid)
-        engine = str(row.get("target_llm") or row.get("response_target_llm") or "unknown")
-        target_mentions = _fact_target_mention_count(row)
-        all_mentions = _fact_all_mention_count(row, target_mentions)
-        engine_bucket[engine]["responses"].add(rid)
-        engine_bucket[engine]["denominator_response_ids"].add(rid)
-        if row.get("citation_count") is not None:
-            engine_bucket[engine]["has_citation_input"] = True
-        if target_mentions > 0:
-            engine_bucket[engine]["target_response_ids"].add(rid)
-            if int(row.get("citation_count") or 0) > 0:
-                engine_bucket[engine]["cited_target_response_ids"].add(rid)
-        engine_bucket[engine]["target_mentions"] += target_mentions
-        engine_bucket[engine]["all_mentions"] += all_mentions
-        target_mentions = _fact_target_mention_count(row)
-        sentiment = (
-            _as_float(row.get("target_sentiment_score"))
-            if target_mentions > 0
-            else _as_float(row.get("sentiment_score"))
-        )
-        if sentiment is not None:
-            engine_bucket[engine]["sentiment"].append(sentiment)
-    items = [
-        EngineMetricRow(
-            engine=engine,
-            mention_rate=round(
-                len(values["target_response_ids"]) / len(values["denominator_response_ids"]),
-                4,
-            )
-            if values["denominator_response_ids"]
-            else None,
-            sov=round(values["target_mentions"] / values["all_mentions"], 4)
-            if values["all_mentions"]
-            else None,
-            citation_rate=round(
-                len(values["cited_target_response_ids"]) / len(values["target_response_ids"]),
-                4,
-            )
-            if values["target_response_ids"] and values["has_citation_input"]
-            else None,
-            sentiment=round(sum(values["sentiment"]) / len(values["sentiment"]), 3)
-            if values["sentiment"]
-            else None,
-        )
-        for engine, values in sorted(engine_bucket.items())
-        if values["responses"]
-    ]
-    return items, len(seen)
-
-
-def _position_distribution_from_facts(
-    fact_rows: list[dict[str, Any]],
-) -> tuple[list[PositionBucketRow], int, int]:
-    buckets: OrderedDict[str, int] = OrderedDict(
-        [("Top1", 0), ("Top3", 0), ("Top5", 0), ("Top10", 0), ("11+", 0), ("Unmentioned", 0)]
-    )
-    seen: set[int] = set()
-    for row in fact_rows:
-        rid = _as_int(row.get("response_id"))
-        if rid is None or rid in seen:
-            continue
-        seen.add(rid)
-        if _fact_target_mention_count(row) <= 0:
-            continue
-        rank = _as_int(row.get("min_position_rank") or row.get("target_brand_rank"))
-        if rank is None:
-            buckets["Unmentioned"] += 1
-        elif rank == 1:
-            buckets["Top1"] += 1
-        elif rank <= 3:
-            buckets["Top3"] += 1
-        elif rank <= 5:
-            buckets["Top5"] += 1
-        elif rank <= 10:
-            buckets["Top10"] += 1
-        else:
-            buckets["11+"] += 1
-    total = sum(buckets.values())
-    return (
-        [
-            PositionBucketRow(
-                bucket=k,
-                count=v,
-                pct=round((v / total * 100) if total else 0.0, 2),
-            )
-            for k, v in buckets.items()
-        ],
-        total,
-        len(seen),
-    )
-
-
-async def _topic_heatmap_from_facts(
-    session: AsyncSession,
-    project: Project,
-    fact_rows: list[dict[str, Any]],
-    *,
-    brand_id: int,
-    metric: str,
-    compare_with: list[int],
-    top_n: int,
-) -> tuple[list[HeatmapRow], int]:
-    primary = brand_id
-
-    topic_buckets: dict[int, dict[str, Any]] = {}
-    seen: set[int] = set()
-    for row in fact_rows:
-        tid = _as_int(row.get("topic_id"))
-        rid = _as_int(row.get("response_id"))
-        if tid is None or rid is None or rid in seen:
-            continue
-        seen.add(rid)
-        bucket = topic_buckets.setdefault(
-            tid,
-            {
-                "name": row.get("topic_name") or f"topic-{tid}",
-                "responses": set(),
-                "target_responses": set(),
-                "sentiments": [],
-            },
-        )
-        bucket["responses"].add(rid)
-        if _fact_target_mention_count(row) > 0:
-            bucket["target_responses"].add(rid)
-        target_mentions = _fact_target_mention_count(row)
-        sentiment = (
-            _as_float(row.get("target_sentiment_score"))
-            if target_mentions > 0
-            else _as_float(row.get("sentiment_score"))
-        )
-        if sentiment is not None:
-            bucket["sentiments"].append(sentiment)
-
-    top_topics = sorted(
-        topic_buckets,
-        key=lambda tid: (
-            -len(topic_buckets[tid]["target_responses"]),
-            -len(topic_buckets[tid]["responses"]),
-            tid,
-        ),
-    )[:top_n]
-    if not top_topics:
-        return [], len(seen)
-
-    topic_names = await resolve_topic_names(session, top_topics)
-    brand_ids = [primary, *compare_with]
-    brand_names = await resolve_brand_names(session, brand_ids)
-    cells: list[HeatmapCell] = []
-    for tid in top_topics:
-        bucket = topic_buckets[tid]
-        sample = len(bucket["responses"])
-        value = None
-        if metric == "sentiment":
-            sentiments = bucket["sentiments"]
-            if sentiments:
-                value = round(sum(sentiments) / len(sentiments), 4)
-        elif sample:
-            value = round(len(bucket["target_responses"]) / sample, 4)
-        cells.append(
-            HeatmapCell(
-                topic_id=tid,
-                topic_label=topic_names.get(tid) or bucket["name"],
-                value=value,
-                sample=sample,
-            )
-        )
-    rows = [HeatmapRow(brand_id=primary, brand_name=brand_names.get(primary), values=cells)]
-    for bid in compare_with:
-        rows.append(
-            HeatmapRow(
-                brand_id=bid,
-                brand_name=brand_names.get(bid),
-                values=[
-                    HeatmapCell(
-                        topic_id=cell.topic_id,
-                        topic_label=cell.topic_label,
-                        value=None,
-                        sample=0,
-                    )
-                    for cell in cells
-                ],
-            )
-        )
-    return rows, len(seen)
 
 
 def _sentiment_by_engine_from_facts(
