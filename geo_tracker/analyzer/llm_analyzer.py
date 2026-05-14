@@ -134,9 +134,9 @@ class LLMAnalyzer:
             competitors: 竞品名称列表
         """
         if not self.client.api_key:
-            logger.warning("ARK_API_KEY not set, returning empty analysis")
+            logger.warning("ARK_API_KEY not set, returning failed analysis")
             return LLMAnalysisResult(
-                parse_status="failed",
+                parse_status="missing_provider_config",
                 parse_error="ARK_API_KEY not set",
             )
 
@@ -212,7 +212,7 @@ class LLMAnalyzer:
             )
         except Exception as e:
             logger.exception(f"LLM analysis failed: {e}")
-            return LLMAnalysisResult(parse_status="failed", parse_error=str(e))
+            return LLMAnalysisResult(parse_status="provider_failed", parse_error=str(e))
 
     def _parse_result(
         self,

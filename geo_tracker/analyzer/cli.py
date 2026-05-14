@@ -7,6 +7,7 @@
   python -m geo_tracker.analyzer.cli aggregate --date 2026-04-09
   python -m geo_tracker.analyzer.cli reanalyze --date 2026-04-09
 """
+
 from __future__ import annotations
 
 import argparse
@@ -23,10 +24,22 @@ from sqlalchemy import and_, delete, or_, select, update
 
 from geo_tracker.config import create_task_engine, get_task_async_session
 from geo_tracker.db.models import (
-    AnalysisFactLink, AnalysisStatus, AnalyzerQualityFlag, AnalyzerRun,
-    Brand, BrandMention, CitationSource, Competitor, LLMResponse,
-    ProductFeatureMention, Prompt, Query, ResponseAnalysis, ResponseEntity,
-    ResponseRelationFact, SentimentDriver,
+    AnalysisFactLink,
+    AnalysisStatus,
+    AnalyzerQualityFlag,
+    AnalyzerRun,
+    Brand,
+    BrandMention,
+    CitationSource,
+    Competitor,
+    LLMResponse,
+    ProductFeatureMention,
+    Prompt,
+    Query,
+    ResponseAnalysis,
+    ResponseEntity,
+    ResponseRelationFact,
+    SentimentDriver,
 )
 from geo_tracker.analyzer.brand_detector import BrandDetector
 from geo_tracker.analyzer.llm_analyzer import LLMAnalyzer
@@ -42,7 +55,11 @@ from geo_tracker.analyzer.geo_scorer import GEOScorer
 from geo_tracker.analyzer.aggregator import Aggregator
 from geo_tracker.analyzer.canonical_brand_repair import repair_canonical_brand_mentions
 from geo_tracker.analyzer.position_type import normalize_position_type
-from geo_tracker.analyzer.v4_contract import stage_analyzer_v4_result
+from geo_tracker.analyzer.v4_contract import (
+    _hash_output,
+    _looks_like_v4,
+    stage_analyzer_v4_result,
+)
 from geo_tracker.tasks.analyzer_run_recovery import recover_stale_active_analyzer_run
 
 logging.basicConfig(
@@ -127,7 +144,9 @@ def _same_brand_identity(
     )
     if left_canonical_id is not None and right_canonical_id is not None:
         return left_canonical_id == right_canonical_id
-    return _normalize_brand_key(left_canonical_name) == _normalize_brand_key(right_canonical_name)
+    return _normalize_brand_key(left_canonical_name) == _normalize_brand_key(
+        right_canonical_name
+    )
 
 
 def _extract_context_snippet(
@@ -260,7 +279,9 @@ def _response_input_from_pipeline(
         project_brand_id=query.brand_id if query else None,
         engine=query.target_llm if query else None,
         profile_id=query.profile_id if query else None,
-        collected_at=response.collected_at.isoformat() if response.collected_at else None,
+        collected_at=response.collected_at.isoformat()
+        if response.collected_at
+        else None,
         analysis_status=response.analysis_status,
         has_analysis=has_analysis,
         raw_text=response.raw_text,
@@ -360,7 +381,9 @@ async def _delete_current_analysis_facts(session, response_id: int) -> None:
             delete(ResponseAnalysis).where(ResponseAnalysis.response_id == response_id)
         )
 
-    old_mention_ids = select(BrandMention.id).where(BrandMention.response_id == response_id)
+    old_mention_ids = select(BrandMention.id).where(
+        BrandMention.response_id == response_id
+    )
     await session.execute(
         delete(SentimentDriver).where(
             or_(
@@ -369,17 +392,29 @@ async def _delete_current_analysis_facts(session, response_id: int) -> None:
             )
         )
     )
-    await session.execute(delete(CitationSource).where(CitationSource.response_id == response_id))
-    await session.execute(delete(BrandMention).where(BrandMention.response_id == response_id))
+    await session.execute(
+        delete(CitationSource).where(CitationSource.response_id == response_id)
+    )
+    await session.execute(
+        delete(BrandMention).where(BrandMention.response_id == response_id)
+    )
 
-    await session.execute(delete(AnalysisFactLink).where(AnalysisFactLink.response_id == response_id))
     await session.execute(
-        delete(AnalyzerQualityFlag).where(AnalyzerQualityFlag.response_id == response_id)
+        delete(AnalysisFactLink).where(AnalysisFactLink.response_id == response_id)
     )
     await session.execute(
-        delete(ResponseRelationFact).where(ResponseRelationFact.response_id == response_id)
+        delete(AnalyzerQualityFlag).where(
+            AnalyzerQualityFlag.response_id == response_id
+        )
     )
-    await session.execute(delete(ResponseEntity).where(ResponseEntity.response_id == response_id))
+    await session.execute(
+        delete(ResponseRelationFact).where(
+            ResponseRelationFact.response_id == response_id
+        )
+    )
+    await session.execute(
+        delete(ResponseEntity).where(ResponseEntity.response_id == response_id)
+    )
 
 
 def _float_or_none(value) -> float | None:
@@ -411,6 +446,151 @@ def _fact_type_index(package: dict) -> dict[str, str]:
             if isinstance(item, dict) and item.get(field):
                 index[str(item[field])] = fact_type
     return index
+
+
+def _looks_like_legacy_analyzer_json(raw_json: dict) -> bool:
+    def has_legacy_brand_shape(value: object) -> bool:
+        if not isinstance(value, list):
+            return False
+        for item in value:
+            if isinstance(item, dict) and str(item.get("brand_name") or "").strip():
+                return True
+        return False
+
+    def has_legacy_dimension_shape(value: object) -> bool:
+        if not isinstance(value, dict):
+            return False
+        expected_keys = {"industry", "company", "product", "category"}
+        return any(str(value.get(key) or "").strip() for key in expected_keys)
+
+    def has_legacy_relation_shape(value: object) -> bool:
+        if not isinstance(value, list):
+            return False
+        subject_keys = {
+            "subject_entity_key",
+            "subject_name",
+            "source_entity_key",
+            "source_name",
+            "a_name",
+        }
+        object_keys = {
+            "object_entity_key",
+            "object_name",
+            "target_entity_key",
+            "target_name",
+            "b_name",
+        }
+        predicate_keys = {"relation_type", "type", "predicate", "relation"}
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            has_subject = any(str(item.get(key) or "").strip() for key in subject_keys)
+            has_object = any(str(item.get(key) or "").strip() for key in object_keys)
+            has_predicate = any(
+                str(item.get(key) or "").strip() for key in predicate_keys
+            )
+            if has_subject and has_object and has_predicate:
+                return True
+        return False
+
+    if has_legacy_brand_shape(raw_json.get("brands")):
+        return True
+    if has_legacy_dimension_shape(raw_json.get("dimension")):
+        return True
+    return any(
+        has_legacy_relation_shape(raw_json.get(key))
+        for key in ("response_relations", "relations", "relation_facts")
+    )
+
+
+def _analyzer_result_raw_output_sha256(llm_result) -> str | None:
+    raw_output = getattr(llm_result, "raw_output", None)
+    raw_json = getattr(llm_result, "raw_json", None)
+    return _hash_output(raw_output if raw_output is not None else raw_json)
+
+
+def _analyzer_result_failure(llm_result) -> tuple[str | None, str | None]:
+    parse_status = str(getattr(llm_result, "parse_status", "ok") or "ok")
+    parse_error = getattr(llm_result, "parse_error", None)
+    if parse_status not in {"ok", "json_repaired"}:
+        code = "invalid_json" if parse_status == "invalid_json" else parse_status
+        return code, str(parse_error or "Analyzer output could not be parsed.")
+
+    raw_json = getattr(llm_result, "raw_json", None)
+    if not isinstance(raw_json, dict):
+        return "missing_raw_analyzer_json", (
+            "Analyzer returned parse_status=ok but no raw analyzer JSON payload."
+        )
+    if not raw_json:
+        return "empty_raw_analyzer_json", (
+            "Analyzer returned parse_status=ok but the raw analyzer JSON payload was empty."
+        )
+    if not (_looks_like_v4(raw_json) or _looks_like_legacy_analyzer_json(raw_json)):
+        return "invalid_analyzer_schema", (
+            "Analyzer returned parse_status=ok but the raw JSON payload did not match "
+            "analyzer_v4 or legacy analyzer schema."
+        )
+    return None, None
+
+
+async def _mark_analyzer_result_failed(
+    session,
+    *,
+    analyzer_run: AnalyzerRun,
+    response: LLMResponse,
+    response_id: int,
+    previous_analysis_status: str,
+    preserve_current_success: bool,
+    code: str,
+    message: str,
+    raw_output_sha256: str | None = None,
+) -> dict:
+    completed_at = _utcnow_naive()
+    analyzer_run.status = "failed"
+    analyzer_run.completed_at = completed_at
+    analyzer_run.failure_code = code
+    analyzer_run.failure_message = message
+    analyzer_run.raw_output_sha256 = raw_output_sha256
+    analyzer_run.validator_summary_json = {
+        "schema_version": "analyzer_v4",
+        "validator_status": "failed",
+        "errors": [message],
+        "quality_flag_count": 1,
+        "failure_code": code,
+        "failure_message": message,
+    }
+    await _persist_analyzer_v4_facts(
+        session,
+        analyzer_run=analyzer_run,
+        response_id=response_id,
+        package={
+            "quality_flags": [
+                {
+                    "flag_key": f"flag_{code}_analysis",
+                    "severity": "error",
+                    "code": code,
+                    "message": message,
+                    "target_type": "analysis",
+                    "target_key": None,
+                    "blocks_metric_readiness": True,
+                }
+            ]
+        },
+        include_current_facts=False,
+    )
+    response.analysis_status = (
+        previous_analysis_status
+        if preserve_current_success
+        else AnalysisStatus.FAILED.value
+    )
+    await session.commit()
+    return {
+        "response_id": response_id,
+        "status": "failed",
+        "error": code,
+        "message": message,
+        "analyzer_run_id": int(analyzer_run.id),
+    }
 
 
 async def _persist_analyzer_v4_facts(
@@ -501,15 +681,23 @@ async def _persist_analyzer_v4_facts(
             AnalyzerQualityFlag(
                 run_id=analyzer_run.id,
                 response_id=response_id,
-                flag_key=str(flag.get("flag_key") or f"flag_{flag.get('code') or 'quality'}"),
+                flag_key=str(
+                    flag.get("flag_key") or f"flag_{flag.get('code') or 'quality'}"
+                ),
                 severity=str(flag.get("severity") or "warning"),
                 code=str(flag.get("code") or "partial_output"),
-                message=str(flag.get("message") or flag.get("code") or "Analyzer quality flag."),
+                message=str(
+                    flag.get("message") or flag.get("code") or "Analyzer quality flag."
+                ),
                 target_type=str(flag.get("target_type") or "analysis"),
                 target_key=(
-                    None if flag.get("target_key") is None else str(flag.get("target_key"))
+                    None
+                    if flag.get("target_key") is None
+                    else str(flag.get("target_key"))
                 ),
-                blocks_metric_readiness=bool(flag.get("blocks_metric_readiness", False)),
+                blocks_metric_readiness=bool(
+                    flag.get("blocks_metric_readiness", False)
+                ),
                 evidence_json=flag.get("evidence_json"),
             )
         )
@@ -612,6 +800,19 @@ async def analyze_single_response(
             f"  Stage 2: LLM found {len(llm_result.brands)} brands, "
             f"dimension={llm_result.dimension.industry}"
         )
+        failure_code, failure_message = _analyzer_result_failure(llm_result)
+        if failure_code:
+            return await _mark_analyzer_result_failed(
+                session,
+                analyzer_run=analyzer_run,
+                response=response,
+                response_id=response_id,
+                previous_analysis_status=previous_analysis_status,
+                preserve_current_success=preserve_current_success,
+                code=failure_code,
+                message=failure_message or failure_code,
+                raw_output_sha256=_analyzer_result_raw_output_sha256(llm_result),
+            )
 
         # Stage 3: Citation mapping. Use both rule-detected and LLM-only
         # brands so unconfigured competitors can still receive attribution.
@@ -678,7 +879,7 @@ async def analyze_single_response(
 
         # Create BrandMention records — one per (brand, product) from LLM
         total_mentions = 0
-        target_mentions = []   # all mentions where is_target=True
+        target_mentions = []  # all mentions where is_target=True
         all_mentions = []
         processed_llm_keys = set()
         mention_facts: list[dict] = []
@@ -710,12 +911,16 @@ async def analyze_single_response(
                 _clean_mention_text(canonical_brand_name) or canonical_brand_name
             )
             product_name_clean = _clean_mention_text(product_name)
-            key = _mention_identity_key(response_id, brand_name_clean, product_name_clean)
+            key = _mention_identity_key(
+                response_id, brand_name_clean, product_name_clean
+            )
             safe_mention_count = max(int(mention_count or 1), 1)
 
             existing = mentions_by_key.get(key)
             if existing is not None:
-                existing.mention_count = max(existing.mention_count or 0, safe_mention_count)
+                existing.mention_count = max(
+                    existing.mention_count or 0, safe_mention_count
+                )
                 existing.is_target = bool(existing.is_target or is_target)
                 if existing.position_rank is None or (
                     position_rank is not None and position_rank < existing.position_rank
@@ -735,7 +940,9 @@ async def analyze_single_response(
                 fact = mention_facts_by_key.get(key)
                 if fact is not None:
                     fact["mention_count"] = existing.mention_count
-                    raw_names = fact.setdefault("raw_brand_names", [fact["raw_brand_name"]])
+                    raw_names = fact.setdefault(
+                        "raw_brand_names", [fact["raw_brand_name"]]
+                    )
                     if raw_brand_name not in raw_names:
                         raw_names.append(raw_brand_name)
                     fact["merged_duplicate_count"] = len(raw_names)
@@ -798,7 +1005,8 @@ async def analyze_single_response(
         for di, d in enumerate(detected):
             # Find ALL LLM entries for this brand (may have multiple products)
             matching_llm = [
-                (k, b) for k, b in llm_brands.items()
+                (k, b)
+                for k, b in llm_brands.items()
                 if _same_brand_identity(
                     d.brand_name,
                     d.brand_id,
@@ -843,12 +1051,8 @@ async def analyze_single_response(
                     position_type=normalize_position_type(
                         llm_brand.position_type if llm_brand else None
                     ),
-                    position_rank=(
-                        llm_brand.position_rank if llm_brand else None
-                    ),
-                    detail_level=(
-                        llm_brand.detail_level if llm_brand else "passing"
-                    ),
+                    position_rank=(llm_brand.position_rank if llm_brand else None),
+                    detail_level=(llm_brand.detail_level if llm_brand else "passing"),
                     sentiment=(llm_brand.sentiment if llm_brand else None),
                     sentiment_score=(llm_brand.sentiment_score if llm_brand else None),
                     context_snippet=context_snippet,
@@ -870,16 +1074,18 @@ async def analyze_single_response(
                             "source_quote": driver.source_quote,
                         }
                         drivers_by_mention_id[mention.id].append(driver_fact)
-                        session.add(SentimentDriver(
-                            mention_id=mention.id,
-                            response_id=response.id,
-                            brand_name=canonical_brand_name,
-                            driver_text=driver.driver_text,
-                            polarity=driver.polarity,
-                            category=driver.category,
-                            strength=driver.strength,
-                            source_quote=driver.source_quote,
-                        ))
+                        session.add(
+                            SentimentDriver(
+                                mention_id=mention.id,
+                                response_id=response.id,
+                                brand_name=canonical_brand_name,
+                                driver_text=driver.driver_text,
+                                polarity=driver.polarity,
+                                category=driver.category,
+                                strength=driver.strength,
+                                source_quote=driver.source_quote,
+                            )
+                        )
 
         # Second pass: add LLM-only brands/products not matched above
         for key, llm_brand in llm_brands.items():
@@ -897,10 +1103,14 @@ async def analyze_single_response(
                 + _brand_terms(llm_brand.product_name)
                 + [driver.source_quote for driver in llm_brand.sentiment_drivers],
             )
-            mention_count = _count_text_mentions(
-                response.raw_text,
-                _brand_terms(llm_brand.brand_name) + _brand_terms(llm_brand.product_name),
-            ) or 1
+            mention_count = (
+                _count_text_mentions(
+                    response.raw_text,
+                    _brand_terms(llm_brand.brand_name)
+                    + _brand_terms(llm_brand.product_name),
+                )
+                or 1
+            )
 
             mention = await persist_mention(
                 canonical_brand_id=canonical_brand_id,
@@ -929,16 +1139,18 @@ async def analyze_single_response(
                     "source_quote": driver.source_quote,
                 }
                 drivers_by_mention_id[mention.id].append(driver_fact)
-                session.add(SentimentDriver(
-                    mention_id=mention.id,
-                    response_id=response.id,
-                    brand_name=canonical_brand_name,
-                    driver_text=driver.driver_text,
-                    polarity=driver.polarity,
-                    category=driver.category,
-                    strength=driver.strength,
-                    source_quote=driver.source_quote,
-                ))
+                session.add(
+                    SentimentDriver(
+                        mention_id=mention.id,
+                        response_id=response.id,
+                        brand_name=canonical_brand_name,
+                        driver_text=driver.driver_text,
+                        polarity=driver.polarity,
+                        category=driver.category,
+                        strength=driver.strength,
+                        source_quote=driver.source_quote,
+                    )
+                )
 
         total_mentions = sum(m.mention_count or 0 for m in all_mentions)
 
@@ -963,33 +1175,39 @@ async def analyze_single_response(
                 source_type=cm.source_type,
             )
             session.add(citation)
-            citation_facts.append({
-                "url": cm.url,
-                "domain": cm.domain,
-                "title": cm.title,
-                "citation_index": cm.citation_index,
-                "source_type": cm.source_type,
-                "brand_name": cm.brand_name,
-                "mention_id": citation_mention.id if citation_mention else None,
-                "provenance": "citation_mapper",
-                "missing_inputs": [] if citation_mention else ["citation_sources.mention_id"],
-            })
+            citation_facts.append(
+                {
+                    "url": cm.url,
+                    "domain": cm.domain,
+                    "title": cm.title,
+                    "citation_index": cm.citation_index,
+                    "source_type": cm.source_type,
+                    "brand_name": cm.brand_name,
+                    "mention_id": citation_mention.id if citation_mention else None,
+                    "provenance": "citation_mapper",
+                    "missing_inputs": []
+                    if citation_mention
+                    else ["citation_sources.mention_id"],
+                }
+            )
 
         # Calculate GEO Score
         # Use the best target mention (highest position) for scoring
-        target_mention_count = sum(
-            m.mention_count or 0 for m in target_mentions
-        )
+        target_mention_count = sum(m.mention_count or 0 for m in target_mentions)
         non_target_mentions = [
-            m for m in all_mentions
+            m
+            for m in all_mentions
             if not (m.is_target or (m.brand_id is not None and m.brand_id == brand.id))
         ]
         best_target = None
         if target_mentions:
             # Pick the best-positioned target mention
             position_priority = {
-                "first_recommendation": 0, "comparison_winner": 1,
-                "listed": 2, "mentioned_only": 3, "comparison_loser": 4,
+                "first_recommendation": 0,
+                "comparison_winner": 1,
+                "listed": 2,
+                "mentioned_only": 3,
+                "comparison_loser": 4,
             }
             best_target = min(
                 target_mentions,
@@ -1002,7 +1220,8 @@ async def analyze_single_response(
         # mention_rate_pct: target brand's share of all mentions in this response
         mention_rate_pct = (
             (target_mention_count / total_mentions * 100)
-            if total_mentions > 0 and best_target else 0.0
+            if total_mentions > 0 and best_target
+            else 0.0
         )
 
         visibility = GEOScorer.calc_visibility(
@@ -1011,10 +1230,14 @@ async def analyze_single_response(
             position_rank=best_target.position_rank if best_target else None,
             mention_rate_pct=mention_rate_pct,
         )
-        sentiment_score = GEOScorer.calc_sentiment(
-            raw_sentiment_score=best_target.sentiment_score,
-            detail_level=best_target.detail_level,
-        ) if best_target and best_target.sentiment_score is not None else None
+        sentiment_score = (
+            GEOScorer.calc_sentiment(
+                raw_sentiment_score=best_target.sentiment_score,
+                detail_level=best_target.detail_level,
+            )
+            if best_target and best_target.sentiment_score is not None
+            else None
+        )
         sov_score = (
             GEOScorer.calc_sov(target_mention_count, total_mentions)
             if target_mention_count and non_target_mentions
@@ -1026,7 +1249,9 @@ async def analyze_single_response(
             else None
         )
         geo_score = (
-            GEOScorer.calc_overall(visibility, sentiment_score, sov_score, citation_score)
+            GEOScorer.calc_overall(
+                visibility, sentiment_score, sov_score, citation_score
+            )
             if best_target
             and sentiment_score is not None
             and sov_score is not None
@@ -1037,7 +1262,8 @@ async def analyze_single_response(
         target_drivers = [
             driver
             for llm_brand in llm_result.brands
-            if _resolve_brand_identity(llm_brand.brand_name, None, brand_index)[0] == brand.id
+            if _resolve_brand_identity(llm_brand.brand_name, None, brand_index)[0]
+            == brand.id
             for driver in llm_brand.sentiment_drivers
         ]
         target_driver_count = len(target_drivers)
@@ -1050,7 +1276,9 @@ async def analyze_single_response(
         metric_input_status = {
             "sov": {
                 "state": "ok" if non_target_mentions else "partial",
-                "missing_inputs": [] if non_target_mentions else ["brand_mentions.competitive_set"],
+                "missing_inputs": []
+                if non_target_mentions
+                else ["brand_mentions.competitive_set"],
                 "target_mentions": target_mention_count,
                 "competitive_mentions": total_mentions,
             },
@@ -1063,12 +1291,16 @@ async def analyze_single_response(
                     else "partial"
                 ),
                 "missing_inputs": [
-                    missing for missing, present in (
+                    missing
+                    for missing, present in (
                         (
                             "brand_mentions.sentiment_score",
                             best_target and best_target.sentiment_score is not None,
                         ),
-                        ("sentiment_drivers.source_quote", bool(quoted_target_driver_count)),
+                        (
+                            "sentiment_drivers.source_quote",
+                            bool(quoted_target_driver_count),
+                        ),
                     )
                     if not present
                 ],
@@ -1196,22 +1428,18 @@ async def analyze_single_response(
             dimension_category=llm_result.dimension.category,
             total_brands_mentioned=len(all_mentions),
             target_brand_mentioned=best_target is not None,
-            target_brand_position=(
-                best_target.position_type if best_target else None
-            ),
-            target_brand_rank=(
-                best_target.position_rank if best_target else None
-            ),
-            target_brand_sentiment=(
-                best_target.sentiment if best_target else None
-            ),
-            target_brand_detail=(
-                best_target.detail_level if best_target else None
-            ),
+            target_brand_position=(best_target.position_type if best_target else None),
+            target_brand_rank=(best_target.position_rank if best_target else None),
+            target_brand_sentiment=(best_target.sentiment if best_target else None),
+            target_brand_detail=(best_target.detail_level if best_target else None),
             visibility_score=round(visibility, 2),
-            sentiment_score=round(sentiment_score, 2) if sentiment_score is not None else None,
+            sentiment_score=round(sentiment_score, 2)
+            if sentiment_score is not None
+            else None,
             sov_score=round(sov_score, 2) if sov_score is not None else None,
-            citation_score=round(citation_score, 2) if citation_score is not None else None,
+            citation_score=round(citation_score, 2)
+            if citation_score is not None
+            else None,
             geo_score=geo_score,
             analyzer_model=llm_analyzer.model,
             raw_analysis_json=raw_analysis_json,
@@ -1223,16 +1451,18 @@ async def analyze_single_response(
         for llm_brand in llm_result.brands:
             for feat in llm_brand.product_features:
                 if feat.feature_name:
-                    session.add(ProductFeatureMention(
-                        analysis_id=analysis.id,
-                        brand_name=llm_brand.brand_name,
-                        product_name=llm_brand.product_name or llm_brand.brand_name,
-                        feature_name=feat.feature_name,
-                        feature_sentiment=feat.feature_sentiment,
-                        context_snippet=feat.context_snippet,
-                        scenario=feat.scenario,
-                        price_positioning=feat.price_positioning,
-                    ))
+                    session.add(
+                        ProductFeatureMention(
+                            analysis_id=analysis.id,
+                            brand_name=llm_brand.brand_name,
+                            product_name=llm_brand.product_name or llm_brand.brand_name,
+                            feature_name=feat.feature_name,
+                            feature_sentiment=feat.feature_sentiment,
+                            context_snippet=feat.context_snippet,
+                            scenario=feat.scenario,
+                            price_positioning=feat.price_positioning,
+                        )
+                    )
 
         await _persist_analyzer_v4_facts(
             session,
@@ -1340,7 +1570,7 @@ async def run_daily(date_str: str, brand_id: int | None = None) -> None:
         done = 0
         failed = 0
         for i, resp in enumerate(responses):
-            logger.info(f"Analyzing response {i+1}/{len(responses)} (id={resp.id})")
+            logger.info(f"Analyzing response {i + 1}/{len(responses)} (id={resp.id})")
             try:
                 # Load related data
                 query = await session.get(Query, resp.query_id)
@@ -1359,7 +1589,11 @@ async def run_daily(date_str: str, brand_id: int | None = None) -> None:
                         intent = prompt.intent
 
                 result = await analyze_single_response(
-                    session, resp, brand, competitors, intent,
+                    session,
+                    resp,
+                    brand,
+                    competitors,
+                    intent,
                 )
                 logger.info(f"  Result: {result}")
                 if result.get("status") == "done":
@@ -1370,7 +1604,9 @@ async def run_daily(date_str: str, brand_id: int | None = None) -> None:
                 logger.exception(f"  Unexpected error for response {resp.id}: {e}")
                 failed += 1
 
-        logger.info(f"Analysis complete: {done} done, {failed} failed out of {len(responses)}")
+        logger.info(
+            f"Analysis complete: {done} done, {failed} failed out of {len(responses)}"
+        )
 
         # Aggregate
         logger.info("Running daily aggregation...")
@@ -1498,7 +1734,9 @@ async def run_app_chart_fact_diagnostics(
             if source_brand_id is not None:
                 conditions.append(Query.brand_id == source_brand_id)
 
-            stmt = select(LLMResponse, Query).join(Query, Query.id == LLMResponse.query_id)
+            stmt = select(LLMResponse, Query).join(
+                Query, Query.id == LLMResponse.query_id
+            )
             if conditions:
                 stmt = stmt.where(and_(*conditions))
             rows = (await session.execute(stmt)).all()
@@ -1512,15 +1750,30 @@ async def run_app_chart_fact_diagnostics(
 
             if response_ids:
                 analyses = (
-                    await session.execute(
-                        select(ResponseAnalysis).where(ResponseAnalysis.response_id.in_(response_ids))
+                    (
+                        await session.execute(
+                            select(ResponseAnalysis).where(
+                                ResponseAnalysis.response_id.in_(response_ids)
+                            )
+                        )
                     )
-                ).scalars().all()
-                analyses_by_response = {analysis.response_id: analysis for analysis in analyses}
+                    .scalars()
+                    .all()
+                )
+                analyses_by_response = {
+                    analysis.response_id: analysis for analysis in analyses
+                }
                 for analysis in analyses:
-                    raw = analysis.raw_analysis_json if isinstance(analysis.raw_analysis_json, dict) else {}
+                    raw = (
+                        analysis.raw_analysis_json
+                        if isinstance(analysis.raw_analysis_json, dict)
+                        else {}
+                    )
                     for fact in raw.get("brand_mention_facts") or []:
-                        if isinstance(fact, dict) and fact.get("mention_id") is not None:
+                        if (
+                            isinstance(fact, dict)
+                            and fact.get("mention_id") is not None
+                        ):
                             raw_names_by_mention_id[int(fact["mention_id"])] = (
                                 fact.get("raw_brand_name")
                                 or fact.get("raw_name")
@@ -1528,20 +1781,32 @@ async def run_app_chart_fact_diagnostics(
                             )
 
                 mention_rows = (
-                    await session.execute(
-                        select(BrandMention).where(BrandMention.response_id.in_(response_ids))
+                    (
+                        await session.execute(
+                            select(BrandMention).where(
+                                BrandMention.response_id.in_(response_ids)
+                            )
+                        )
                     )
-                ).scalars().all()
+                    .scalars()
+                    .all()
+                )
                 mention_ids = [mention.id for mention in mention_rows]
                 for mention in mention_rows:
                     mentions_by_response[mention.response_id].append(mention)
 
                 if mention_ids:
                     driver_rows = (
-                        await session.execute(
-                            select(SentimentDriver).where(SentimentDriver.mention_id.in_(mention_ids))
+                        (
+                            await session.execute(
+                                select(SentimentDriver).where(
+                                    SentimentDriver.mention_id.in_(mention_ids)
+                                )
+                            )
                         )
-                    ).scalars().all()
+                        .scalars()
+                        .all()
+                    )
                     for driver in driver_rows:
                         drivers_by_mention_id[driver.mention_id].append(
                             {
@@ -1554,10 +1819,16 @@ async def run_app_chart_fact_diagnostics(
                         )
 
                 citation_rows = (
-                    await session.execute(
-                        select(CitationSource).where(CitationSource.response_id.in_(response_ids))
+                    (
+                        await session.execute(
+                            select(CitationSource).where(
+                                CitationSource.response_id.in_(response_ids)
+                            )
+                        )
                     )
-                ).scalars().all()
+                    .scalars()
+                    .all()
+                )
                 for citation in citation_rows:
                     citations_by_response[citation.response_id].append(citation)
 
@@ -1570,7 +1841,9 @@ async def run_app_chart_fact_diagnostics(
                     project_brand_id=query.brand_id if query else None,
                     engine=query.target_llm if query else None,
                     profile_id=query.profile_id if query else None,
-                    collected_at=response.collected_at.isoformat() if response.collected_at else None,
+                    collected_at=response.collected_at.isoformat()
+                    if response.collected_at
+                    else None,
                     analysis_status=response.analysis_status,
                     has_analysis=response.id in analyses_by_response,
                     raw_text=response.raw_text,
@@ -1580,7 +1853,9 @@ async def run_app_chart_fact_diagnostics(
                             response_id=mention.response_id,
                             brand_id=mention.brand_id,
                             brand_name=mention.brand_name,
-                            raw_name=raw_names_by_mention_id.get(mention.id, mention.brand_name),
+                            raw_name=raw_names_by_mention_id.get(
+                                mention.id, mention.brand_name
+                            ),
                             is_target=bool(mention.is_target),
                             mention_count=mention.mention_count,
                             context_snippet=mention.context_snippet,
@@ -1614,7 +1889,9 @@ async def run_app_chart_fact_diagnostics(
                 target_brand_id=brand.id,
                 target_brand_name=brand.name,
                 target_aliases=brand.aliases or [],
-                configured_competitors=_competitor_contracts_from_brands(competitor_brands),
+                configured_competitors=_competitor_contracts_from_brands(
+                    competitor_brands
+                ),
             )
             out = _diagnostic_summary(
                 packages,
@@ -1674,7 +1951,8 @@ def _diagnostic_summary(
             "structured_competitors": sum(
                 1
                 for fact in entities
-                if fact["entity_role"] in {"configured_competitor", "response_named_competitor"}
+                if fact["entity_role"]
+                in {"configured_competitor", "response_named_competitor"}
                 and fact["source"] == "brand_mentions"
             ),
             "text_only_competitors": sum(
@@ -1684,7 +1962,8 @@ def _diagnostic_summary(
                 {
                     fact["brand_name"] or fact["raw_name"]
                     for fact in entities
-                    if fact["entity_role"] in {"configured_competitor", "response_named_competitor"}
+                    if fact["entity_role"]
+                    in {"configured_competitor", "response_named_competitor"}
                 }
             ),
         },
@@ -1757,12 +2036,18 @@ def main():
         "repair-canonical-brand",
         help="Dry-run-safe canonical brand mention repair from raw response text",
     )
-    p_repair.add_argument("--brand-id", type=int, required=True, help="Canonical brand ID")
+    p_repair.add_argument(
+        "--brand-id", type=int, required=True, help="Canonical brand ID"
+    )
     p_repair.add_argument("--date", help="Single date to repair (YYYY-MM-DD)")
     p_repair.add_argument("--from", dest="date_from", help="Start date (YYYY-MM-DD)")
     p_repair.add_argument("--to", dest="date_to", help="End date (YYYY-MM-DD)")
-    p_repair.add_argument("--source-brand-id", type=int, help="Optional owner brand filter")
-    p_repair.add_argument("--alias", action="append", default=[], help="Extra alias term")
+    p_repair.add_argument(
+        "--source-brand-id", type=int, help="Optional owner brand filter"
+    )
+    p_repair.add_argument(
+        "--alias", action="append", default=[], help="Extra alias term"
+    )
     p_repair.add_argument(
         "--competitive-brand-id",
         action="append",
@@ -1786,11 +2071,15 @@ def main():
         "diagnose-app-chart-facts",
         help="SELECT-only dry-run counters for #602 App chart analyzer facts",
     )
-    p_diag.add_argument("--brand-id", type=int, required=True, help="Canonical target brand ID")
+    p_diag.add_argument(
+        "--brand-id", type=int, required=True, help="Canonical target brand ID"
+    )
     p_diag.add_argument("--date", help="Single date to inspect (YYYY-MM-DD)")
     p_diag.add_argument("--from", dest="date_from", help="Start date (YYYY-MM-DD)")
     p_diag.add_argument("--to", dest="date_to", help="End date (YYYY-MM-DD)")
-    p_diag.add_argument("--source-brand-id", type=int, help="Optional owner/source brand filter")
+    p_diag.add_argument(
+        "--source-brand-id", type=int, help="Optional owner/source brand filter"
+    )
     p_diag.add_argument(
         "--competitive-brand-id",
         action="append",
