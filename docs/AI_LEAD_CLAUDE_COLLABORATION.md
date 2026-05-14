@@ -17,6 +17,8 @@ The collaboration rule is simple:
 - Claude Code owns only the assigned deliverable issue or issue comment.
 - GitHub is the durable state.
 - Code and live behavior are the reality check.
+- Human Input is user-owned intake and acceptance state; Claude Code works only
+  from the scoped issue or assignment that the Lead creates from it.
 
 ## Source Of Truth Order
 
@@ -51,6 +53,8 @@ Good Claude Code assignments:
 Poor Claude Code assignments:
 
 - "fix everything in this area"
+- "handle this Human Input" without triage, accepted disposition, child issue,
+  or assignment comment
 - implementation without a linked issue or execution contract
 - cross-cutting refactors mixed into a product task
 - PR or merge decisions that bypass Codex Lead
@@ -63,6 +67,7 @@ Poor Claude Code assignments:
 Every Claude Code assignment must be represented by a GitHub issue or issue
 comment with these fields:
 
+- Source Human Input issue, when applicable
 - Deliverable
 - Owner Hat
 - Assigned Tool: `Claude Code`
@@ -196,6 +201,10 @@ Claude Code PRs must include:
 - risk and rollback notes
 - exact next handoff target
 
+When the assignment comes from Human Input, the handoff target is the Lead. The
+Lead owns posting the final `Ready for User Acceptance` comment on the Human
+Input issue after merge, deploy, and live verification evidence are complete.
+
 Suggested PR handoff:
 
 ```md
@@ -314,6 +323,7 @@ Escalate any scope or source-of-truth conflict back to Codex Lead.
 Before merge or user-facing completion, the Codex Lead verifies:
 
 - linked issue body is current
+- source Human Input issue is linked when the work started from user intake
 - PRD IDs are linked when product behavior is involved
 - Acceptance Matrix is source-backed and complete
 - Coverage Gaps are empty or accepted
@@ -327,4 +337,6 @@ Before merge or user-facing completion, the Codex Lead verifies:
 - deployment path is known
 - production-facing behavior is verified on `http://116.62.36.173/`
 - live Playwright E2E evidence is attached when applicable
-- issue closure type and closure record are ready
+- Human Input has a `Ready for User Acceptance` record when applicable
+- issue closure type and closure record are ready; Human Input remains open for
+  user closure unless closure was explicitly delegated

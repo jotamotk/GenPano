@@ -1,5 +1,5 @@
 name: Human Input Channel
-description: Create or maintain the permanent product-owner inbox issue
+description: Capture user-owned intake and final acceptance state
 title: "[Human Input] "
 labels:
   - type:human-input
@@ -7,25 +7,25 @@ body:
   - type: markdown
     attributes:
       value: |
-        Use this for the permanent Human Input Channel. It is an inbox ledger, not an executable task, PRD, branch, or PR.
+        Use this for user-owned intake and final acceptance. It is not an executable task, PRD, branch, or PR.
   - type: textarea
     id: purpose
     attributes:
       label: Purpose
       description: State the channel purpose so future agents do not treat it as a task.
       value: |
-        This issue is the product-owner inbox for raw observations, ideas, bugs, feature changes, and new requirements. It stays open permanently. Each entry needs a triage receipt before it becomes executable work.
+        This issue captures a raw user observation, idea, bug, feature change, or new requirement. The Lead must triage it, split actionable work into executable child issues or PRD decisions, coordinate delivery, and return live evidence here for user acceptance. The user closes this issue after accepting the online result unless closure is explicitly delegated.
     validations:
       required: true
   - type: textarea
     id: current-state
     attributes:
       label: Current State
-      description: Keep a compact ledger of open raw inputs and their disposition.
+      description: Keep a compact ledger of raw inputs, child work, and acceptance state.
       value: |
-        | Item | Raw Input | Classification | Disposition | Target | Last Updated |
-        | --- | --- | --- | --- | --- | --- |
-        |  |  |  |  |  |  |
+        | Item | Raw Input | Classification | Disposition | Target Issue/PRD Decision | Delivery State | Last Updated |
+        | --- | --- | --- | --- | --- | --- | --- |
+        |  |  |  |  |  | triage |  |
     validations:
       required: true
   - type: textarea
@@ -36,10 +36,13 @@ body:
       value: |
         - Do not implement directly from a vague raw note.
         - Classify each item as bug, feature change, new requirement, question/idea, or needs clarification.
-        - Convert actionable work into a scoped Task or Full Path Coordination issue.
+        - Convert actionable work into a scoped Fast Path issue, Full Path Coordination issue, deliverable issue, or PRD-change request.
         - Use PRD-CHANGE when the item changes product behavior or contract.
+        - Link every child issue or PRD decision back with Refs #<this issue>.
+        - Coordinate child work until it is merged, deployed, and live-verifiable when production-facing.
         - Leave a triage receipt for every item.
-        - Keep this issue open permanently.
+        - Post Ready for User Acceptance with live URL, expected visible result, child issues/PRs, deploy SHA, and evidence.
+        - Keep this issue open until the user accepts the online result and closes it, unless closure is explicitly delegated.
     validations:
       required: true
   - type: textarea
@@ -59,5 +62,32 @@ body:
         Receipt:
         - Original note:
         - Last updated:
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance-handoff-template
+    attributes:
+      label: Ready For User Acceptance Template
+      description: Fill this before asking the user to verify and close the issue.
+      value: |
+        READY FOR USER ACCEPTANCE:
+
+        Live result:
+        - URL/route:
+        - Expected visible result:
+
+        Completed work:
+        - Child issues:
+        - PRs:
+        - Deploy SHA/run:
+
+        Evidence:
+        - Playwright/screenshot/API/server diagnostic:
+
+        Caveats:
+        - Remaining risk or none:
+
+        Closure:
+        - Waiting for user acceptance and user closure.
     validations:
       required: true

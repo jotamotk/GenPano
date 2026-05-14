@@ -185,6 +185,9 @@ skip targeted replay and substitute unrelated green tests.
 
 Closed issues must say why they ended. Use one of these closure types:
 
+- `Human Input Accepted`: user accepted the online result and closed, or
+  explicitly delegated closure after reviewing the production evidence. Agents
+  should not close Human Input issues just because child tasks or PRs completed.
 - `Completed`: linked PR or commit, acceptance result, verification evidence,
   and live Playwright or production evidence when relevant. Codex may close this
   after required verification passes.
@@ -239,17 +242,25 @@ outdated AGENTS.md rules.
 
 ### Human Input Channel
 
-The fixed Human Input issue is an inbox, not a task and not a PRD.
+Human Input is the user's durable intake and final acceptance issue. It is not a
+worker task, branch, PR, or PRD by itself.
 
-- It stays open permanently and does not enter Fast Path or Full Path itself.
-- It is not closed by status workflow and should not be used as a requirement
-  source for implementation.
-- Each raw item needs a triage receipt: item id or short quote, classification
-  (`bug`, `feature change`, `new requirement`, `question/idea`, or
-  `needs clarification`), disposition, target issue or PRD-change request, and
-  last updated date.
-- Codex must not implement a vague Human Input item directly. It must first
-  convert it to a scoped issue, request a PRD decision, or ask for clarification.
+- The Lead hat owns triage: classify each raw item as `bug`, `feature change`,
+  `new requirement`, `question/idea`, or `needs clarification`.
+- The Lead hat must split actionable Human Input into one or more executable
+  issues: Fast Path issue, Full Path coordination issue, PRD-change request, or
+  scoped deliverable issue. Each child issue links back with `Refs #<human>`.
+- Human Input can become an acceptance source only after a triage disposition or
+  issue `DECISION` records the accepted user intent.
+- Codex must not implement directly from a vague Human Input note.
+- The Lead hat schedules and coordinates the needed hats until the child work is
+  merged, deployed, and verified on the relevant live route.
+- Final delivery is a `Ready for User Acceptance` comment on the Human Input
+  issue with live URL, user-visible result, PRs, deploy SHA, Playwright or
+  production evidence, and known caveats.
+- The Human Input issue stays open until the user can verify the online result.
+  The user closes it if the result is acceptable; Agents close it only when the
+  user explicitly delegates closure.
 
 See `docs/AI_LEAD_WORKFLOW.md` for the full operating procedure and templates.
 For Claude Code collaboration, see `docs/AI_LEAD_CLAUDE_COLLABORATION.md`.
