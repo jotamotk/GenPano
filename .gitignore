@@ -69,3 +69,7 @@ scripts/doubao.txt
 backend/email_previews/
 geo_tracker/*.png
 gemini_*.png
+
+# UI mockup screenshots — keep outside version control; commit redesign
+# captures to the design system instead.
+frontend/*.png
