@@ -24,7 +24,7 @@ on:
         required: false
         default: "2026-05-07"
       scraper_mode:
-        description: "diagnostics, bestcoffer_batch, account_quota_reset, doubao_auth_false_success_repair, doubao_sms_forensics, chatgpt_sms_env_check, vninja_proxy_check, vninja_subscription_update, or app_analytics_business_completeness"
+        description: "diagnostics, bestcoffer_batch, account_quota_reset, doubao_auth_false_success_repair, doubao_sms_forensics, query_evidence, chatgpt_sms_env_check, vninja_proxy_check, vninja_subscription_update, or app_analytics_business_completeness"
         required: false
         default: "diagnostics"
       target_llm:
@@ -71,6 +71,18 @@ on:
         description: "doubao_sms_forensics only: comma-separated phone endings; output remains masked"
         required: false
         default: "6310,0064,7576"
+      diagnostic_query_id:
+        description: "query_evidence only: exact query id for read-only DB/log/artifact evidence"
+        required: false
+        default: "185003"
+      diagnostic_log_since_utc:
+        description: "query_evidence only: UTC start timestamp for sanitized log evidence"
+        required: false
+        default: "2026-05-14 05:32:00 UTC"
+      diagnostic_log_until_utc:
+        description: "query_evidence only: UTC end timestamp for sanitized log evidence"
+        required: false
+        default: "2026-05-14 05:34:30 UTC"
       account_quota_reset_llm:
         description: "account_quota_reset only: target engine allowlist value (doubao or chatgpt)"
         required: false
@@ -1598,6 +1610,321 @@ jobs:
         with:
           name: doubao-sms-forensics-${{ github.run_id }}
           path: doubao-sms-forensics-artifacts
+          if-no-files-found: error
+
+      - name: Run exact query evidence diagnostics
+        if: ${{ inputs.scraper_mode == 'query_evidence' }}
+        shell: bash
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+          QUERY_ID: ${{ inputs.diagnostic_query_id }}
+          LOG_SINCE_UTC: ${{ inputs.diagnostic_log_since_utc }}
+          LOG_UNTIL_UTC: ${{ inputs.diagnostic_log_until_utc }}
+          GH_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh query-evidence-artifacts
+          chmod 700 ~/.ssh
+          printf '%s' "${SERVER_SSH_KEY}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H "${SERVER_HOST}" >> ~/.ssh/known_hosts 2>/dev/null
+
+          remote_cmd="$(printf 'QUERY_ID=%q LOG_SINCE_UTC=%q LOG_UNTIL_UTC=%q GH_RUN_ID=%q bash -s' \
+            "${QUERY_ID}" "${LOG_SINCE_UTC}" "${LOG_UNTIL_UTC}" "${GH_RUN_ID}")"
+
+          set +e
+          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=accept-new \
+            "${SERVER_USER}@${SERVER_HOST}" "${remote_cmd}" <<'REMOTE' \
+            | tee query-evidence-artifacts/query-evidence.log
+          set -Eeuo pipefail
+          cd /opt/genpano
+
+          fail() {
+            echo "ERROR: $*" >&2
+            exit 1
+          }
+
+          [[ "${QUERY_ID}" =~ ^[0-9]+$ ]] || fail "QUERY_ID must be an integer"
+          [ "${QUERY_ID}" -ge 1 ] || fail "QUERY_ID must be >= 1"
+          since_iso="$(date -u -d "${LOG_SINCE_UTC}" '+%Y-%m-%dT%H:%M:%S' 2>/dev/null || true)"
+          until_iso="$(date -u -d "${LOG_UNTIL_UTC}" '+%Y-%m-%dT%H:%M:%S' 2>/dev/null || true)"
+          [ -n "${since_iso}" ] || fail "LOG_SINCE_UTC must be parseable by GNU date"
+          [ -n "${until_iso}" ] || fail "LOG_UNTIL_UTC must be parseable by GNU date"
+          since_epoch="$(date -u -d "${since_iso}Z" '+%s')"
+          until_epoch="$(date -u -d "${until_iso}Z" '+%s')"
+          [ "${since_epoch}" -lt "${until_epoch}" ] || fail "diagnostic start must be before end"
+          window_seconds=$((until_epoch - since_epoch))
+          [ "${window_seconds}" -le 21600 ] || fail "diagnostic window must be <= 6 hours"
+          since_sql="${since_iso/T/ }"
+          until_sql="${until_iso/T/ }"
+
+          artifact_dir="/tmp/genpano_query_evidence_${GH_RUN_ID}_${QUERY_ID}"
+          rm -rf "${artifact_dir}"
+          mkdir -p "${artifact_dir}/query-files"
+          summary_file="${artifact_dir}/summary.txt"
+          main_bash_pid="${BASHPID}"
+          exec > >(tee "${summary_file}") 2>&1
+          finish() {
+            status=$?
+            if [ "${BASHPID}" != "${main_bash_pid}" ]; then
+              exit "${status}"
+            fi
+            echo "=== Artifact manifest ==="
+            find "${artifact_dir}" -maxdepth 3 -type f | sort || true
+            tar -czf "/tmp/genpano_query_evidence_${GH_RUN_ID}_${QUERY_ID}.tar.gz" -C "${artifact_dir}" . || true
+            echo "artifact_archive=/tmp/genpano_query_evidence_${GH_RUN_ID}_${QUERY_ID}.tar.gz"
+            exit "${status}"
+          }
+          trap finish EXIT
+
+          psql_cmd() {
+            docker compose exec -T postgres psql -X -v ON_ERROR_STOP=1 -U genpano -d genpano "$@" </dev/null
+          }
+
+          sanitize_stream() {
+            python3 -c '
+          from __future__ import annotations
+          import re
+          import sys
+          text = sys.stdin.read()
+          patterns = [
+              (re.compile(r"(?i)\b(authorization|auth)\s*:\s*(?:bearer\s+)?[^\s;]+"), r"\1: [secret redacted]"),
+              (re.compile(r"(?i)\b(cookie|set-cookie)\s*:\s*[^;\r\n]+;?"), r"\1: [secret redacted]"),
+              (re.compile(r"(?i)\b(api[_-]?key|token|secret|cookie)\s*[:=]\s*(?:" + chr(34) + r"[^" + chr(34) + r"]*" + chr(34) + r"|[^\s&<>]+)"), r"\1=[secret redacted]"),
+              (re.compile(r"(?<![\w])\+?\d{10,15}(?![\w])"), "[phone redacted]"),
+          ]
+          for pattern, repl in patterns:
+              text = pattern.sub(repl, text)
+          sys.stdout.write(text)
+          '
+          }
+
+          echo "=== Exact query evidence metadata ==="
+          echo "issue=Refs #904"
+          echo "parent=Refs #570"
+          echo "run=https://github.com/jotamotk/trash_test/actions/runs/${GH_RUN_ID}"
+          echo "query_id=${QUERY_ID}"
+          echo "read_only=true"
+          echo "mutations_attempted=false"
+          echo "log_window_utc=${since_iso}Z..${until_iso}Z"
+
+          echo "=== Query row ==="
+          psql_cmd -c "
+            SELECT
+              q.id AS query_id,
+              q.target_llm,
+              q.status,
+              q.queued_at,
+              q.started_at,
+              q.finished_at,
+              q.latency_ms,
+              COALESCE(q.retry_reason, '') AS retry_reason,
+              CASE WHEN q.account_id IS NULL THEN NULL ELSE 'account:' || q.account_id::text END AS account_ref
+            FROM queries q
+            WHERE q.id = ${QUERY_ID};
+          " | tee "${artifact_dir}/query-row.txt" || true
+
+          echo "=== Latest response row ==="
+          psql_cmd -c "
+            WITH latest AS (
+              SELECT r.*
+              FROM llm_responses r
+              WHERE r.query_id = ${QUERY_ID}
+              ORDER BY r.id DESC
+              LIMIT 1
+            )
+            SELECT
+              id AS response_id,
+              LENGTH(COALESCE(raw_text, '')) AS response_len,
+              LENGTH(COALESCE(response_html, '')) AS response_html_len,
+              CASE
+                WHEN citations_json IS NULL THEN 0
+                WHEN jsonb_typeof(citations_json::jsonb) = 'array' THEN jsonb_array_length(citations_json::jsonb)
+                ELSE 0
+              END AS citations_json_count,
+              CASE WHEN citations_json IS NULL THEN NULL ELSE MD5(citations_json::text) END AS citations_json_hash,
+              screenshot_path,
+              collected_at,
+              analysis_status,
+              analyzed_at
+            FROM latest;
+          " | tee "${artifact_dir}/latest-response-row.txt" || true
+
+          psql_cmd -At -c "
+            SELECT COALESCE(response_html, '')
+            FROM llm_responses
+            WHERE query_id = ${QUERY_ID}
+            ORDER BY id DESC
+            LIMIT 1;
+          " > "${artifact_dir}/response-html.raw.html" || true
+
+          echo "=== Citation sources summary ==="
+          psql_cmd -c "
+            WITH latest AS (
+              SELECT r.id
+              FROM llm_responses r
+              WHERE r.query_id = ${QUERY_ID}
+              ORDER BY r.id DESC
+              LIMIT 1
+            )
+            SELECT
+              COUNT(*) AS citation_sources_count,
+              COUNT(*) FILTER (WHERE mention_id IS NOT NULL) AS citation_sources_with_mentions,
+              COUNT(DISTINCT domain) AS citation_source_domains
+            FROM citation_sources cs
+            JOIN latest ON latest.id = cs.response_id;
+          " | tee "${artifact_dir}/citation-sources-summary.txt" || true
+
+          psql_cmd -c "
+            WITH latest AS (
+              SELECT r.id
+              FROM llm_responses r
+              WHERE r.query_id = ${QUERY_ID}
+              ORDER BY r.id DESC
+              LIMIT 1
+            )
+            SELECT
+              cs.citation_index,
+              LEFT(COALESCE(cs.domain, ''), 120) AS domain,
+              LEFT(COALESCE(cs.title, ''), 160) AS title,
+              LEFT(MD5(COALESCE(cs.url, '')), 16) AS url_hash,
+              cs.source_type,
+              cs.mention_id IS NOT NULL AS has_mention
+            FROM citation_sources cs
+            JOIN latest ON latest.id = cs.response_id
+            ORDER BY cs.citation_index NULLS LAST, cs.id
+            LIMIT 20;
+          " | tee "${artifact_dir}/citation-sources-sample.txt" || true
+
+          echo "=== Copy existing screenshot/debug files for exact query ==="
+          find /data/screenshots -maxdepth 1 -type f \
+            \( -name "query_${QUERY_ID}_*" -o -name "*${QUERY_ID}*" \) \
+            -exec cp {} "${artifact_dir}/query-files/" \; 2>/dev/null || true
+          psql_cmd -At -c "
+            SELECT DISTINCT screenshot_path
+            FROM llm_responses
+            WHERE query_id = ${QUERY_ID}
+              AND screenshot_path IS NOT NULL
+              AND screenshot_path <> ''
+            ORDER BY screenshot_path;
+          " > "${artifact_dir}/screenshot-paths.txt" || true
+          while IFS= read -r screenshot_path; do
+            [ -n "${screenshot_path}" ] || continue
+            case "${screenshot_path}" in
+              /data/screenshots/*) ;;
+              *)
+                echo "skip_unapproved_screenshot_path=${screenshot_path}"
+                continue
+                ;;
+            esac
+            screenshot_name="$(basename "${screenshot_path}")"
+            case "${screenshot_name}" in
+              *[!A-Za-z0-9._-]*|'')
+                echo "skip_unsafe_screenshot_name=${screenshot_name}"
+                continue
+                ;;
+            esac
+            if [ -f "${screenshot_path}" ]; then
+              cp "${screenshot_path}" "${artifact_dir}/query-files/${screenshot_name}" || true
+              continue
+            fi
+            for service in worker backend; do
+              if docker compose exec -T "${service}" sh -lc 'test -f "$1"' sh "${screenshot_path}" >/dev/null 2>&1; then
+                docker compose cp "${service}:${screenshot_path}" "${artifact_dir}/query-files/${screenshot_name}" || true
+                break
+              fi
+            done
+          done < "${artifact_dir}/screenshot-paths.txt"
+          find "${artifact_dir}/query-files" -maxdepth 1 -type f | sort \
+            | tee "${artifact_dir}/artifact-files.txt" || true
+
+          echo "=== Saved HTML and file marker summaries ==="
+          python3 - "${artifact_dir}" "${QUERY_ID}" <<'PY' | tee "${artifact_dir}/marker-summary.log"
+          from __future__ import annotations
+
+          import hashlib
+          import json
+          import re
+          import sys
+          from pathlib import Path
+
+          artifact_dir = Path(sys.argv[1])
+          query_id = sys.argv[2]
+          markers = {
+              "entry_btn_v3": "entry-btn-v3",
+              "container_outer": "container-outer",
+              "search_item": "search-item-",
+              "search_reference_ui_v3": "search-reference-ui-v3",
+              "data_href": "data-href",
+              "cite_attr": "cite=",
+              "href_attr": "href=",
+              "reference_text": "参考资料",
+          }
+
+          def digest(raw: bytes) -> str:
+              return hashlib.sha256(raw).hexdigest()
+
+          def marker_counts(text: str) -> dict[str, int]:
+              counts = {name: text.count(marker) for name, marker in markers.items()}
+              counts["url_like_count"] = len(re.findall(r"https?://", text))
+              return counts
+
+          html_path = artifact_dir / "response-html.raw.html"
+          html_text = html_path.read_text(encoding="utf-8", errors="replace") if html_path.exists() else ""
+          html_summary = {
+              "query_id": int(query_id),
+              "source": "llm_responses.response_html",
+              "bytes": len(html_text.encode("utf-8")),
+              "sha256": digest(html_text.encode("utf-8")) if html_text else None,
+              "marker_counts": marker_counts(html_text),
+          }
+          (artifact_dir / "response_html_marker_summary.json").write_text(
+              json.dumps(html_summary, ensure_ascii=False, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          print(json.dumps(html_summary, ensure_ascii=False, sort_keys=True))
+
+          with (artifact_dir / "artifact-file-summary.jsonl").open("w", encoding="utf-8") as out:
+              for path in sorted((artifact_dir / "query-files").glob("*")):
+                  raw = path.read_bytes()
+                  text = raw.decode("utf-8", errors="replace") if path.suffix.lower() in {".html", ".json", ".txt"} else ""
+                  row = {
+                      "query_id": int(query_id),
+                      "file": path.name,
+                      "bytes": len(raw),
+                      "sha256": digest(raw),
+                      "marker_counts": marker_counts(text) if text else {},
+                  }
+                  out.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
+                  print(json.dumps(row, ensure_ascii=False, sort_keys=True))
+          PY
+
+          echo "=== Sanitized exact query logs ==="
+          journalctl -u docker --since "${since_sql} UTC" --until "${until_sql} UTC" --no-pager -n 500 2>&1 \
+            | sanitize_stream | tee "${artifact_dir}/journal-docker-window.txt" || true
+          docker compose logs --since "${since_iso}Z" --until "${until_iso}Z" worker worker-analysis beat backend nginx 2>&1 \
+            | sanitize_stream | tee "${artifact_dir}/compose-window.log" || true
+          REMOTE
+          ssh_status=${PIPESTATUS[0]}
+          set -e
+
+          scp -i ~/.ssh/id_rsa -o StrictHostKeyChecking=accept-new \
+            "${SERVER_USER}@${SERVER_HOST}:/tmp/genpano_query_evidence_${GH_RUN_ID}_${QUERY_ID}.tar.gz" \
+            query-evidence-artifacts/ || true
+          if [ -f "query-evidence-artifacts/genpano_query_evidence_${GH_RUN_ID}_${QUERY_ID}.tar.gz" ]; then
+            tar -tzf "query-evidence-artifacts/genpano_query_evidence_${GH_RUN_ID}_${QUERY_ID}.tar.gz" \
+              | tee query-evidence-artifacts/artifact-manifest.txt
+          fi
+          exit "${ssh_status}"
+
+      - name: Upload exact query evidence artifacts
+        if: ${{ always() && inputs.scraper_mode == 'query_evidence' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: query-evidence-${{ inputs.diagnostic_query_id }}-${{ github.run_id }}
+          path: query-evidence-artifacts
           if-no-files-found: error
 
       - name: Run ChatGPT SMS env check
