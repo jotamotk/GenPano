@@ -372,6 +372,41 @@ async def _seed_first_class_v4_facts(
 
 
 @pytest.mark.asyncio
+async def test_topics_monitoring_keeps_formula_status_from_first_class_v4_evidence(
+    client,
+    user: User,
+    db_session: AsyncSession,
+) -> None:
+    project = await _project(db_session, user)
+    await _seed_admin_chain_tables(db_session)
+    await _seed_chain_response(
+        db_session,
+        topic_id=78361,
+        prompt_id=78362,
+        query_id=78363,
+        response_id=78364,
+    )
+    await _seed_first_class_v4_facts(db_session, response_id=78364, linked_citation=True)
+
+    response = await client.get(
+        f"/api/v1/projects/{project.id}/topics/monitoring",
+        headers=_bearer(user),
+        params={"from": DAY.date().isoformat(), "to": DAY.date().isoformat()},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["state"] == "ok"
+    assert body["summary"]["response_count"] == 1
+    assert body["formula_status"] == "ok"
+    assert body["evidence_count"] == 1
+    assert body["evidence_counts"]["admin_fact_response_count"] == 1
+    assert body["evidence_counts"]["analyzer_run_count"] == 1
+    assert body["evidence_counts"]["analyzer_entity_count"] == 2
+    assert "analyzer_runs" in body["source_provenance"]
+
+
+@pytest.mark.asyncio
 async def test_engine_metrics_use_first_class_v4_facts_without_raw_json_package(
     client,
     user: User,
