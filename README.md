@@ -1,6 +1,4 @@
-# GenPano
-
-GenPano tracks how Large Language Models (Doubao, ChatGPT, Gemini, DeepSeek, …)
+tracks how Large Language Models (Doubao, ChatGPT, Gemini, DeepSeek, …)
 talk about brands. It scrapes LLM responses end-to-end, analyzes them for share
 of voice, sentiment, citation authority, and topic coverage, and surfaces the
 results through an Admin pipeline view and a customer-facing Reports dashboard.
