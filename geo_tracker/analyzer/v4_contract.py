@@ -105,6 +105,7 @@ CITATION_SOURCE_TYPES = {
     "ugc",
     "social",
     "knowledge_base",
+    "research",
     "unknown",
     "other",
 }

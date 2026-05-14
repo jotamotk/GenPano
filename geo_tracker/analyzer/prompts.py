@@ -203,7 +203,7 @@ belongs_to_brand only for response-evidenced product-to-brand ownership.
       "url": null,
       "domain": null,
       "title": null,
-      "source_type": "official|commerce|media|ugc|social|knowledge_base|unknown|other",
+      "source_type": "official|commerce|media|ugc|social|knowledge_base|research|unknown|other",
       "attribution_method": "official_domain|co_occurrence|text_match|llm_inferred|unattributed|not_applicable",
       "mentioned_entity_keys": [],
       "linked_fact_keys": [],

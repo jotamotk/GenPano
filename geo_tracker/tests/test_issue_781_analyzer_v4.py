@@ -1203,6 +1203,57 @@ def test_analyzer_v4_still_rejects_unknown_product_feature_type() -> None:
     )
 
 
+def test_analyzer_v4_accepts_research_citation_source_type_for_issue_839() -> None:
+    package = _valid_v4_package()
+    package["citations"].append(
+        {
+            "citation_key": "citation_research_paper",
+            "url": "https://example.org/research/brewing",
+            "domain": "example.org",
+            "title": "Brewing Research",
+            "source_type": "research",
+            "attribution_method": "co_occurrence",
+            "mentioned_entity_keys": ["ent_product_calm"],
+            "linked_fact_keys": ["feature_ceramide"],
+            "evidence_quote": "research notes smooth extraction",
+            "confidence": 0.82,
+            "quality_flags": [],
+        }
+    )
+
+    result = validate_analyzer_v4_package(
+        package,
+        response_text=(
+            "AcmeBeauty Calm Serum uses gentle ceramides. "
+            "The coffee response cites research notes smooth extraction."
+        ),
+        response_id=7815,
+        query_id=7814,
+    )
+
+    assert result.is_valid is True
+    assert result.errors == []
+    assert result.package["citations"][-1]["source_type"] == "research"
+
+
+def test_analyzer_v4_still_rejects_unknown_citation_source_type() -> None:
+    package = _valid_v4_package()
+    package["citations"][0]["source_type"] = "whitepaper_archive"
+
+    result = validate_analyzer_v4_package(
+        package,
+        response_text="AcmeBeauty Calm Serum uses gentle ceramides.",
+        response_id=7815,
+        query_id=7814,
+    )
+
+    assert result.is_valid is False
+    assert (
+        "schema_validation_failed: citations[0].source_type='whitepaper_archive' is invalid"
+        in result.errors
+    )
+
+
 def test_analyzer_v4_drops_malformed_product_feature_confidence_with_quality_flags() -> None:
     package = _valid_v4_package()
     package["product_features"].extend(
