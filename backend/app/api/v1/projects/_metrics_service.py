@@ -36,6 +36,7 @@ from app.api.v1.projects._analytics_contract import (
     context_update,
     formula_diagnostics_for,
     metric_definition,
+    metric_evidence_for,
     metric_formula_status,
     metric_missing_inputs,
     ratio_decimal,
@@ -250,6 +251,61 @@ def _series_missing_inputs(
     return _unique(missing)
 
 
+# Issue #948: peripheral missing inputs — analyzer-rollup pointers that do
+# NOT invalidate the value because the value was computed directly from
+# GeoScoreDaily / admin-fact rows (a separate, real source).
+_PERIPHERAL_PACKAGE_INPUTS: frozenset[str] = frozenset(
+    {
+        "missing_analyzer_fact_packages",
+        ANALYZER_FACT_PACKAGE_SOURCE,
+        ANALYZER_FACT_PACKAGE_V3_SOURCE,
+    }
+)
+
+
+def _series_has_real_evidence(
+    item: MetricSeries,
+    context: AnalyticsContractContext,
+    missing_inputs: list[str],
+    *,
+    evidence_source: str,
+) -> bool:
+    """Return True when the series points were derived from real aggregate
+    evidence AND the only missing inputs are peripheral.
+
+    Issue #948 fix. When this returns True, peripheral missing inputs
+    (e.g. ``missing_analyzer_fact_packages`` when the rollup is absent
+    but the value was computed from `GeoScoreDaily` / admin facts; or a
+    metric whose analyzer evidence is `formula_partial` rather than
+    `missing_required_inputs`) should not clear ``item.points``. The
+    value itself is real and computable. The contract surfaces
+    ``formula_partial`` instead so the frontend gate keeps rendering the
+    number rather than the ``—`` placeholder.
+
+    Returns False when any missing input is critical (denominator
+    missing, primary source missing, target-only SoV, analyzer reported
+    the metric is unprovable, etc.) so the no-fallback contract still
+    surfaces ``—`` for unprovable values.
+    """
+    if not item.points:
+        return False
+    # Treat the analyzer-rollup pointer paths as peripheral.
+    non_peripheral = [r for r in missing_inputs if r not in _PERIPHERAL_PACKAGE_INPUTS]
+    if non_peripheral:
+        # If the remaining reasons all came from an analyzer-evidence
+        # entry whose own formula_status is `partial` (not blocking),
+        # treat them as peripheral too — the analyzer itself considers
+        # the metric value computable. This preserves PR #899's intent
+        # for metrics that report partial coverage but real numbers.
+        evidence = metric_evidence_for(context, item.metric)
+        evidence_status = str(evidence.get("formula_status") or "") if evidence else ""
+        if evidence_status != FORMULA_PARTIAL_STATUS:
+            return False
+    if evidence_source == "admin_facts":
+        return context.evidence_counts.get("admin_fact_response_count", 0) > 0
+    return context.evidence_counts.get("geo_score_daily_rows", 0) > 0
+
+
 def _apply_metric_series_contract(
     series: list[MetricSeries],
     context: AnalyticsContractContext,
@@ -272,6 +328,30 @@ def _apply_metric_series_contract(
             if item.metric == "sov" and item.points and item.formula_status == FORMULA_OK_STATUS:
                 formula_status = FORMULA_OK_STATUS
             out.append(item.model_copy(update={"formula_status": formula_status}))
+            continue
+        # Peripheral analyzer inputs are missing, but the series already
+        # carries points that were computed from real aggregate evidence
+        # (Issue #948: KPI cards rendered "—" because this branch cleared
+        # `points` and downgraded `formula_status` to `missing_required_inputs`
+        # even when `geo_score_daily` / admin facts contained the rows that
+        # produced the values). Preserve the values, record the peripheral
+        # missing inputs, and emit `formula_partial` so the frontend gate
+        # keeps surfacing the number. Critical missing inputs (no
+        # denominator, no source rows, project unbound) still clear points
+        # per the no-fallback contract — see `_series_has_real_evidence`.
+        if _series_has_real_evidence(
+            item, context, missing_inputs, evidence_source=evidence_source
+        ):
+            out.append(
+                item.model_copy(
+                    update={
+                        "formula_status": FORMULA_PARTIAL_STATUS,
+                        "missing_inputs": _unique([*item.missing_inputs, *missing_inputs]),
+                        "state": "partial",
+                        "state_reason": "partial_analyzer_data",
+                    }
+                )
+            )
             continue
         formula_status = metric_formula_status(
             context,

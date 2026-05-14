@@ -519,5 +519,9 @@ async def test_sentiment_scores_and_labels_are_visible_when_only_drivers_are_mis
     assert by_engine_body["state"] == "partial"
     assert by_engine_body["formula_status"] == "partial"
     assert by_engine_body["items"] == []
-    assert metric_series["formula_status"] in {"partial", "missing_required_inputs"}
-    assert metric_series["points"] == []
+    # Issue #948: sentiment metric points survive when only peripheral
+    # analyzer drivers are missing — the underlying sentiment_score is
+    # real and computable. The test name confirms this contract.
+    assert metric_series["formula_status"] == "partial"
+    assert len(metric_series["points"]) == 1
+    assert metric_series["points"][0]["value"] == pytest.approx(0.42)

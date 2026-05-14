@@ -32,6 +32,8 @@ from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.projects._analytics_contract import (
+    ANALYZER_FACT_PACKAGE_SOURCE,
+    ANALYZER_FACT_PACKAGE_V3_SOURCE,
     FORMULA_MISSING_INPUTS_STATUS,
     FORMULA_NO_EVIDENCE_STATUS,
     FORMULA_OK_STATUS,
@@ -43,6 +45,7 @@ from app.api.v1.projects._analytics_contract import (
     build_contract_context,
     context_update,
     metric_definition,
+    metric_evidence_for,
     metric_formula_status,
     metric_missing_inputs,
     percent_display,
@@ -204,6 +207,47 @@ def _kpi_missing_inputs(
     return _unique(missing)
 
 
+# Issue #948: peripheral missing inputs — analyzer-rollup pointers that do
+# NOT invalidate the value (mirror of `_metrics_service` equivalent).
+_PERIPHERAL_PACKAGE_INPUTS: frozenset[str] = frozenset(
+    {
+        "missing_analyzer_fact_packages",
+        ANALYZER_FACT_PACKAGE_SOURCE,
+        ANALYZER_FACT_PACKAGE_V3_SOURCE,
+    }
+)
+
+
+def _kpi_has_real_evidence(
+    card: KpiCard,
+    context: AnalyticsContractContext,
+    missing_inputs: list[str],
+    *,
+    evidence_source: str,
+) -> bool:
+    """Mirror of ``_series_has_real_evidence`` for KPI cards.
+
+    Returns True when ``card.value`` was computed from real aggregate
+    evidence AND the only missing inputs are peripheral.
+
+    Returns False when missing inputs include any critical input
+    (denominator missing, source data missing, project unbound, primary
+    source missing for the specific metric) so the no-fallback contract
+    still nulls out unprovable values. See issue #948.
+    """
+    if card.value is None:
+        return False
+    non_peripheral = [r for r in missing_inputs if r not in _PERIPHERAL_PACKAGE_INPUTS]
+    if non_peripheral:
+        evidence = metric_evidence_for(context, card.metric_key)
+        evidence_status = str(evidence.get("formula_status") or "") if evidence else ""
+        if evidence_status != FORMULA_PARTIAL_STATUS:
+            return False
+    if evidence_source == "admin_facts":
+        return context.evidence_counts.get("admin_fact_response_count", 0) > 0
+    return context.evidence_counts.get("geo_score_daily_rows", 0) > 0
+
+
 def _apply_kpi_contract(
     cards: list[KpiCard],
     context: AnalyticsContractContext,
@@ -230,6 +274,26 @@ def _apply_kpi_contract(
             ):
                 formula_status = FORMULA_OK_STATUS
             out.append(card.model_copy(update={"formula_status": formula_status}))
+            continue
+        # Peripheral analyzer inputs are missing, but the KPI card already
+        # carries a value that was computed from real aggregate evidence
+        # (Issue #948: 提及率 / 引用份额 / 行业排名 / Sentiment rendered "—"
+        # on /brand/overview and /brand/visibility because this branch
+        # nulled out `card.value` even when `geo_score_daily` / admin
+        # facts contained the rows that produced the value). Preserve
+        # the value and emit `formula_partial` so the frontend gate
+        # (`canUseContractMetricValue`) keeps surfacing the number.
+        # Critical missing inputs (no denominator, no source rows, project
+        # unbound) still null the value per the no-fallback contract — see
+        # `_kpi_has_real_evidence`.
+        if _kpi_has_real_evidence(card, context, missing_inputs, evidence_source=evidence_source):
+            out.append(
+                card.model_copy(
+                    update={
+                        "formula_status": FORMULA_PARTIAL_STATUS,
+                    }
+                )
+            )
             continue
         formula_status = metric_formula_status(
             context,

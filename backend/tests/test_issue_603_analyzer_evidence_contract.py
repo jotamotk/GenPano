@@ -897,8 +897,17 @@ async def test_overview_trends_are_withheld_when_analyzer_package_blocks_metric(
 
     assert overview.status_code == 200, overview.text
     body = overview.json()
+    # SoV: analyzer reports `missing_required_inputs` + `target_only_sov`.
+    # Critical block — value must be withheld per the no-fallback contract.
     assert _card(body, "sov")["value"] is None
-    assert _card(body, "avg_sentiment")["value"] is None
+    # Issue #948: sentiment analyzer reports `partial` (drivers missing
+    # but the sentiment_score itself is computable). The KPI card value
+    # is preserved with formula_status=partial so the frontend renders
+    # the number; trends that depend on `pano_score` package are still
+    # withheld per `_apply_score_component_contract` / `metric_missing_inputs`.
+    sentiment_card = _card(body, "avg_sentiment")
+    assert sentiment_card["value"] is not None
+    assert sentiment_card["formula_status"] == "partial"
     assert body["sov_30d"] == []
     assert body["sentiment_30d"] == []
     assert body["geo_score_30d"] == []
