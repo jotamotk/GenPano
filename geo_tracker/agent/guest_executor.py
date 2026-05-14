@@ -206,6 +206,16 @@ def _env_flag(name: str, default: bool = True) -> bool:
     return raw.strip().lower() not in {"0", "false", "no", "off"}
 
 
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw.strip())
+    except (TypeError, ValueError):
+        return default
+
+
 def _block_heavy_resources() -> bool:
     return _env_flag("BROWSER_BLOCK_HEAVY_RESOURCES", True)
 
@@ -1188,42 +1198,14 @@ class GuestQueryExecutor:
                     continue
 
             if not input_el and llm == "doubao":
-                detected_unavailable = False
-                try:
-                    body_text = await page_obj.evaluate("document.body?.innerText || ''")
-                    if _is_doubao_unavailable_page_text(body_text):
-                        detected_unavailable = True
-                        logger.warning("[%s] detected transient unavailable page; reloading once", llm)
-                        await _save_runtime_snapshot(
-                            page_obj,
-                            query.id,
-                            f"{llm}_page_unavailable_before_reload",
-                            config=config,
-                            runtime_events=runtime_events,
-                            proxy_diagnostic=proxy_diagnostic,
-                        )
-                        await page_obj.reload(wait_until="domcontentloaded", timeout=60000)
-                        await page_obj.wait_for_timeout(5000)
-                        for sel in selectors:
-                            if not sel:
-                                continue
-                            try:
-                                input_el = await page_obj.wait_for_selector(
-                                    sel,
-                                    timeout=10000,
-                                    state="attached",
-                                )
-                                if input_el:
-                                    logger.info("[%s] input found after unavailable-page reload: %s", llm, sel)
-                                    break
-                            except Exception:
-                                continue
-                        if not input_el:
-                            self.last_error_reason = "page_unavailable"
-                except Exception as reload_error:
-                    logger.warning("[%s] unavailable-page reload probe failed: %s", llm, reload_error)
-                    if detected_unavailable:
-                        self.last_error_reason = "page_unavailable"
+                input_el = await self._recover_from_doubao_unavailable_page(
+                    page_obj,
+                    query=query,
+                    config=config,
+                    selectors=selectors,
+                    runtime_events=runtime_events,
+                    proxy_diagnostic=proxy_diagnostic,
+                )
 
             if not input_el:
                 logger.error(f"[{llm}] 找不到输入框")
@@ -1319,6 +1301,139 @@ class GuestQueryExecutor:
                 camoufox_ctx=_camoufox_ctx,
                 playwright=_playwright,
             )
+
+    async def _recover_from_doubao_unavailable_page(
+        self,
+        page_obj,
+        *,
+        query: Query,
+        config: dict,
+        selectors: list[str],
+        runtime_events,
+        proxy_diagnostic,
+    ):
+        # Refs #958: a single reload + 5s wait is often not enough for the
+        # transient "该页面暂时不可用" page to clear, and the 12-hour cooldown
+        # the caller applies on `page_unavailable` quickly drains the pool. Try
+        # reload-then-probe in a bounded loop with growing backoff, re-checking
+        # the marker each round so we keep paying the selector-wait cost only
+        # while it is justified. On exhaustion, tag the failure and save an
+        # informative artifact so operators stop chasing a `no_input` screenshot
+        # for a page_unavailable failure.
+        llm = "doubao"
+        try:
+            body_text = await page_obj.evaluate("document.body?.innerText || ''")
+        except Exception as exc:
+            logger.warning("[%s] unavailable-page probe failed: %s", llm, exc)
+            return None
+
+        if not _is_doubao_unavailable_page_text(body_text):
+            return None
+
+        reload_max = max(1, _env_int("DOUBAO_UNAVAILABLE_RELOAD_MAX", 3))
+        reload_wait_base_ms = max(
+            1000, _env_int("DOUBAO_UNAVAILABLE_RELOAD_WAIT_MS", 8000)
+        )
+
+        try:
+            await _save_runtime_snapshot(
+                page_obj,
+                query.id,
+                f"{llm}_page_unavailable_before_reload",
+                config=config,
+                runtime_events=runtime_events,
+                proxy_diagnostic=proxy_diagnostic,
+            )
+        except Exception as exc:
+            logger.debug(
+                "[%s] failed to save page_unavailable_before_reload snapshot: %s",
+                llm,
+                exc,
+            )
+
+        for attempt in range(1, reload_max + 1):
+            logger.warning(
+                "[%s] detected transient unavailable page; reload %s/%s",
+                llm,
+                attempt,
+                reload_max,
+            )
+            try:
+                await page_obj.reload(wait_until="domcontentloaded", timeout=60000)
+            except Exception as exc:
+                logger.warning(
+                    "[%s] reload attempt %s failed: %s", llm, attempt, exc
+                )
+
+            try:
+                await page_obj.wait_for_timeout(reload_wait_base_ms * attempt)
+            except Exception:
+                pass
+
+            try:
+                body_text_after = await page_obj.evaluate(
+                    "document.body?.innerText || ''"
+                )
+            except Exception:
+                body_text_after = ""
+
+            if _is_doubao_unavailable_page_text(body_text_after):
+                logger.info(
+                    "[%s] page still unavailable after reload %s/%s; will retry",
+                    llm,
+                    attempt,
+                    reload_max,
+                )
+                continue
+
+            for sel in selectors:
+                if not sel:
+                    continue
+                try:
+                    input_el = await page_obj.wait_for_selector(
+                        sel,
+                        timeout=10000,
+                        state="attached",
+                    )
+                    if input_el:
+                        logger.info(
+                            "[%s] input found after unavailable-page reload %s/%s: %s",
+                            llm,
+                            attempt,
+                            reload_max,
+                            sel,
+                        )
+                        return input_el
+                except Exception:
+                    continue
+
+        self.last_error_reason = "page_unavailable"
+        try:
+            await _save_screenshot(
+                page_obj, query.id, f"{llm}_page_unavailable_final"
+            )
+        except Exception as exc:
+            logger.debug(
+                "[%s] failed to save page_unavailable_final screenshot: %s",
+                llm,
+                exc,
+            )
+        try:
+            await _save_runtime_snapshot(
+                page_obj,
+                query.id,
+                f"{llm}_page_unavailable_final",
+                config=config,
+                runtime_events=runtime_events,
+                proxy_diagnostic=proxy_diagnostic,
+            )
+        except Exception as exc:
+            logger.debug(
+                "[%s] failed to save page_unavailable_final snapshot: %s",
+                llm,
+                exc,
+            )
+        return None
 
     async def _prefer_doubao_visual_challenge_reason(
         self, llm_name: str, page: Page | None

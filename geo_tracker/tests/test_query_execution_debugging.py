@@ -434,6 +434,277 @@ def test_doubao_unavailable_page_text_is_detected(monkeypatch):
     assert not _is_doubao_unavailable_page_text("你好，欢迎使用豆包")
 
 
+# Refs #958: prior behavior reloaded once, waited 5s, then flipped the account
+# into a 12-hour cooldown. The recovery helper now reloads up to N times with a
+# growing backoff so transient platform errors don't burn account capacity.
+@pytest.mark.asyncio
+async def test_recover_from_doubao_unavailable_page_retries_until_input_returns(
+    monkeypatch,
+):
+    _install_fake_playwright(monkeypatch)
+    monkeypatch.setenv("DOUBAO_UNAVAILABLE_RELOAD_MAX", "3")
+    # The helper floors the wait at 1000ms to keep production safe from
+    # accidental zero waits; pick a value above the floor so backoff math is
+    # observable in the test.
+    monkeypatch.setenv("DOUBAO_UNAVAILABLE_RELOAD_WAIT_MS", "1500")
+
+    from geo_tracker.agent.guest_executor import GuestQueryExecutor
+
+    class FakeInput:
+        pass
+
+    class FakePage:
+        def __init__(self):
+            self.reload_calls = 0
+            self.body_texts = [
+                "该页面暂时不可用 刷新页面",  # initial probe
+                "该页面暂时不可用 刷新页面",  # after reload 1
+                "该页面暂时不可用 刷新页面",  # after reload 2
+                "豆包正常加载",                # after reload 3 → recovered
+            ]
+            self.waits: list[int] = []
+
+        async def evaluate(self, _script):
+            return self.body_texts.pop(0) if self.body_texts else "豆包正常加载"
+
+        async def reload(self, wait_until=None, timeout=None):
+            self.reload_calls += 1
+
+        async def wait_for_timeout(self, ms):
+            self.waits.append(ms)
+
+        async def wait_for_selector(self, selector, timeout, state):
+            return FakeInput()
+
+    page = FakePage()
+    executor = GuestQueryExecutor()
+
+    class _Q:
+        id = 184985
+
+    snapshot_calls: list[tuple[int, str]] = []
+
+    async def fake_snapshot(page_arg, query_id, suffix, **_kwargs):
+        snapshot_calls.append((query_id, suffix))
+
+    monkeypatch.setattr(
+        "geo_tracker.agent.guest_executor._save_runtime_snapshot", fake_snapshot
+    )
+    monkeypatch.setattr(
+        "geo_tracker.agent.guest_executor._save_screenshot", fake_snapshot
+    )
+
+    result = await executor._recover_from_doubao_unavailable_page(
+        page,
+        query=_Q(),
+        config={},
+        selectors=["textarea"],
+        runtime_events=None,
+        proxy_diagnostic=None,
+    )
+
+    assert isinstance(result, FakeInput)
+    assert page.reload_calls == 3
+    # Backoff is linear: base_ms * attempt → 1500, 3000, 4500
+    assert page.waits == [1500, 3000, 4500]
+    # last_error_reason MUST stay unset when recovery succeeded — otherwise the
+    # caller would still cool the account down on a successful run.
+    assert executor.last_error_reason is None
+    # The pre-reload diagnostic snapshot is the only artifact saved on success.
+    assert snapshot_calls == [(184985, "doubao_page_unavailable_before_reload")]
+
+
+@pytest.mark.asyncio
+async def test_recover_from_doubao_unavailable_page_marks_failure_after_max_reloads(
+    monkeypatch,
+):
+    _install_fake_playwright(monkeypatch)
+    monkeypatch.setenv("DOUBAO_UNAVAILABLE_RELOAD_MAX", "2")
+    monkeypatch.setenv("DOUBAO_UNAVAILABLE_RELOAD_WAIT_MS", "5")
+
+    from geo_tracker.agent.guest_executor import GuestQueryExecutor
+
+    class FakePage:
+        def __init__(self):
+            self.reload_calls = 0
+
+        async def evaluate(self, _script):
+            return "该页面暂时不可用 刷新页面"
+
+        async def reload(self, wait_until=None, timeout=None):
+            self.reload_calls += 1
+
+        async def wait_for_timeout(self, ms):
+            return None
+
+        async def wait_for_selector(self, selector, timeout, state):
+            raise RuntimeError("not attached")
+
+    page = FakePage()
+    executor = GuestQueryExecutor()
+
+    class _Q:
+        id = 184985
+
+    snapshot_calls: list[tuple[int, str]] = []
+
+    async def fake_snapshot(page_arg, query_id, suffix, **_kwargs):
+        snapshot_calls.append((query_id, suffix))
+
+    monkeypatch.setattr(
+        "geo_tracker.agent.guest_executor._save_runtime_snapshot", fake_snapshot
+    )
+    monkeypatch.setattr(
+        "geo_tracker.agent.guest_executor._save_screenshot", fake_snapshot
+    )
+
+    result = await executor._recover_from_doubao_unavailable_page(
+        page,
+        query=_Q(),
+        config={},
+        selectors=["textarea"],
+        runtime_events=None,
+        proxy_diagnostic=None,
+    )
+
+    assert result is None
+    assert page.reload_calls == 2
+    assert executor.last_error_reason == "page_unavailable"
+    # On exhaustion the helper saves a `_final` artifact with a matching name so
+    # operators see page_unavailable in the filename, not the misleading no_input.
+    suffixes = {suffix for _, suffix in snapshot_calls}
+    assert "doubao_page_unavailable_before_reload" in suffixes
+    assert "doubao_page_unavailable_final" in suffixes
+
+
+@pytest.mark.asyncio
+async def test_recover_from_doubao_unavailable_page_no_op_when_markers_absent(
+    monkeypatch,
+):
+    _install_fake_playwright(monkeypatch)
+
+    from geo_tracker.agent.guest_executor import GuestQueryExecutor
+
+    class FakePage:
+        def __init__(self):
+            self.reload_calls = 0
+
+        async def evaluate(self, _script):
+            return "你好，欢迎使用豆包"
+
+        async def reload(self, **_kwargs):
+            self.reload_calls += 1
+
+    page = FakePage()
+    executor = GuestQueryExecutor()
+
+    class _Q:
+        id = 1
+
+    result = await executor._recover_from_doubao_unavailable_page(
+        page,
+        query=_Q(),
+        config={},
+        selectors=["textarea"],
+        runtime_events=None,
+        proxy_diagnostic=None,
+    )
+
+    assert result is None
+    assert page.reload_calls == 0
+    assert executor.last_error_reason is None
+
+
+def test_doubao_page_unavailable_cooldown_uses_short_window_by_default(monkeypatch):
+    from datetime import timedelta
+
+    monkeypatch.delenv("DOUBAO_PAGE_UNAVAILABLE_COOLDOWN_MINUTES", raising=False)
+    from geo_tracker.pool import account_pool
+
+    delta = account_pool._doubao_page_unavailable_cooldown()
+    # Default is 30 minutes — significantly shorter than COOLDOWN_HOURS=12.
+    assert delta == timedelta(minutes=30)
+
+
+def test_doubao_page_unavailable_cooldown_respects_env_override(monkeypatch):
+    from datetime import timedelta
+
+    monkeypatch.setenv("DOUBAO_PAGE_UNAVAILABLE_COOLDOWN_MINUTES", "5")
+    from geo_tracker.pool import account_pool
+
+    assert account_pool._doubao_page_unavailable_cooldown() == timedelta(minutes=5)
+
+
+def test_doubao_page_unavailable_cooldown_falls_back_when_disabled(monkeypatch):
+    from datetime import timedelta
+
+    monkeypatch.setenv("DOUBAO_PAGE_UNAVAILABLE_COOLDOWN_MINUTES", "0")
+    from geo_tracker.pool import account_pool
+
+    # 0 / negative disables the short window and reverts to the global 12h cooldown
+    # so operators can opt out without redeploying.
+    assert account_pool._doubao_page_unavailable_cooldown() == timedelta(
+        hours=account_pool.COOLDOWN_HOURS
+    )
+
+
+def test_doubao_page_unavailable_cooldown_ignores_garbage_env(monkeypatch):
+    from datetime import timedelta
+
+    monkeypatch.setenv("DOUBAO_PAGE_UNAVAILABLE_COOLDOWN_MINUTES", "not-a-number")
+    from geo_tracker.pool import account_pool
+
+    assert account_pool._doubao_page_unavailable_cooldown() == timedelta(minutes=30)
+
+
+def test_doubao_page_unavailable_report_failure_uses_short_cooldown(monkeypatch):
+    from datetime import datetime, timedelta
+
+    monkeypatch.delenv("DOUBAO_PAGE_UNAVAILABLE_COOLDOWN_MINUTES", raising=False)
+    from geo_tracker.pool.account_pool import (
+        AccountPool,
+        AccountStatus,
+        COOLDOWN_HOURS,
+    )
+
+    class FakeAccount:
+        def __init__(self):
+            self.id = 7
+            self.llm_name = "doubao"
+            self.status = AccountStatus.ACTIVE.value
+            self.cooldown_until = None
+            self.consecutive_fails = 0
+
+    class FakeDb:
+        def __init__(self, account):
+            self.account = account
+            self.added: list = []
+
+        async def get(self, _model, _id):
+            return self.account
+
+        def add(self, obj):
+            self.added.append(obj)
+
+        async def commit(self):
+            return None
+
+    account = FakeAccount()
+    pool = AccountPool(FakeDb(account))
+
+    before = datetime.utcnow()
+    asyncio.run(pool.report_failure(7, reason="doubao_page_unavailable"))
+    after = datetime.utcnow()
+
+    assert account.status == AccountStatus.COOLDOWN.value
+    assert account.cooldown_until is not None
+    # Short window: cooldown must end well within the global 12h ceiling.
+    short_ceiling = after + timedelta(minutes=30) + timedelta(seconds=5)
+    long_floor = before + timedelta(hours=COOLDOWN_HOURS - 1)
+    assert account.cooldown_until <= short_ceiling
+    assert account.cooldown_until < long_floor
+
+
 def test_doubao_proxy_runtime_diagnostic_records_proxy_path(monkeypatch):
     _install_fake_playwright(monkeypatch)
 
