@@ -449,12 +449,56 @@ def _fact_type_index(package: dict) -> dict[str, str]:
 
 
 def _looks_like_legacy_analyzer_json(raw_json: dict) -> bool:
-    brands = raw_json.get("brands")
-    dimension = raw_json.get("dimension")
-    if isinstance(brands, list) or isinstance(dimension, dict):
+    def has_legacy_brand_shape(value: object) -> bool:
+        if not isinstance(value, list):
+            return False
+        for item in value:
+            if isinstance(item, dict) and str(item.get("brand_name") or "").strip():
+                return True
+        return False
+
+    def has_legacy_dimension_shape(value: object) -> bool:
+        if not isinstance(value, dict):
+            return False
+        expected_keys = {"industry", "company", "product", "category"}
+        return any(str(value.get(key) or "").strip() for key in expected_keys)
+
+    def has_legacy_relation_shape(value: object) -> bool:
+        if not isinstance(value, list):
+            return False
+        subject_keys = {
+            "subject_entity_key",
+            "subject_name",
+            "source_entity_key",
+            "source_name",
+            "a_name",
+        }
+        object_keys = {
+            "object_entity_key",
+            "object_name",
+            "target_entity_key",
+            "target_name",
+            "b_name",
+        }
+        predicate_keys = {"relation_type", "type", "predicate", "relation"}
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            has_subject = any(str(item.get(key) or "").strip() for key in subject_keys)
+            has_object = any(str(item.get(key) or "").strip() for key in object_keys)
+            has_predicate = any(
+                str(item.get(key) or "").strip() for key in predicate_keys
+            )
+            if has_subject and has_object and has_predicate:
+                return True
+        return False
+
+    if has_legacy_brand_shape(raw_json.get("brands")):
+        return True
+    if has_legacy_dimension_shape(raw_json.get("dimension")):
         return True
     return any(
-        isinstance(raw_json.get(key), list)
+        has_legacy_relation_shape(raw_json.get(key))
         for key in ("response_relations", "relations", "relation_facts")
     )
 

@@ -131,6 +131,43 @@ class _InvalidJsonCompletions:
         )
 
 
+@pytest.mark.parametrize(
+    ("parse_status", "raw_json"),
+    [
+        (
+            "ok",
+            {
+                "analysis_meta": {"schema_version": "analyzer_v4"},
+                "entities": [],
+                "mentions": [],
+            },
+        ),
+        ("ok", {"brands": [{"brand_name": "BestCoffer"}]}),
+        ("ok", {"dimension": {"industry": "coffee"}}),
+        (
+            "ok",
+            {
+                "relations": [
+                    {
+                        "subject_name": "BestCoffer",
+                        "object_name": "office teams",
+                        "relation_type": "recommended_for",
+                    }
+                ]
+            },
+        ),
+        ("json_repaired", {"brands": [{"brand_name": "BestCoffer"}]}),
+    ],
+)
+def test_analyzer_schema_gate_accepts_valid_analyzer_shapes(
+    parse_status: str,
+    raw_json: dict,
+) -> None:
+    assert analyzer_cli._analyzer_result_failure(
+        SimpleNamespace(parse_status=parse_status, raw_json=raw_json)
+    ) == (None, None)
+
+
 def _patch_pipeline(monkeypatch: pytest.MonkeyPatch, result: LLMAnalysisResult) -> None:
     monkeypatch.setattr(analyzer_cli, "BrandDetector", lambda: _FakeDetector())
     monkeypatch.setattr(analyzer_cli, "LLMAnalyzer", lambda: _StaticLLMAnalyzer(result))
@@ -247,12 +284,20 @@ async def test_ok_status_without_raw_analyzer_json_is_not_persisted_as_done(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "raw_json",
+    [
+        {"error": "rate limit"},
+        {"relations": []},
+        {"relations": [{"foo": "bar"}]},
+    ],
+)
 async def test_ok_status_with_non_analyzer_json_is_not_legacy_packaged_as_done(
     session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
+    raw_json: dict,
 ) -> None:
     brand, response = await _seed_response(session)
-    raw_json = {"error": "rate limit"}
     _patch_pipeline(
         monkeypatch, LLMAnalysisResult(parse_status="ok", raw_json=raw_json)
     )
