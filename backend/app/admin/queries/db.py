@@ -285,7 +285,7 @@ def format_attempt_analysis_fields(row: dict[str, Any]) -> dict[str, Any]:
         item["analysis_status"] = latest_run_status
     elif latest_run_status == "failed" and analysis_id is None:
         item["analysis_status"] = "failed"
-    elif persisted_status == "pending" and analysis_id is None:
+    elif persisted_status in {"pending", "done", "partial"} and analysis_id is None:
         item["analysis_status"] = "missing"
     elif persisted_status:
         item["analysis_status"] = persisted_status
