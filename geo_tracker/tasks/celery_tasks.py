@@ -60,6 +60,12 @@ from geo_tracker.tasks.query_failure import (
     _empty_response_failure_reason,
 )
 from geo_tracker.tasks.query_lifecycle import mark_query_finished, mark_query_started
+from geo_tracker.tasks.no_account_requeue import (
+    NO_ACCOUNT_REQUEUE_LLMS,
+    NO_ACCOUNT_REQUEUE_REASONS,
+    _env_int,
+    maybe_requeue_for_no_account,
+)
 from geo_tracker.tasks.stale_running_repair import (
     DEFAULT_STALE_RUNNING_SECONDS,
     repair_stale_running_queries,
@@ -716,8 +722,43 @@ def execute_query(self, query_id: int) -> dict:
                     f"for {query.target_llm}"
                 )
             elif requires_login:
-                # 必须登录但无可用账号 → 标记 FAILED（不再设回 pending 避免无限循环）
+                # 必须登录但无可用账号:
+                # - 历史行为是直接 FAILED，避免无限重试。
+                # - 现在改为 bounded re-queue（仅 Doubao，且失败原因属于 pool 类）:
+                #   下一轮 dispatch 可以在 cooldown 自动恢复 / auto_login 完成后
+                #   重新承接，operator 不用手工 retry。预算用尽后才走 FAILED。
                 failure_reason = await diagnose_account_unavailable(db, query.target_llm)
+                requeued, retry_count, retry_max = maybe_requeue_for_no_account(
+                    query, failure_reason
+                )
+                if requeued:
+                    await db.commit()
+                    logger.warning(
+                        "Query %s: %s no account available (%s); re-queued attempt %s/%s",
+                        query_id,
+                        query.target_llm,
+                        failure_reason,
+                        retry_count,
+                        retry_max,
+                    )
+                    # 仍然按原有逻辑触发 auto_login（带分布式锁，参考 2026-04-27 SMS 修复）。
+                    if (
+                        query.target_llm in {"doubao", "deepseek", "chatgpt"}
+                        and failure_reason in NO_ACCOUNT_REQUEUE_REASONS
+                        and await should_enqueue_new_account(query.target_llm)
+                    ):
+                        auto_login.apply_async(
+                            kwargs={"platform": query.target_llm, "new_account": True},
+                            queue="account_login",
+                        )
+                    return {
+                        "query_id": query_id,
+                        "status": "requeued",
+                        "reason": failure_reason,
+                        "retry_count": retry_count,
+                        "retry_max": retry_max,
+                    }
+
                 mark_query_finished(
                     query,
                     status=QueryStatus.FAILED.value,
@@ -727,21 +768,16 @@ def execute_query(self, query_id: int) -> dict:
                 await db.commit()
                 logger.warning(
                     f"Query {query_id}: {query.target_llm} requires login "
-                    f"but no account available ({failure_reason}), marking FAILED"
+                    f"but no account available ({failure_reason}), marking FAILED "
+                    f"(retry_count={retry_count}, retry_max={retry_max})"
                 )
                 # 生产事故 2026-04-27 SMS 浪费根因修复:
                 # 原代码无锁直接 enqueue, 同时间窗多个 query 失败会喷多个 auto_login,
                 # 每个都向鲁班要新手机号 (~1元/条). 加分布式锁 + 失败 cooldown.
-                auto_register_reasons = {
-                    "account_pool_empty",
-                    "account_no_active",
-                    "account_no_cookies",
-                    "no_account_available",
-                }
                 auto_register_engines = {"doubao", "deepseek", "chatgpt"}
                 if (
                     query.target_llm in auto_register_engines
-                    and failure_reason in auto_register_reasons
+                    and failure_reason in NO_ACCOUNT_REQUEUE_REASONS
                     and await should_enqueue_new_account(query.target_llm)
                 ):
                     auto_login.apply_async(

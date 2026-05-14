@@ -7,14 +7,15 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Optional
 
-from sqlalchemy import select, and_, func, update
+from sqlalchemy import and_, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from geo_tracker.db.models import LLMAccount, AccountRotationLog, AccountStatus
 from geo_tracker.agent.sms_redaction import mask_phone
+from geo_tracker.db.models import AccountRotationLog, AccountStatus, LLMAccount
 from geo_tracker.tasks.query_failure import _should_report_account_failure
 
 logger = logging.getLogger(__name__)
@@ -36,6 +37,128 @@ EXPIRED_ACCOUNT_REASONS = frozenset(
     }
 )
 DOUBAO_SESSION_COOLDOWN_REASONS = frozenset({"doubao_page_unavailable"})
+
+
+@dataclass(frozen=True)
+class PoolHealthSnapshot:
+    """Read-only counts of an LLM's accounts by status.
+
+    ``cooldown_expired`` counts accounts whose ``cooldown_until`` has elapsed
+    but whose ``status`` is still ``cooldown`` — these are the rows that
+    :func:`promote_expired_cooldowns` will promote back to ``active``.
+    """
+
+    llm_name: str
+    active: int
+    cooldown: int
+    cooldown_expired: int
+    expired: int
+    banned: int
+    with_cookies: int
+    captured_at: datetime
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "llm_name": self.llm_name,
+            "active": self.active,
+            "cooldown": self.cooldown,
+            "cooldown_expired": self.cooldown_expired,
+            "expired": self.expired,
+            "banned": self.banned,
+            "with_cookies": self.with_cookies,
+            "captured_at": self.captured_at.isoformat(),
+        }
+
+
+async def snapshot_pool_health(
+    db: AsyncSession,
+    llm_name: str,
+    *,
+    now: datetime | None = None,
+) -> PoolHealthSnapshot:
+    """Return per-status counts for ``llm_name``. Read-only; idempotent."""
+    captured_at = now or datetime.utcnow()
+    rows = (
+        await db.execute(select(LLMAccount).where(LLMAccount.llm_name == llm_name))
+    ).scalars().all()
+
+    active = 0
+    cooldown = 0
+    cooldown_expired = 0
+    expired = 0
+    banned = 0
+    with_cookies = 0
+    for acc in rows:
+        if acc.cookies_json:
+            with_cookies += 1
+        status = (acc.status or "").lower()
+        if status == AccountStatus.ACTIVE.value:
+            active += 1
+        elif status == AccountStatus.COOLDOWN.value:
+            cooldown += 1
+            if acc.cooldown_until is None or acc.cooldown_until <= captured_at:
+                cooldown_expired += 1
+        elif status == AccountStatus.EXPIRED.value:
+            expired += 1
+        elif status == AccountStatus.BANNED.value:
+            banned += 1
+
+    return PoolHealthSnapshot(
+        llm_name=llm_name,
+        active=active,
+        cooldown=cooldown,
+        cooldown_expired=cooldown_expired,
+        expired=expired,
+        banned=banned,
+        with_cookies=with_cookies,
+        captured_at=captured_at,
+    )
+
+
+async def promote_expired_cooldowns(
+    db: AsyncSession,
+    llm_name: str | None = None,
+    *,
+    now: datetime | None = None,
+    dry_run: bool = False,
+) -> list[int]:
+    """Promote ``cooldown`` accounts whose ``cooldown_until`` has elapsed.
+
+    Idempotent. Returns the promoted account ids. When ``llm_name`` is None,
+    the scan covers all LLMs. The previous code path left an account stuck in
+    ``cooldown`` forever because :meth:`AccountPool.acquire` filters by
+    ``status='active'`` only — even after ``cooldown_until`` had passed.
+    """
+    current = now or datetime.utcnow()
+    stmt = select(LLMAccount).where(
+        and_(
+            LLMAccount.status == AccountStatus.COOLDOWN.value,
+            LLMAccount.cooldown_until != None,
+            LLMAccount.cooldown_until <= current,
+        )
+    )
+    if llm_name:
+        stmt = stmt.where(LLMAccount.llm_name == llm_name)
+
+    rows = (await db.execute(stmt)).scalars().all()
+    promoted: list[int] = []
+    for acc in rows:
+        promoted.append(int(acc.id))
+        if dry_run:
+            continue
+        previous_status = str(acc.status or "")
+        acc.status = AccountStatus.ACTIVE.value
+        acc.cooldown_until = None
+        _log_account_state_transition(
+            acc,
+            previous_status=previous_status,
+            new_status=AccountStatus.ACTIVE.value,
+            reason="cooldown_window_elapsed",
+            evidence="auto_promote_expired_cooldowns",
+        )
+    if rows and not dry_run:
+        await db.commit()
+    return promoted
 
 
 def _log_account_state_transition(
@@ -158,6 +281,12 @@ class AccountPool:
         from sqlalchemy import text  # local: avoid forcing the import on import
         now = datetime.utcnow()
 
+        # Promote cooldown accounts whose window has elapsed. Without this the
+        # ``status='active'`` filter below permanently hides accounts whose
+        # cooldown timer expired hours ago, leading to "0 active" pool
+        # exhaustion symptoms (e.g. issue #908 / #917).
+        await promote_expired_cooldowns(self.db, llm_name, now=now)
+
         stmt = (
             select(LLMAccount)
             .where(
@@ -198,8 +327,12 @@ class AccountPool:
         accounts = result.scalars().all()
 
         if not accounts:
+            snapshot = await snapshot_pool_health(self.db, llm_name, now=now)
             logger.warning(
-                f"No available account for llm={llm_name} country={country_code}"
+                "No available account llm=%s country=%s pool_health=%s",
+                llm_name,
+                country_code,
+                snapshot.to_dict(),
             )
             return None
 
@@ -212,8 +345,12 @@ class AccountPool:
                 break
 
         if account is None:
+            snapshot = await snapshot_pool_health(self.db, llm_name, now=now)
             logger.warning(
-                f"No account reservation available for llm={llm_name} country={country_code}"
+                "No account reservation available llm=%s country=%s pool_health=%s",
+                llm_name,
+                country_code,
+                snapshot.to_dict(),
             )
             return None
 
