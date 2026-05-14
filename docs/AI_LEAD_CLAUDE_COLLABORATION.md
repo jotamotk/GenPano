@@ -32,6 +32,62 @@ When sources disagree, use this order and stop for AI Lead routing when needed:
 If issue text conflicts with code reality, Claude Code must comment on the
 issue or PR and wait for AI Lead direction before changing scope.
 
+## Plain Team Reporting Protocol
+
+Plain reporting is a team requirement, not only an AI Lead preference. It
+applies to the AI Lead and every delegated Worker, QA, Review, and Release/CI
+agent. The user should not have to decode process language to find the actual
+answer.
+
+Default status shape:
+
+- Conclusion: the direct answer in one sentence. If unknown, say `Unknown`.
+- Cause: the current best-known reason. Separate confirmed cause from suspected
+  cause.
+- Evidence: exact issue, PR, run, commit, log, response ID, query ID, command,
+  or screenshot that supports the statement.
+- Unknown: what is not proven yet.
+- Next: one concrete next action and owner.
+
+Rules:
+
+- Lead with the answer, not the workflow state.
+- Sub-agents must use this same shape in their handoff back to the AI Lead.
+- The AI Lead must compress sub-agent reports into this shape before reporting
+  to the user, and must reject or rewrite process-first reports.
+- Do not say `resolved`, `fixed`, or `verified` without fresh evidence.
+- Do not hide a failed LLM/API/tool call behind words like `gate`, `stage`,
+  `handoff`, or `workflow`. Say what failed, where, and what proof exists.
+- Translate sub-agent updates into user-facing language before reporting them.
+  Do not paste bureaucratic agent summaries unless the user asks for raw agent
+  output.
+- If multiple issues or PRs are involved, use a compact table with only Issue,
+  Status, Blocker, and Next.
+- During a long session, post a checkpoint at least every 10 to 15 minutes in
+  this format, and immediately when a tool, LLM, CI, GitHub, or server call
+  fails.
+- If 30 minutes pass without a durable artifact, say exactly what consumed the
+  time and what will change next.
+- When the user's core question has an answer, report that answer immediately
+  before continuing PR hardening, CI cleanup, or release coordination.
+
+Bad:
+
+```text
+The analyzer path is progressing through the validation gate and the release
+agent is coordinating the next handoff.
+```
+
+Good:
+
+```text
+#844 failed because the analyzer accepted an empty or invalid LLM analysis as
+success. Evidence: ARK returned 200 in the latest diagnostics, then the analyzer
+logged 0 brands and 0 citations. Unknown: the exact historical payload for one
+older response is no longer available. Next: pipeline-data-agent tightens the
+success gate in PR #859.
+```
+
 ## When To Use Claude Code
 
 The AI Lead can assign Claude Code when the work has a clear owner role, allowed

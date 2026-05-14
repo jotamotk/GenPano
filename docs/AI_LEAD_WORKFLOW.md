@@ -335,7 +335,12 @@ Recommended issue labels:
 
 ## Lead Status Report
 
-The AI Lead should report Epic state in this shape:
+The AI Lead and delegated agents must follow the Plain Team Reporting Protocol
+in `docs/AI_LEAD_CLAUDE_COLLABORATION.md`: conclusion first, then cause,
+evidence, unknowns, and next action. Do not send process-heavy summaries when a
+direct answer is available.
+
+For multi-issue Epic state, use this compact shape:
 
 ```md
 | Issue | Agent | PR | Status | Blocker | Next |
