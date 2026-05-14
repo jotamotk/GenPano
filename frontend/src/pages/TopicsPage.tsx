@@ -414,8 +414,14 @@ function topicMetricTrustState(
   fallback?: (AnalyticsContractMetadata & LooseRecord) | null,
   value?: unknown,
 ): MetricTrustState | null {
-  const evidence = topicMetricEvidence(source, metric) || topicMetricEvidence(fallback, metric)
-  const coverage = evidence?.analyzer_coverage || source?.analyzer_coverage || fallback?.analyzer_coverage
+  const sourceEvidence = topicMetricEvidence(source, metric)
+  const fallbackEvidence = topicMetricEvidence(fallback, metric)
+  const evidence = sourceEvidence || fallbackEvidence
+  const hasSourceMetricProof = Boolean(sourceEvidence)
+  const coverage =
+    evidence?.analyzer_coverage ||
+    source?.analyzer_coverage ||
+    (hasSourceMetricProof ? null : fallback?.analyzer_coverage)
   if (!evidence && !coverage && !source?.formula_status && !fallback?.formula_status) return null
   return buildMetricTrustState({
     metricKey: metric,
@@ -426,8 +432,8 @@ function topicMetricTrustState(
       ...(evidence?.reason_codes ?? []),
       ...((source?.missing_inputs as string[] | undefined) ?? []),
       ...((source?.missing_reasons as string[] | undefined) ?? []),
-      ...((fallback?.missing_inputs as string[] | undefined) ?? []),
-      ...((fallback?.missing_reasons as string[] | undefined) ?? []),
+      ...(hasSourceMetricProof ? [] : ((fallback?.missing_inputs as string[] | undefined) ?? [])),
+      ...(hasSourceMetricProof ? [] : ((fallback?.missing_reasons as string[] | undefined) ?? [])),
     ],
     missing_inputs: evidence?.missing_inputs,
     numerator: evidence?.numerator ?? null,
