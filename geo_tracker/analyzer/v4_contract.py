@@ -72,6 +72,7 @@ DRIVER_TYPES = {
 FEATURE_TYPES = {
     "ingredient",
     "function",
+    "attribute",
     "benefit",
     "drawback",
     "texture",

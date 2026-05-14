@@ -1146,6 +1146,7 @@ def test_analyzer_v4_drops_category_product_features_with_quality_flags() -> Non
     [
         ("quality", "feature_quality_smooth_crema", "smooth crema"),
         ("drawback", "feature_drawback_over_extraction", "over-extraction risk"),
+        ("attribute", "feature_attribute_low_acidity", "low acidity"),
     ],
 )
 def test_analyzer_v4_accepts_product_feature_type_schema_drifts(

@@ -177,7 +177,7 @@ belongs_to_brand only for response-evidenced product-to-brand ownership.
       "feature_key": "stable feature key",
       "product_entity_key": "product entity key",
       "brand_entity_key": "brand entity key or null",
-      "feature_type": "ingredient|function|benefit|drawback|texture|price|scenario|audience|packaging|availability|quality|other",
+      "feature_type": "ingredient|function|attribute|benefit|drawback|texture|price|scenario|audience|packaging|availability|quality|other",
       "feature_name": "feature name",
       "feature_value": null,
       "evidence_quote": "quote from the current response",
