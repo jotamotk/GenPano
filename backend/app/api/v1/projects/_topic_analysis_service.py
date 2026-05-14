@@ -279,7 +279,9 @@ async def _query_scope_conditions(
         if "profile_id" not in query_cols:
             conditions.append(_false_condition())
         else:
-            conditions.append(f"CAST({prefix}.profile_id AS TEXT) = :profile_id")
+            conditions.append(
+                f"({prefix}.profile_id IS NULL OR CAST({prefix}.profile_id AS TEXT) = :profile_id)"
+            )
             params["profile_id"] = str(filters.profile_id)
 
     if filters.segment_id:
