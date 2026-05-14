@@ -7,7 +7,6 @@
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import os
@@ -47,7 +46,7 @@ from geo_tracker.agent.response_validation import (
     doubao_auth_state_reason,
     invalid_response_reason,
 )
-from geo_tracker.db.models import LLMResponse, Query, QueryStatus
+from geo_tracker.db.models import LLMResponse, Query
 from geo_tracker.tasks.query_failure import classify_execution_failure
 
 logger = logging.getLogger(__name__)
@@ -1083,6 +1082,21 @@ class GuestQueryExecutor:
                         await self._prefer_chatgpt_auth_failure_reason(
                             llm, page_obj, runtime_events=runtime_events
                         )
+                        doubao_reason = await self._prefer_doubao_load_failure_reason(
+                            llm, page_obj
+                        )
+                        if doubao_reason:
+                            await _save_html(page_obj, query.id, doubao_reason)
+                            await _save_screenshot(page_obj, query.id, doubao_reason)
+                            await _save_runtime_snapshot(
+                                page_obj,
+                                query.id,
+                                doubao_reason,
+                                config=config,
+                                error=e,
+                                matched_selector=matched_selector,
+                                runtime_events=runtime_events,
+                            )
                     self.last_error_reason = self.last_error_reason or "page_load_failed"
                     return None
 
@@ -1257,7 +1271,7 @@ class GuestQueryExecutor:
             if page_obj:
                 try:
                     await _save_screenshot(page_obj, query.id, f"{llm}_exception")
-                except:
+                except Exception:
                     pass
             return None
         finally:
@@ -1289,6 +1303,7 @@ class GuestQueryExecutor:
             "no_response",
             "no_input",
             "browser_timeout",
+            "page_load_failed",
             "submit_failed",
             "doubao_homepage_content",
         ):
@@ -1314,12 +1329,31 @@ class GuestQueryExecutor:
             "no_response",
             "no_input",
             "browser_timeout",
+            "page_load_failed",
             "submit_failed",
             DOUBAO_VISUAL_CHALLENGE_REASON,
             DOUBAO_IMAGE_CHALLENGE_LOAD_FAILED_REASON,
         ):
             self.last_error_reason = auth_reason
         return auth_reason
+
+    async def _prefer_doubao_load_failure_reason(
+        self, llm_name: str, page: Page | None
+    ) -> str | None:
+        """Promote inspectable Doubao page state over generic load failures."""
+        if llm_name != "doubao" or page is None:
+            return None
+        auth_reason = await _doubao_auth_state_reason_from_page(page)
+        if auth_reason == "doubao_not_logged_in":
+            return await self._prefer_doubao_auth_failure_reason(llm_name, page)
+        challenge_reason = await self._prefer_doubao_visual_challenge_reason(
+            llm_name, page
+        )
+        if challenge_reason:
+            return challenge_reason
+        if auth_reason:
+            return await self._prefer_doubao_auth_failure_reason(llm_name, page)
+        return None
 
     async def _prefer_chatgpt_auth_failure_reason(
         self,
@@ -1856,7 +1890,7 @@ class GuestQueryExecutor:
         # 点击输入框（force=True 绕开可见性检查）
         try:
             await input_el.click(force=True, timeout=5000)
-        except:
+        except Exception:
             pass
         await page.wait_for_timeout(random.randint(300, 800))
 
@@ -2289,7 +2323,7 @@ class GuestQueryExecutor:
                                 html = await el.inner_html()
                                 if html:
                                     htmls.append(html)
-                            except:
+                            except Exception:
                                 pass
                         combined = "\n".join(texts)
                         if len(combined) > 20:
