@@ -44,6 +44,18 @@ from app.api.v1.projects.contracts.models import (
     ProjectScope,
     ValueRange,
 )
+from app.api.v1.projects.contracts.package import (
+    _as_package,
+    _as_v3_package,
+    _json_int,
+    _merge_status,
+    _package_date_in_window,
+    _package_reason_codes,
+    _package_response_ids,
+    _package_target_brand_id,
+    _repair_entries,
+    _status_from_package,
+)
 
 __all__ = [
     "ANALYSIS_MISSING_REASON",
@@ -69,6 +81,16 @@ __all__ = [
     "MetricValue",
     "ProjectScope",
     "ValueRange",
+    "_as_package",
+    "_as_v3_package",
+    "_json_int",
+    "_merge_status",
+    "_package_date_in_window",
+    "_package_reason_codes",
+    "_package_response_ids",
+    "_package_target_brand_id",
+    "_repair_entries",
+    "_status_from_package",
     "formula_diagnostics_for",
     "metric_definition",
     "metric_definitions",
