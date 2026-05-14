@@ -43,6 +43,27 @@ from app.api.v1.projects._topic_analysis_dto import (
     TopicPromptRow,
     TopicPromptsOut,
 )
+from app.api.v1.projects.topic_analysis.fact_rollup import (
+    _bucket_position as _bucket_position,
+)
+from app.api.v1.projects.topic_analysis.fact_rollup import (
+    _fact_all_mention_count as _fact_all_mention_count,
+)
+from app.api.v1.projects.topic_analysis.fact_rollup import (
+    _fact_brand_scope_matched as _fact_brand_scope_matched,
+)
+from app.api.v1.projects.topic_analysis.fact_rollup import (
+    _fact_target_mention_count as _fact_target_mention_count,
+)
+from app.api.v1.projects.topic_analysis.fact_rollup import (
+    _logical_query_key as _logical_query_key,
+)
+from app.api.v1.projects.topic_analysis.fact_rollup import (
+    _row_attempt_sort_key as _row_attempt_sort_key,
+)
+from app.api.v1.projects.topic_analysis.fact_rollup import (
+    _row_attempt_time as _row_attempt_time,
+)
 from app.api.v1.projects.topic_analysis.filters import (
     DEFAULT_WINDOW_DAYS as DEFAULT_WINDOW_DAYS,
 )
@@ -170,30 +191,6 @@ def _success_status_condition(cols: set[str], alias: str = "q") -> str | None:
     return f"LOWER(COALESCE({alias}.status, '')) IN ('done', 'success', 'completed')"
 
 
-def _logical_query_key(row: dict[str, Any]) -> str:
-    query_text = " ".join(str(row.get("query_text") or "").strip().lower().split())
-    prompt = str(row.get("prompt_id") or "")
-    return "|".join([prompt, query_text])
-
-
-def _row_attempt_time(row: dict[str, Any]) -> Any:
-    return (
-        row.get("query_executed_at")
-        or row.get("query_finished_at")
-        or row.get("response_created_at")
-        or row.get("query_created_at")
-    )
-
-
-def _row_attempt_sort_key(row: dict[str, Any]) -> tuple[str, int, str, int]:
-    return (
-        _timestamp_key(_row_attempt_time(row)),
-        int(row.get("query_id") or 0),
-        _timestamp_key(row.get("response_created_at")),
-        int(row.get("response_id") or 0),
-    )
-
-
 def _query_text_expr(cols: set[str]) -> str:
     if "query_text" in cols:
         return "q.query_text"
@@ -222,22 +219,6 @@ def _response_latest_order_sql(cols: set[str]) -> str:
 
 def _false_condition() -> str:
     return "1 = 0"
-
-
-def _fact_brand_scope_matched(row: dict[str, Any]) -> bool:
-    return bool(row.get("brand_scope_matched"))
-
-
-def _fact_target_mention_count(row: dict[str, Any]) -> int:
-    return int(row.get("target_mention_count") or 0)
-
-
-def _fact_all_mention_count(
-    row: dict[str, Any],
-    target_mentions: int | None = None,
-) -> int:
-    total = int(row.get("all_mention_count") or 0)
-    return total
 
 
 def _engine_conditions(
@@ -354,20 +335,6 @@ def _empty_monitoring(
         intent_matrix=[],
         state=state,
     )
-
-
-def _bucket_position(rank: int | None) -> str | None:
-    if rank is None:
-        return None
-    if rank == 1:
-        return "Top1"
-    if rank <= 3:
-        return "Top3"
-    if rank <= 5:
-        return "Top5"
-    if rank <= 10:
-        return "Top10"
-    return "Other"
 
 
 async def _fact_rows(

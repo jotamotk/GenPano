@@ -7,6 +7,15 @@ This package is being filled incrementally; see Epic #885 and tracking issue
 
 from __future__ import annotations
 
+from app.api.v1.projects.topic_analysis.fact_rollup import (
+    _bucket_position,
+    _fact_all_mention_count,
+    _fact_brand_scope_matched,
+    _fact_target_mention_count,
+    _logical_query_key,
+    _row_attempt_sort_key,
+    _row_attempt_time,
+)
 from app.api.v1.projects.topic_analysis.filters import (
     DEFAULT_WINDOW_DAYS,
     AnalysisFilters,
@@ -57,12 +66,17 @@ __all__ = [
     "_as_float",
     "_as_int",
     "_brand_fact_terms",
+    "_bucket_position",
     "_clean_fact_term",
     "_coerce_json",
     "_date_key",
     "_expand_brand_fact_terms",
+    "_fact_all_mention_count",
+    "_fact_brand_scope_matched",
+    "_fact_target_mention_count",
     "_is_non_branded_row",
     "_iso",
+    "_logical_query_key",
     "_mean",
     "_mention_name_condition",
     "_normalize_key",
@@ -78,6 +92,8 @@ __all__ = [
     "_resolve_window",
     "_response_preview",
     "_round",
+    "_row_attempt_sort_key",
+    "_row_attempt_time",
     "_row_matches_analysis_filters",
     "_safe_ident",
     "_select_col",
