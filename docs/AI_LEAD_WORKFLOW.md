@@ -28,6 +28,8 @@ wears for different responsibilities:
 - `qa-e2e`: verification only, including local smoke and Playwright
 - `release-ci`: GitHub Actions, deploy logs, server diagnostics, CD hygiene
 - `review`: review only, focused on bugs, regressions, missing tests, and risk
+- `pruning`: subtraction review for stale repo artifacts, dead code, debug
+  tools, obsolete prototypes, and outdated workflow rules
 
 The hats do not imply separate people. Do not create one issue per hat. Create
 issues for deliverables that can be accepted, merged, closed, or abandoned.
@@ -336,6 +338,76 @@ Risk Check:
 Efficiency and Reliability notes can accumulate in a governance/process issue.
 Constraint changes need product-owner approval before becoming rules.
 
+## Pruning Hat And Automation
+
+The pruning hat is responsible for making subtraction visible. It does not
+directly delete by automation. It periodically produces a report of candidates
+that may be deleted, kept, replaced, or escalated for a decision.
+
+Use a Codex automation for recurring pruning review when available. The
+automation should run as a reporting job against the repo and post to a fixed
+governance or pruning inbox issue. It must not commit, open cleanup PRs, close
+issues, or delete files automatically.
+
+Recommended cadence starts at every two weeks while the repo is changing
+quickly. Once the backlog stabilizes, reduce the cadence to monthly.
+
+### Pruning Scope
+
+Look for:
+
+- debug scripts and one-off diagnostics that no longer have an open incident
+- legacy directories and removed product surfaces
+- dead code or exports with no references
+- unused prototypes and detached mockups
+- stale runbooks, old verification notes, and superseded docs
+- obsolete issue templates, labels, or AGENTS.md / workflow clauses
+- temporary flags, debug endpoints, or repair scripts left after release
+
+### Pruning Report
+
+The automation output should be short and decision-oriented:
+
+```md
+## Pruning Report
+
+| Candidate | Type | Evidence | Recommendation | Risk | Next |
+| --- | --- | --- | --- | --- | --- |
+| scripts/debug_x.py | debug script | no rg refs; no workflow refs | Delete | low | fast-path cleanup issue |
+| admin_console/ | legacy dir | still referenced in docs | Needs Decision | medium | ask product owner |
+```
+
+Each candidate needs evidence:
+
+- `rg` or structured search references
+- workflow, CI, script, or import usage
+- docs links and open issue/PR dependencies
+- owner or likely owner, if known
+- behavior risk and restore path
+
+Recommendations:
+
+- `Delete`: no known references, low risk, git history is enough restore path
+- `Keep`: still referenced or intentionally retained
+- `Replace`: current artifact should be folded into a better doc/script/path
+- `Needs Decision`: product, incident, compliance, or runtime risk needs human
+  judgment
+
+### Deletion Rules
+
+Pruning reports are not permission to delete.
+
+- Low-risk docs, debug scripts, and detached prototypes can become Fast Path
+  cleanup issues.
+- Runtime code, CI/CD, migrations, data repair scripts, production routes,
+  security-sensitive files, and product behavior removals require a scoped issue
+  with explicit verification.
+- Do not create archive directories as a default. If git history can recover the
+  artifact, delete it. Archive only for compliance, audit, or active incident
+  evidence.
+- If a candidate has open issue/PR dependencies, comment on the owning issue
+  instead of deleting.
+
 ## Issue Closure Protocol
 
 Every closed issue needs a closure record. Use one closure type.
@@ -483,6 +555,7 @@ Recommended issue labels:
 - `hat:qa-e2e`
 - `hat:release-ci`
 - `hat:review`
+- `hat:pruning`
 - `type:epic`
 - `type:deliverable`
 - `type:bugfix`

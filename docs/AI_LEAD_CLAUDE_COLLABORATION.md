@@ -45,6 +45,8 @@ Good Claude Code assignments:
 - investigating one CI/CD or deploy failure
 - running QA/E2E verification and reporting exact failures
 - reviewing one PR for bugs, regressions, missing tests, and release risk
+- producing a pruning report with deletion candidates and evidence, without
+  changing files
 
 Poor Claude Code assignments:
 
@@ -53,6 +55,8 @@ Poor Claude Code assignments:
 - cross-cutting refactors mixed into a product task
 - PR or merge decisions that bypass Codex Lead
 - Admin work that has not confirmed the real Admin shell and route boundary
+- deleting stale artifacts directly from a pruning assignment without a scoped
+  cleanup issue
 
 ## Required Assignment Fields
 
@@ -212,6 +216,18 @@ reports:
 - pass/fail result
 - failed request URL, status, response body summary, and timestamp when
   available
+
+For pruning assignments, Claude Code must not delete files or change workflow
+rules. It reports:
+
+- candidate path or rule
+- candidate type: debug script, legacy directory, dead code, prototype, runbook,
+  template, or workflow clause
+- reference evidence from search, CI/workflow usage, docs links, and open
+  issue/PR dependencies
+- recommendation: `Delete`, `Keep`, `Replace`, or `Needs Decision`
+- risk and restore path
+- proposed follow-up issue when deletion is appropriate
 
 ## Release And CI Handoff
 

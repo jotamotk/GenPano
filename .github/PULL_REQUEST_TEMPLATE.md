@@ -8,7 +8,7 @@
 
 ## Owner Hat
 
-<!-- lead | frontend-visualization | frontend-integration | backend-api | pipeline-data | qa-e2e | release-ci | review -->
+<!-- lead | frontend-visualization | frontend-integration | backend-api | pipeline-data | qa-e2e | release-ci | review | pruning -->
 
 ## Summary
 
