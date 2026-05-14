@@ -711,6 +711,46 @@ async def test_doubao_auth_state_overrides_generic_browser_timeout(monkeypatch):
     assert executor.last_error_reason == "doubao_not_logged_in"
 
 
+@pytest.mark.asyncio
+async def test_doubao_page_load_failure_promotes_visual_challenge_reason(monkeypatch):
+    _install_fake_playwright(monkeypatch)
+
+    from geo_tracker.agent.guest_executor import GuestQueryExecutor
+
+    class FakePage:
+        async def evaluate(self, script):
+            assert "innerText" in script
+            return (
+                "bestCoffer portable coffee maker advantages\n"
+                "\u9700\u8981\u7535\u529b\u9a71\u52a8\u7684\u4e1c\u897f\n"
+                "\u8bf7\u9009\u62e9\u6240\u6709\u7b26\u5408\u4e0a\u6587\u63cf\u8ff0\u7684\u56fe\u7247\uff0c"
+                "\u5e76\u62d6\u62fd\u5230\u4e0b\u65b9\n"
+                "\u56fe\u7247\u52a0\u8f7d\u5931\u8d25\uff0c\u8bf7\u5237\u65b0\u91cd\u8bd5[5202]\n"
+                "\u5237\u65b0\n\u53cd\u9988\n\u63d0\u4ea4"
+            )
+
+        async def content(self):
+            return """
+            <main>
+              <textarea>bestCoffer portable coffee maker advantages</textarea>
+            </main>
+            <div role="dialog" class="verify-modal">
+              <h2>\u9700\u8981\u7535\u529b\u9a71\u52a8\u7684\u4e1c\u897f</h2>
+              <p>\u8bf7\u9009\u62e9\u6240\u6709\u7b26\u5408\u4e0a\u6587\u63cf\u8ff0\u7684\u56fe\u7247\uff0c\u5e76\u62d6\u62fd\u5230\u4e0b\u65b9</p>
+              <p>\u56fe\u7247\u52a0\u8f7d\u5931\u8d25\uff0c\u8bf7\u5237\u65b0\u91cd\u8bd5[5202]</p>
+              <button>\u5237\u65b0</button><button>\u53cd\u9988</button><button>\u63d0\u4ea4</button>
+            </div>
+            """
+
+    executor = GuestQueryExecutor()
+    executor.last_error_reason = "page_load_failed"
+
+    reason = await executor._prefer_doubao_load_failure_reason("doubao", FakePage())
+
+    assert reason == "doubao_image_challenge_load_failed"
+    assert executor.last_error_reason == "doubao_image_challenge_load_failed"
+
+
 def test_doubao_visual_challenge_text_is_classified_as_image_load_failure(monkeypatch):
     _install_fake_playwright(monkeypatch)
 
