@@ -32,6 +32,40 @@ session. Do not create process artifacts that do not improve execution.
   cancel superseded deploy runs when safe, and verify the final live environment
   is running the intended latest `main` SHA.
 
+### Evidence-First Debugging
+
+任何根因排查的第一步必须是从坏掉的 surface 直接抓真实响应/输出作为硬证据，并
+`grep` 全部调用者验证 prod 实际走的代码路径——禁止以"读代码推断行为"或
+"假设端点走某段 SQL/handler"替代直接观察。
+
+Why this rule exists:
+
+- #905 took 5 PR rounds (#913 → #934 → #935 → #942 → #943) to land the actual
+  root cause because the first 4 PRs were built on code-path assumptions
+  ("Admin Tracker uses `list_queries` SQL", "the formatter is the bug surface",
+  "`profile_id IS NULL` is the blocking gate") that were never validated
+  against the broken endpoint's real response. PR #943 — the actual fix —
+  took 30 seconds of SQL reading once `grep "format_attempt_analysis_fields"`
+  revealed the surface was served by `fetch_response_analyzer_status`, a
+  different SQL with a stripped-down `SELECT`.
+- Diagnostic labels (e.g. `_profile_state="query_profile_id_null"`) are not
+  code gates; correlation is not causation. Verify the actual control flow.
+
+Minimum evidence checklist before opening a fix PR for a user-reported bug:
+
+1. Capture (or request from the user) the actual response/output of the
+   broken surface — API JSON, log line, screenshot of rendered text, DB row,
+   whichever applies. Paste it into the issue or PR body.
+2. `grep` every caller of the function/handler/formatter you suspect; do not
+   assume a single endpoint serves the surface.
+3. Read the SQL/code path that *production* actually executes for that
+   surface, not the one you think it executes.
+4. State the assumed cause-and-effect chain explicitly, then point at the
+   evidence that confirms each link.
+
+Inferred behaviour without these four steps is a hypothesis, not a diagnosis.
+Do not ship a fix on a hypothesis.
+
 ### Fast Path And Full Path
 
 Not every request needs Epic -> Frontend Visualization -> PRD -> split issues.
