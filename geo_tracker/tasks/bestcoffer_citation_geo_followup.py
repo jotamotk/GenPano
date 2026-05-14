@@ -56,6 +56,7 @@ APPROVAL_COMMENT_API = (
 TRUSTED_APPROVAL_AUTHOR_ASSOCIATIONS = frozenset(
     {"OWNER", "MEMBER", "COLLABORATOR"}
 )
+ACCEPTED_V4_VALIDATOR_STATUSES = frozenset({"passed", "passed_with_flags"})
 
 APPROVAL_REF_HELP = (
     "Dry-run first, attach exact response/query IDs and write plan evidence to "
@@ -319,6 +320,31 @@ def _has_v3_package(raw: object) -> bool:
     return isinstance(package, dict) and package.get("analyzer_version") == "v3"
 
 
+def _v4_package(raw: object) -> dict | None:
+    if not isinstance(raw, dict):
+        return None
+    candidates = [
+        raw.get("analyzer_v4"),
+        raw.get("analyzer_fact_package_v4"),
+        raw.get("analyzer_fact_package"),
+        raw,
+    ]
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        meta = candidate.get("analysis_meta")
+        if isinstance(meta, dict) and meta.get("schema_version") == "analyzer_v4":
+            validator_status = str(meta.get("validator_status") or "").lower()
+            if validator_status not in ACCEPTED_V4_VALIDATOR_STATUSES:
+                continue
+            return candidate
+    return None
+
+
+def _has_v4_package(raw: object) -> bool:
+    return _v4_package(raw) is not None
+
+
 async def _load_project_topic_ids(
     session: AsyncSession,
     project_id: str,
@@ -426,8 +452,11 @@ async def collect_candidate_responses(
                 collected_at=response.collected_at.isoformat() if response.collected_at else None,
                 analysis_status=response.analysis_status,
                 has_response_analysis=analysis is not None,
-                has_v3_package=_has_v3_package(
-                    analysis.raw_analysis_json if analysis is not None else None
+                has_v3_package=(
+                    _has_v3_package(analysis.raw_analysis_json)
+                    or _has_v4_package(analysis.raw_analysis_json)
+                    if analysis is not None
+                    else False
                 ),
                 invalid_reason=invalid_reason,
             )
@@ -531,6 +560,28 @@ def _iter_v3_citations(package: dict) -> list[tuple[str, dict]]:
     return out
 
 
+def _iter_v4_citations(package: dict) -> list[tuple[str, dict]]:
+    values = package.get("citations")
+    if not isinstance(values, list):
+        return []
+    out: list[tuple[str, dict]] = []
+    for item in values:
+        if isinstance(item, dict):
+            out.append(("analyzer_v4", item))
+    return out
+
+
+def _iter_analyzer_citation_packages(raw: dict) -> list[tuple[str, dict]]:
+    packages: list[tuple[str, dict]] = []
+    v3_package = raw.get("analyzer_fact_package_v3")
+    if isinstance(v3_package, dict):
+        packages.append(("v3", v3_package))
+    v4_package = _v4_package(raw)
+    if isinstance(v4_package, dict):
+        packages.append(("v4", v4_package))
+    return packages
+
+
 def _resolve_mention_id(
     citation: dict,
     mentions_by_id: dict[int, BrandMention],
@@ -551,6 +602,122 @@ def _resolve_mention_id(
     if len(matches) == 1:
         return int(matches[0].id), None
     if len(matches) > 1:
+        return None, "ambiguous_brand_mention"
+    return None, "no_matching_brand_mention"
+
+
+def _entity_keys_for_v4_citation(citation: dict, package: dict) -> set[str]:
+    keys = {str(value) for value in citation.get("mentioned_entity_keys") or [] if value}
+    entities_by_key = {
+        str(entity.get("entity_key")): entity
+        for entity in package.get("entities") or []
+        if isinstance(entity, dict) and entity.get("entity_key")
+    }
+    mentions_by_key = {
+        str(mention.get("mention_key")): mention
+        for mention in package.get("mentions") or []
+        if isinstance(mention, dict) and mention.get("mention_key")
+    }
+    drivers_by_key = {
+        str(driver.get("driver_key")): driver
+        for driver in package.get("sentiment_drivers") or []
+        if isinstance(driver, dict) and driver.get("driver_key")
+    }
+    features_by_key = {
+        str(feature.get("feature_key")): feature
+        for feature in package.get("product_features") or []
+        if isinstance(feature, dict) and feature.get("feature_key")
+    }
+    relations_by_key = {
+        str(relation.get("relation_key")): relation
+        for relation in package.get("relations") or []
+        if isinstance(relation, dict) and relation.get("relation_key")
+    }
+    for linked_key in citation.get("linked_fact_keys") or []:
+        key = str(linked_key)
+        if key in entities_by_key:
+            keys.add(key)
+        mention = mentions_by_key.get(key)
+        if mention and mention.get("entity_key"):
+            keys.add(str(mention["entity_key"]))
+        driver = drivers_by_key.get(key)
+        if driver and driver.get("target_entity_key"):
+            keys.add(str(driver["target_entity_key"]))
+        feature = features_by_key.get(key)
+        if feature:
+            for field in ("brand_entity_key", "product_entity_key"):
+                if feature.get(field):
+                    keys.add(str(feature[field]))
+        relation = relations_by_key.get(key)
+        if relation:
+            for field in ("subject_entity_key", "object_entity_key"):
+                if relation.get(field):
+                    keys.add(str(relation[field]))
+    return keys
+
+
+def _candidate_mentions_for_v4_brand_entity(
+    entity: dict,
+    mentions_by_name: dict[str, list[BrandMention]],
+    mentions_by_brand_id: dict[int, list[BrandMention]],
+) -> list[BrandMention]:
+    canonical_id = entity.get("canonical_id")
+    try:
+        brand_id = int(canonical_id) if canonical_id is not None else None
+    except (TypeError, ValueError):
+        brand_id = None
+    if brand_id is not None:
+        matches = mentions_by_brand_id.get(brand_id, [])
+        if matches:
+            return matches
+
+    for name in (entity.get("canonical_name"), entity.get("raw_name")):
+        normalized = _normalize_entity(name)
+        if not normalized:
+            continue
+        matches = mentions_by_name.get(normalized, [])
+        if matches:
+            return matches
+    return []
+
+
+def _resolve_v4_mention_id(
+    citation: dict,
+    package: dict,
+    mentions_by_name: dict[str, list[BrandMention]],
+    mentions_by_brand_id: dict[int, list[BrandMention]],
+) -> tuple[int | None, str | None]:
+    entity_keys = _entity_keys_for_v4_citation(citation, package)
+    if not entity_keys:
+        return None, "missing_v4_citation_entity_link"
+
+    entities_by_key = {
+        str(entity.get("entity_key")): entity
+        for entity in package.get("entities") or []
+        if isinstance(entity, dict) and entity.get("entity_key")
+    }
+    brand_entities = [
+        entities_by_key[key]
+        for key in entity_keys
+        if key in entities_by_key
+        and str(entities_by_key[key].get("entity_type") or "").lower() == "brand"
+    ]
+    if not brand_entities:
+        return None, "missing_v4_citation_brand_entity"
+
+    candidate_mentions: dict[int, BrandMention] = {}
+    for entity in brand_entities:
+        for mention in _candidate_mentions_for_v4_brand_entity(
+            entity,
+            mentions_by_name,
+            mentions_by_brand_id,
+        ):
+            if mention.id is not None:
+                candidate_mentions[int(mention.id)] = mention
+
+    if len(candidate_mentions) == 1:
+        return next(iter(candidate_mentions)), None
+    if len(candidate_mentions) > 1:
         return None, "ambiguous_brand_mention"
     return None, "no_matching_brand_mention"
 
@@ -617,14 +784,17 @@ def _existing_by_key(citations: list[CitationSource]) -> dict[tuple[str, int | N
 
 def _mentions_indexes(
     mentions: list[BrandMention],
-) -> tuple[dict[int, BrandMention], dict[str, list[BrandMention]]]:
+) -> tuple[dict[int, BrandMention], dict[str, list[BrandMention]], dict[int, list[BrandMention]]]:
     by_id = {int(mention.id): mention for mention in mentions if mention.id is not None}
     by_name: dict[str, list[BrandMention]] = {}
+    by_brand_id: dict[int, list[BrandMention]] = {}
     for mention in mentions:
         normalized = _normalize_entity(mention.brand_name)
         if normalized:
             by_name.setdefault(normalized, []).append(mention)
-    return by_id, by_name
+        if mention.brand_id is not None:
+            by_brand_id.setdefault(int(mention.brand_id), []).append(mention)
+    return by_id, by_name, by_brand_id
 
 
 def _set_citation_defaults(citation: dict, source: CitationSource) -> dict:
@@ -698,6 +868,26 @@ def _patch_citation_facts(container: dict, sources_by_key: dict[tuple[str, int |
     return changed
 
 
+def _patch_v4_citation(citation: dict, source: CitationSource) -> dict:
+    out = dict(citation)
+    out["citation_source_id"] = source.id
+    out["mention_id"] = source.mention_id
+    out["materialization_status"] = (
+        "attributed" if source.mention_id is not None else "source_only"
+    )
+    out.pop("unresolved_materialization_reason", None)
+    return out
+
+
+def _mark_v4_citation_unresolved(citation: dict, reason: str | None) -> dict:
+    out = dict(citation)
+    out["citation_source_id"] = None
+    out["mention_id"] = None
+    out["materialization_status"] = "unresolved"
+    out["unresolved_materialization_reason"] = reason or "unresolved"
+    return out
+
+
 async def _citation_plan_or_apply(
     session: AsyncSession,
     selected: list[CandidateResponse],
@@ -722,128 +912,190 @@ async def _citation_plan_or_apply(
         if analysis is None or not isinstance(analysis.raw_analysis_json, dict):
             continue
         raw = copy.deepcopy(analysis.raw_analysis_json)
-        package = raw.get("analyzer_fact_package_v3")
-        if not isinstance(package, dict):
-            continue
-        items = _iter_v3_citations(package)
-        if not items:
+        package_specs = _iter_analyzer_citation_packages(raw)
+        if not package_specs:
             continue
 
-        mentions_by_id, mentions_by_name = _mentions_indexes(
+        mentions_by_id, mentions_by_name, mentions_by_brand_id = _mentions_indexes(
             mentions_by_response.get(candidate.response_id, [])
         )
         existing_sources = existing_by_response.setdefault(candidate.response_id, [])
         source_by_key = _existing_by_key(existing_sources)
-        package_source_by_key: dict[tuple[str, int | None], CitationSource] = {}
-        updated_citations: list[dict] = []
-        package_changed = False
+        response_changed = False
+        changed_package_kinds: list[str] = []
 
-        for bucket, citation in items:
-            key = _citation_key(citation)
-            if key is None:
-                stats["invalid_citation_count"] += 1
+        for package_kind, active_package in package_specs:
+            items = (
+                _iter_v3_citations(active_package)
+                if package_kind == "v3"
+                else _iter_v4_citations(active_package)
+            )
+            if not items:
+                continue
+
+            package_source_by_key: dict[tuple[str, int | None], CitationSource] = {}
+            updated_citations: list[dict] = []
+            package_changed = False
+
+            for bucket, citation in items:
+                key = _citation_key(citation)
+                if key is None:
+                    stats["invalid_citation_count"] += 1
+                    rows.append(
+                        {
+                            "response_id": candidate.response_id,
+                            "bucket": bucket,
+                            "package_kind": package_kind,
+                            "url": citation.get("url"),
+                            "action": "skip_invalid_url",
+                        }
+                    )
+                    continue
+                stats["candidate_citation_count"] += 1
+                if package_kind == "v4":
+                    stats["v4_citation_count"] += 1
+                    mention_id, unresolved_reason = _resolve_v4_mention_id(
+                        citation,
+                        active_package,
+                        mentions_by_name,
+                        mentions_by_brand_id,
+                    )
+                else:
+                    mention_id, unresolved_reason = _resolve_mention_id(
+                        citation,
+                        mentions_by_id,
+                        mentions_by_name,
+                    )
+                if mention_id is None:
+                    stats["unresolved_citation_count"] += 1
+                    unresolved_reasons[unresolved_reason or "unresolved"] += 1
+                else:
+                    stats["resolvable_citation_count"] += 1
+
+                source = source_by_key.get(key) or source_by_key.get((key[0], None))
+                planned_action = (
+                    "report_unresolved_v4_citation"
+                    if package_kind == "v4" and mention_id is None
+                    else "noop_existing"
+                )
+                conflict = False
+                if source is None and not (package_kind == "v4" and mention_id is None):
+                    stats["insert_citation_source_count"] += 1
+                    planned_action = "insert_citation_source"
+                    if apply:
+                        source = CitationSource(
+                            response_id=candidate.response_id,
+                            mention_id=mention_id,
+                            url=key[0],
+                            domain=str(citation.get("domain") or _domain_from_url(key[0]) or ""),
+                            title=citation.get("title"),
+                            citation_index=key[1],
+                            source_type=citation.get("source_type"),
+                        )
+                        session.add(source)
+                        await session.flush()
+                        existing_sources.append(source)
+                        source_by_key[key] = source
+                        source_by_key.setdefault((key[0], None), source)
+                        inserted_source_ids.append(int(source.id))
+                    else:
+                        source = CitationSource(
+                            response_id=candidate.response_id,
+                            mention_id=mention_id,
+                            url=key[0],
+                            domain=str(citation.get("domain") or _domain_from_url(key[0]) or ""),
+                            title=citation.get("title"),
+                            citation_index=key[1],
+                            source_type=citation.get("source_type"),
+                        )
+                        existing_sources.append(source)
+                        source_by_key[key] = source
+                        source_by_key.setdefault((key[0], None), source)
+                elif mention_id is not None and source.mention_id is None:
+                    stats["resolved_existing_citation_source_count"] += 1
+                    planned_action = "set_existing_mention_id"
+                    if apply:
+                        source.mention_id = mention_id
+                        updated_source_ids.append(int(source.id))
+                elif (
+                    mention_id is not None
+                    and source.mention_id is not None
+                    and int(source.mention_id) != int(mention_id)
+                ):
+                    stats["conflicting_existing_citation_source_count"] += 1
+                    unresolved_reasons["conflicting_existing_mention_id"] += 1
+                    planned_action = "skip_conflicting_existing_mention_id"
+                    conflict = True
+
+                if package_kind == "v4":
+                    if conflict or mention_id is None:
+                        updated = _mark_v4_citation_unresolved(
+                            citation,
+                            "conflicting_existing_mention_id" if conflict else unresolved_reason,
+                        )
+                        if apply and updated != citation:
+                            package_changed = True
+                        updated_citations.append(updated)
+                    elif apply and source is not None:
+                        package_source_by_key[key] = source
+                        package_source_by_key.setdefault((key[0], None), source)
+                        updated = _patch_v4_citation(citation, source)
+                        if updated != citation:
+                            package_changed = True
+                        updated_citations.append(updated)
+                    else:
+                        updated_citations.append(dict(citation))
+                elif conflict:
+                    updated = _force_unresolved_citation(citation)
+                    if updated != citation:
+                        package_changed = True
+                    updated_citations.append(updated)
+                elif apply and source is not None:
+                    package_source_by_key[key] = source
+                    package_source_by_key.setdefault((key[0], None), source)
+                    updated = _set_citation_defaults(citation, source)
+                    if updated != citation:
+                        package_changed = True
+                    updated_citations.append(updated)
+                else:
+                    updated_citations.append(dict(citation))
+
                 rows.append(
                     {
                         "response_id": candidate.response_id,
                         "bucket": bucket,
-                        "url": citation.get("url"),
-                        "action": "skip_invalid_url",
+                        "package_kind": package_kind,
+                        "url": key[0],
+                        "citation_index": key[1],
+                        "resolved_mention_id": mention_id,
+                        "unresolved_reason": unresolved_reason,
+                        "action": planned_action,
                     }
                 )
-                continue
-            stats["candidate_citation_count"] += 1
-            mention_id, unresolved_reason = _resolve_mention_id(
-                citation,
-                mentions_by_id,
-                mentions_by_name,
-            )
-            if mention_id is None:
-                stats["unresolved_citation_count"] += 1
-                unresolved_reasons[unresolved_reason or "unresolved"] += 1
-            else:
-                stats["resolvable_citation_count"] += 1
 
-            source = source_by_key.get(key) or source_by_key.get((key[0], None))
-            planned_action = "noop_existing"
-            conflict = False
-            if source is None:
-                stats["insert_citation_source_count"] += 1
-                planned_action = "insert_citation_source"
-                if apply:
-                    source = CitationSource(
-                        response_id=candidate.response_id,
-                        mention_id=mention_id,
-                        url=key[0],
-                        domain=str(citation.get("domain") or _domain_from_url(key[0]) or ""),
-                        title=citation.get("title"),
-                        citation_index=key[1],
-                        source_type=citation.get("source_type"),
-                    )
-                    session.add(source)
-                    await session.flush()
-                    existing_sources.append(source)
-                    source_by_key[key] = source
-                    source_by_key.setdefault((key[0], None), source)
-                    inserted_source_ids.append(int(source.id))
-            elif mention_id is not None and source.mention_id is None:
-                stats["resolved_existing_citation_source_count"] += 1
-                planned_action = "set_existing_mention_id"
-                if apply:
-                    source.mention_id = mention_id
-                    updated_source_ids.append(int(source.id))
-            elif (
-                mention_id is not None
-                and source.mention_id is not None
-                and int(source.mention_id) != int(mention_id)
-            ):
-                stats["conflicting_existing_citation_source_count"] += 1
-                unresolved_reasons["conflicting_existing_mention_id"] += 1
-                planned_action = "skip_conflicting_existing_mention_id"
-                conflict = True
+            if apply and package_changed:
+                if package_kind == "v3":
+                    _rebuild_citations_package(active_package, updated_citations)
+                    _patch_citation_facts(active_package, package_source_by_key)
+                    _patch_citation_facts(raw, package_source_by_key)
+                else:
+                    active_package["citations"] = updated_citations
+                response_changed = True
+                changed_package_kinds.append(package_kind)
 
-            if conflict:
-                updated = _force_unresolved_citation(citation)
-                if updated != citation:
-                    package_changed = True
-                updated_citations.append(updated)
-            elif apply and source is not None:
-                package_source_by_key[key] = source
-                package_source_by_key.setdefault((key[0], None), source)
-                updated = _set_citation_defaults(citation, source)
-                if updated != citation:
-                    package_changed = True
-                updated_citations.append(updated)
-            else:
-                updated_citations.append(dict(citation))
-
-            rows.append(
-                {
-                    "response_id": candidate.response_id,
-                    "bucket": bucket,
-                    "url": key[0],
-                    "citation_index": key[1],
-                    "resolved_mention_id": mention_id,
-                    "unresolved_reason": unresolved_reason,
-                    "action": planned_action,
-                }
-            )
-
-        if apply:
-            if package_changed:
-                _rebuild_citations_package(package, updated_citations)
-                _patch_citation_facts(package, package_source_by_key)
-                _patch_citation_facts(raw, package_source_by_key)
-                raw["issue_760_citation_geo_followup"] = {
-                    "applied_at": datetime.now(timezone.utc).isoformat(),
-                    "approval_ref": approval_ref,
-                    "response_id": candidate.response_id,
-                    "inserted_citation_source_ids": inserted_source_ids,
-                    "updated_citation_source_ids": updated_source_ids,
-                    "no_fallback_values": True,
-                }
-                analysis.raw_analysis_json = raw
-                flag_modified(analysis, "raw_analysis_json")
-                patched_response_ids.append(candidate.response_id)
+        if apply and response_changed:
+            raw["issue_760_citation_geo_followup"] = {
+                "applied_at": datetime.now(timezone.utc).isoformat(),
+                "approval_ref": approval_ref,
+                "response_id": candidate.response_id,
+                "package_kinds": sorted(set(changed_package_kinds)),
+                "inserted_citation_source_ids": inserted_source_ids,
+                "updated_citation_source_ids": updated_source_ids,
+                "no_fallback_values": True,
+            }
+            analysis.raw_analysis_json = raw
+            flag_modified(analysis, "raw_analysis_json")
+            patched_response_ids.append(candidate.response_id)
 
     if apply and (inserted_source_ids or updated_source_ids or patched_response_ids):
         await session.flush()
@@ -851,6 +1103,7 @@ async def _citation_plan_or_apply(
     stats["patched_response_analysis_count"] = len(set(patched_response_ids))
     return {
         "candidate_citation_count": stats["candidate_citation_count"],
+        "v4_citation_count": stats["v4_citation_count"],
         "resolvable_citation_count": stats["resolvable_citation_count"],
         "unresolved_citation_count": stats["unresolved_citation_count"],
         "invalid_citation_count": stats["invalid_citation_count"],
