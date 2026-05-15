@@ -42,7 +42,7 @@ vi.mock('../../contexts/ProjectContext', () => ({
     activeProject: {
       id: '11111111-2222-3333-4444-555555555555',
       primaryBrandId: 42,
-      primaryBrandName: 'Test Brand',
+      primaryBrandName: 'bestCoffer',
       name: 'Test Project',
       competitorBrandIds: [],
       industryId: 1,
@@ -58,6 +58,43 @@ vi.mock('../../hooks/useProjects', () => ({
 
 vi.mock('../../hooks/useBrandOverview', () => ({
   isLiveProjectId: () => true,
+  // /overview emits one aggregate ratio over the window:
+  // mention = sum(target_responses) / sum(eligible_denominator). For
+  // bestCoffer this lives around 48.0% and 43.2%.
+  useBrandOverview: () => ({
+    data: {
+      project_id: '11111111-2222-3333-4444-555555555555',
+      brand_id: 42,
+      brand_name: 'bestCoffer',
+      industry_id: 1,
+      period: { from: '2026-05-08', to: '2026-05-15' },
+      state: 'ok',
+      formula_status: 'ok',
+      kpi_cards: [
+        {
+          label_zh: '提及率',
+          label_en: 'Mention Rate',
+          value: 48.0,
+          unit: '%',
+          formula_status: 'ok',
+        },
+        {
+          label_zh: '声量份额',
+          label_en: 'Share of Voice',
+          value: 43.2,
+          unit: '%',
+          formula_status: 'ok',
+        },
+      ],
+      geo_score_30d: [],
+      sov_30d: [],
+      sentiment_30d: [],
+      top_prompts: [],
+      same_group_shared_domains: [],
+    },
+    isLoading: false,
+    error: null,
+  }),
 }))
 
 vi.mock('../../lib/liveProject', () => ({
@@ -70,11 +107,14 @@ vi.mock('../../hooks/useBrandAnalysisFilters', () => ({
 }))
 
 vi.mock('../../hooks/useBrandMetrics', () => ({
+  // /metrics returns per-day ratios that average to a much smaller number
+  // (Simpson's paradox vs the overall ratio in /overview). The page must NOT
+  // read its KPI value from this series — only the sparkline does.
   useBrandMetrics: () => ({
     data: {
       project_id: '11111111-2222-3333-4444-555555555555',
       brand_id: 42,
-      period: { from: '2026-05-01', to: '2026-05-03' },
+      period: { from: '2026-05-08', to: '2026-05-15' },
       state: 'ok',
       formula_status: 'ok',
       series: [
@@ -83,14 +123,10 @@ vi.mock('../../hooks/useBrandMetrics', () => ({
           unit: 'ratio',
           value_scale: 'decimal',
           formula_status: 'ok',
-          // Window in % after scaling: 10%, 30%, 50%. Average = 30%; last = 50%.
-          // /v1/projects/:id/overview KPI card emits the 30-day average (30%);
-          // BrandVisibilityPage must render the same window average so the
-          // numbers match across surfaces.
           points: [
-            { date: '2026-05-01', value: 0.1 },
-            { date: '2026-05-02', value: 0.3 },
-            { date: '2026-05-03', value: 0.5 },
+            { date: '2026-05-08', value: 0.005 },
+            { date: '2026-05-09', value: 0.01 },
+            { date: '2026-05-10', value: 0.028 },
           ],
         },
         {
@@ -98,11 +134,10 @@ vi.mock('../../hooks/useBrandMetrics', () => ({
           unit: 'ratio',
           value_scale: 'decimal',
           formula_status: 'ok',
-          // Window in % after scaling: 20%, 40%, 60%. Average = 40%; last = 60%.
           points: [
-            { date: '2026-05-01', value: 0.2 },
-            { date: '2026-05-02', value: 0.4 },
-            { date: '2026-05-03', value: 0.6 },
+            { date: '2026-05-08', value: 0.45 },
+            { date: '2026-05-09', value: 0.48 },
+            { date: '2026-05-10', value: 0.478 },
           ],
         },
       ],
@@ -135,7 +170,7 @@ function renderVisibilityPage() {
 
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={['/brand/visibility?brandId=42']}>
+      <MemoryRouter initialEntries={['/brand/visibility']}>
         <LocaleProvider initialLocale="en-US">
           <BrandVisibilityPage />
         </LocaleProvider>
@@ -145,16 +180,19 @@ function renderVisibilityPage() {
 }
 
 describe('BrandVisibilityPage KPI cards (issue #988)', () => {
-  it('renders the window average — not the last sparkline point — so values match the Overview page', () => {
+  it('reads KPI values from /overview so numbers match the Overview page, not from /metrics series points', () => {
     renderVisibilityPage()
 
-    // Mention rate series in % is [10, 30, 50]; window average = 30.0%.
-    // If the page regressed to the last-point reading we would see 50.0%.
-    expect(screen.getByText('30.0%')).toBeInTheDocument()
-    expect(screen.queryByText('50.0%')).not.toBeInTheDocument()
+    // /overview emits the same aggregate ratio Overview displays.
+    // Visibility must render those values, NOT anything derived from /metrics
+    // per-day points (which average to ~1.4% for mention here).
+    expect(screen.getByText('48.0%')).toBeInTheDocument()
+    expect(screen.getByText('43.2%')).toBeInTheDocument()
 
-    // SoV series in % is [20, 40, 60]; window average = 40.0%.
-    expect(screen.getByText('40.0%')).toBeInTheDocument()
-    expect(screen.queryByText('60.0%')).not.toBeInTheDocument()
+    // Sanity guards: should never see the /metrics-derived numbers from this
+    // mock, neither the last point nor the unweighted average.
+    expect(screen.queryByText('2.8%')).not.toBeInTheDocument()
+    expect(screen.queryByText('1.4%')).not.toBeInTheDocument()
+    expect(screen.queryByText('47.8%')).not.toBeInTheDocument()
   })
 })

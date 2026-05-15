@@ -12,7 +12,7 @@ import BrandAnalysisFilterBar from '../../components/filters/BrandAnalysisFilter
 import { useBrandAnalysisFilters } from '../../hooks/useBrandAnalysisFilters';
 import KpiCard from '../../components/dashboard/KpiCard';
 import { useProjects } from '../../hooks/useProjects';
-import { isLiveProjectId } from '../../hooks/useBrandOverview';
+import { isLiveProjectId, useBrandOverview } from '../../hooks/useBrandOverview';
 import { resolveLiveProjectId } from '../../lib/liveProject';
 import { brandIdFromSearchParams, toProjectAnalysisParams } from '../../lib/projectAnalysisFilters';
 import { useBrandMetrics, useCompetitorMetrics, useCompetitorTrends } from '../../hooks/useBrandMetrics';
@@ -25,6 +25,7 @@ import {
   adaptCompetitorMetricsToSov,
   adaptCompetitorTrendsToVisibilityPanoTrend,
   adaptMetricsToSparklines,
+  adaptOverviewToPrimary,
 } from '../../adapters/dashboardAdapter';
 import {
   adaptEngineMetricsToBreakdown,
@@ -68,6 +69,7 @@ export default function BrandVisibilityPage() {
   const liveProjectId = resolveLiveProjectId(liveProjects, activeProject);
   const isLive = isLiveProjectId(liveProjectId);
 
+  const overviewQ = useBrandOverview(isLive ? liveProjectId : null, brandIdOverride);
   const metricsQ = useBrandMetrics(isLive ? liveProjectId : null, [
     'mention_rate',
     'sov',
@@ -88,18 +90,24 @@ export default function BrandVisibilityPage() {
   const mockMentionRatePct = (mockMentionRateDec * 100).toFixed(1);
   const mockSovPct = sovEntry ? sovEntry.value : 0;
 
-  // Window average across the /metrics series — matches /overview KPI cards,
-  // which expose `func.avg(GeoScoreDaily.mention_rate)` over the same window.
+  // KPI values come from /overview kpi_cards, which expose a single window-wide
+  // ratio: sum(target_responses) / sum(eligible_denominator). /metrics returns
+  // per-day target_d/denom_d ratios; averaging those gives a different number
+  // because mean(ratios) ≠ ratio of sums when daily volumes vary (Simpson's
+  // paradox). Display the same value Overview shows; sparkline still uses
+  // /metrics for the daily trend visualization.
   const liveSparklines = metricsQ.data ? adaptMetricsToSparklines(metricsQ.data) : null;
-  const windowAverage = (points: number[] | undefined): number | null => {
-    if (!points || points.length === 0) return null;
-    return points.reduce((sum, value) => sum + value, 0) / points.length;
-  };
-  const avgMention = windowAverage(liveSparklines?.mention);
-  const avgSov = windowAverage(liveSparklines?.sov);
+  const overviewPrimary = overviewQ.data ? adaptOverviewToPrimary(overviewQ.data) : null;
+  const liveMentionRatePct =
+    overviewPrimary?.mentionRate != null ? +(overviewPrimary.mentionRate * 100).toFixed(1) : null;
+  const liveSovPct = overviewPrimary?.sov != null ? +overviewPrimary.sov.toFixed(1) : null;
 
-  const mentionRateText = isLive ? (avgMention != null ? `${avgMention.toFixed(1)}%` : '—') : `${mockMentionRatePct}%`;
-  const sovText = isLive ? (avgSov != null ? `${avgSov.toFixed(1)}%` : '—') : `${mockSovPct}%`;
+  const mentionRateText = isLive
+    ? (liveMentionRatePct != null ? `${liveMentionRatePct.toFixed(1)}%` : '—')
+    : `${mockMentionRatePct}%`;
+  const sovText = isLive
+    ? (liveSovPct != null ? `${liveSovPct.toFixed(1)}%` : '—')
+    : `${mockSovPct}%`;
   const mentionDelta = isLive ? undefined : 2.3;
   const sovDelta = isLive ? undefined : -1.1;
 
