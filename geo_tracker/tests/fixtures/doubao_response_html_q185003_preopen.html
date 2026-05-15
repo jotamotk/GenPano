@@ -1,0 +1,21 @@
+<!--
+Pre-open fixture for #570 / #904 — shape of llm_responses.response_html
+that the worker actually persisted for Q-185003 (response_id 657).
+
+The worker captured inner_html() of the response-message selector BEFORE
+clicking the entry-btn-v3 reference drawer, so the persisted HTML contains
+zero drawer markers. The Server Diagnostics evidence run 25851188421
+reported response_html marker counts:
+  entry-btn-v3=0, container-outer=0, search-item-=0,
+  search-reference-ui-v3=0, data-href=0, href=0, 参考资料=0,
+  url_like_count=3
+
+This fixture is intentionally devoid of those drawer markers and is used
+to prove the current extractor returns 0 citations on the actually-persisted
+HTML — which is what production observed.
+-->
+<div class="answer-bubble-XXXX">
+  <p>非结构化数据 AI 脱敏准确率的评估通常从召回率、精确率、F1 分数以及业务可用性等维度进行综合衡量。</p>
+  <p>常见评估方法包括：基于标注样本的 ground-truth 对比、对抗样本测试、跨域泛化测试、以及面向合规要求的可解释性审查。</p>
+  <p>更多细节可参考公开的研究综述与行业白皮书，如示例 example.com 的相关文章。</p>
+</div>

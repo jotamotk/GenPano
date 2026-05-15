@@ -38,6 +38,7 @@ from geo_tracker.agent.clash_api import (
 from geo_tracker.agent.citation_extraction import (
     classify_citation_extraction,
     extract_citations_from_html,
+    extract_doubao_panel_citations_from_html,
     merge_citations,
 )
 from geo_tracker.agent.response_validation import (
@@ -2752,7 +2753,20 @@ class GuestQueryExecutor:
 
             # 豆包引用面板：2026 UI 触发器从 [data-testid=...] 换成
             # <div class="entry-btn-v3-XXXX"> 包裹 <span class="entry-btn-title-v3-XXXX">参考 N 篇资料</span>
-            # 必须点击触发器才能渲染右侧面板（container-outer-XXXX[data-visible="true"]）
+            # 必须点击触发器才能渲染右侧面板（container-outer-XXXX[data-visible="true"]）。
+            #
+            # Refs #570 / #904 — Q-185003 evidence (workflow run 25851188421)
+            # showed citations_json_count=0 while the screenshot proved 8
+            # visible reference cards. Root cause: ``resp_html`` was captured
+            # via ``inner_html()`` of the response-message selector BEFORE
+            # this entry-btn-v3 click fired, so the drawer DOM never reached
+            # ``llm_responses.response_html`` and downstream HTML extraction
+            # had nothing to read. We now (1) open the drawer, (2) snapshot
+            # the opened ``container-outer[data-visible="true"]`` outerHTML
+            # and append it to ``resp_html``, and (3) feed the snapshot
+            # through the dedicated Doubao panel extractor as a defense-in-
+            # depth fallback for the live ``page.evaluate`` extractor.
+            doubao_panel_html = ""
             if llm_name == "doubao":
                 try:
                     ref_btn = await page.wait_for_selector(
@@ -2779,6 +2793,55 @@ class GuestQueryExecutor:
                             await page.wait_for_timeout(800)
                         except Exception:
                             logger.debug("[doubao] 引用面板展开后未找到 search-item")
+
+                    # Re-capture the opened drawer DOM. This MUST run after the
+                    # click + wait above so the DOM contains the rendered
+                    # search-item-* cards. We grab the panel root's outerHTML
+                    # (not the entire page) to keep the persisted bytes bounded
+                    # but include enough markup for fallback extraction.
+                    try:
+                        doubao_panel_html = await page.evaluate(
+                            """
+                            () => {
+                                const panels = document.querySelectorAll(
+                                    '[class*="container-outer"][data-visible="true"], '
+                                    + '[class*="container-outer"]:not([data-visible="false"])'
+                                );
+                                const out = [];
+                                for (const panel of panels) {
+                                    const isRefPanel = panel.querySelector('[class*="page-search"]')
+                                        || panel.querySelector('[class*="search-item-title"]');
+                                    if (!isRefPanel) continue;
+                                    out.push(panel.outerHTML);
+                                }
+                                // 兜底：未匹配 container-outer 时退回老 testid
+                                if (!out.length) {
+                                    const legacy = document.querySelector(
+                                        '[data-testid="search-reference-ui-v3"]'
+                                    );
+                                    if (legacy) out.push(legacy.outerHTML);
+                                }
+                                return out.join('\\n');
+                            }
+                            """
+                        ) or ""
+                        if doubao_panel_html:
+                            # Cap the captured drawer to a sane budget. 200KB is
+                            # well above the largest observed Doubao drawer
+                            # snapshot (~30KB) and keeps the existing
+                            # ``response_html[-50000:]`` budget honest.
+                            doubao_panel_html = doubao_panel_html[:200000]
+                            resp_html = (
+                                (resp_html or "")
+                                + "\n<!-- doubao-references-opened -->\n"
+                                + doubao_panel_html
+                            )
+                            logger.info(
+                                "[doubao] captured opened reference panel HTML (%s bytes)",
+                                len(doubao_panel_html),
+                            )
+                    except Exception as e:
+                        logger.debug(f"[doubao] 引用面板 outerHTML 抓取失败: {e}")
                 except Exception:
                     logger.debug("[doubao] 未检测到引用面板（可能无引用）")
 
@@ -2787,7 +2850,27 @@ class GuestQueryExecutor:
             html_citations = extract_citations_from_html(resp_html, llm_name=llm_name)
             if html_citations:
                 citations = merge_citations(citations, html_citations)
-            if llm_name == "chatgpt":
+
+            # Defense in depth for Doubao: when the live page.evaluate path
+            # missed the drawer (timing race, click rejected, etc.) but we
+            # successfully captured the drawer HTML above, re-extract from
+            # the persisted HTML so DB ↔ live extraction can't diverge.
+            doubao_panel_html_citations: list[dict] = []
+            if llm_name == "doubao":
+                doubao_panel_html_citations = (
+                    extract_doubao_panel_citations_from_html(resp_html) or []
+                )
+                if doubao_panel_html_citations and not citations:
+                    citations = merge_citations(citations, doubao_panel_html_citations)
+                    logger.info(
+                        "[doubao] recovered %s citations from opened panel HTML "
+                        "after live extractor returned none",
+                        len(doubao_panel_html_citations),
+                    )
+                elif doubao_panel_html_citations:
+                    citations = merge_citations(citations, doubao_panel_html_citations)
+
+            if llm_name in ("chatgpt", "doubao"):
                 citation_state = classify_citation_extraction(
                     llm_name,
                     raw_text=resp_text,
@@ -2798,13 +2881,15 @@ class GuestQueryExecutor:
                 )
                 logger.info(
                     "[%s] citation extraction status=%s reason=%s "
-                    "citations=%s html_candidates=%s source_markers=%s "
+                    "citations=%s html_candidates=%s "
+                    "doubao_panel_candidates=%s source_markers=%s "
                     "source_ui_seen=%s source_ui_clicked=%s",
                     llm_name,
                     citation_state["status"],
                     citation_state["reason"],
                     citation_state["citation_count"],
                     citation_state["html_candidate_count"],
+                    citation_state.get("doubao_panel_candidate_count", 0),
                     citation_state["source_marker_count"],
                     citation_state["source_ui_seen"],
                     citation_state["source_ui_clicked"],

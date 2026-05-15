@@ -1,0 +1,125 @@
+<!--
+Fixture for #570 / #904 — Doubao Q-185003 (response_id 657) reference panel
+shape AFTER the entry-btn-v3 drawer is opened.
+
+Source of structure: AI Lead investigation in #570 comment 4449073593 +
+self-documented DOM in geo_tracker/agent/guest_executor.py lines 1763-1772.
+
+Evidence: workflow run 25851188421, artifact query-evidence-185003-25851188421.
+The user's screenshot /data/screenshots/query_185003_doubao_1778736815.png
+shows the right-side reference drawer expanded with 8 visible numbered cards
+and footer "参考 12 篇资料". Persisted llm_responses.response_html for that
+query contains zero entry-btn-v3 / container-outer / search-item- markers,
+proving the HTML was captured BEFORE the drawer was opened.
+
+This fixture encodes the POST-OPEN drawer DOM the worker must capture and
+the extractor must read. Each search-item-* card carries:
+  - link <a href="https://..."> to the source URL
+  - [class*="search-item-title"] for the title
+  - [class*="search-item-summary"] for the snippet
+  - [class*="footer-title"] for the publisher name
+  - [class*="footer-citation"] for the 1-based card index
+
+The trigger lives outside the panel:
+  <div class="entry-btn-v3-XXXX"><span class="entry-btn-title-v3-XXXX">参考 12 篇资料</span></div>
+
+Eight URLs encoded below are non-doubao/bytedance external URLs so the
+extractor's self-domain filter does not drop them.
+-->
+<html>
+<body>
+<div class="answer-bubble-XXXX">
+  <p>这是一个测试响应文本，引用了以下来源。</p>
+</div>
+<div class="reference-entry-XXXX">
+  <div class="entry-btn-v3-abc12"><span class="entry-btn-title-v3-abc12">参考 12 篇资料</span></div>
+</div>
+<div class="container-outer-abc12" data-visible="true">
+  <div class="page-search-abc12">
+    <span class="page-search-title-abc12">参考资料</span>
+  </div>
+  <div class="search-list-abc12">
+    <div class="search-item-abc12">
+      <a href="https://example.com/article-1">
+        <div class="search-item-title-abc12">非结构化数据脱敏白皮书 - 第一章</div>
+        <div class="search-item-summary-abc12">本文综述非结构化数据脱敏的常见方法与评估指标。</div>
+      </a>
+      <div class="search-item-footer-abc12">
+        <span class="footer-title-abc12">example.com</span>
+        <span class="footer-citation-abc12">1</span>
+      </div>
+    </div>
+    <div class="search-item-abc12">
+      <a href="https://news.example.org/story-2">
+        <div class="search-item-title-abc12">AI 脱敏准确率评估方法对比</div>
+        <div class="search-item-summary-abc12">从召回率、精确率、F1 角度分析脱敏效果。</div>
+      </a>
+      <div class="search-item-footer-abc12">
+        <span class="footer-title-abc12">news.example.org</span>
+        <span class="footer-citation-abc12">2</span>
+      </div>
+    </div>
+    <div class="search-item-abc12">
+      <a href="https://research.example.net/paper-3">
+        <div class="search-item-title-abc12">Differential Privacy in Practice</div>
+        <div class="search-item-summary-abc12">学术综述了差分隐私的工业落地案例。</div>
+      </a>
+      <div class="search-item-footer-abc12">
+        <span class="footer-title-abc12">research.example.net</span>
+        <span class="footer-citation-abc12">3</span>
+      </div>
+    </div>
+    <div class="search-item-abc12">
+      <a href="https://blog.example.io/post-4">
+        <div class="search-item-title-abc12">数据脱敏在金融行业的应用</div>
+        <div class="search-item-summary-abc12">金融数据脱敏的合规与技术权衡。</div>
+      </a>
+      <div class="search-item-footer-abc12">
+        <span class="footer-title-abc12">blog.example.io</span>
+        <span class="footer-citation-abc12">4</span>
+      </div>
+    </div>
+    <div class="search-item-abc12">
+      <a href="https://docs.example.gov/guide-5">
+        <div class="search-item-title-abc12">国标数据脱敏分级分类指南</div>
+        <div class="search-item-summary-abc12">官方发布的数据脱敏分级分类参考文档。</div>
+      </a>
+      <div class="search-item-footer-abc12">
+        <span class="footer-title-abc12">docs.example.gov</span>
+        <span class="footer-citation-abc12">5</span>
+      </div>
+    </div>
+    <div class="search-item-abc12">
+      <a href="https://forum.example.cn/thread-6">
+        <div class="search-item-title-abc12">脱敏算法社区讨论合集</div>
+        <div class="search-item-summary-abc12">开发者社区讨论的脱敏算法常见误区。</div>
+      </a>
+      <div class="search-item-footer-abc12">
+        <span class="footer-title-abc12">forum.example.cn</span>
+        <span class="footer-citation-abc12">6</span>
+      </div>
+    </div>
+    <div class="search-item-abc12">
+      <a href="https://media.example.tv/video-7">
+        <div class="search-item-title-abc12">视频讲解：AI 脱敏与隐私计算</div>
+        <div class="search-item-summary-abc12">视频讲解隐私计算的工程实现。</div>
+      </a>
+      <div class="search-item-footer-abc12">
+        <span class="footer-title-abc12">media.example.tv</span>
+        <span class="footer-citation-abc12">7</span>
+      </div>
+    </div>
+    <div class="search-item-abc12">
+      <a href="https://wiki.example.org/page-8">
+        <div class="search-item-title-abc12">Wiki - Data Masking Techniques</div>
+        <div class="search-item-summary-abc12">维基百科条目：数据脱敏技术总览。</div>
+      </a>
+      <div class="search-item-footer-abc12">
+        <span class="footer-title-abc12">wiki.example.org</span>
+        <span class="footer-citation-abc12">8</span>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>
