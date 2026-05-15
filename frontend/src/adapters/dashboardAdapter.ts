@@ -17,14 +17,11 @@ import {
   asFiniteNumber,
   asContractMetricNumber,
   canUseContractMetricValue,
-  contractItemLabel,
   formatRatioLikeForPercent,
   formatRatioLikeForPercentOrNull,
   normalizeRatioLikeOrNull,
   normalizeScore0To100OrNull,
   normalizeSentimentRawOrNull,
-  type AnalyticsContractMetadata,
-  type ContractListItem,
   type MetricContractFields,
 } from '../api/analyticsContract'
 import type { DiagnosticOut } from '../api/diagnostics'
@@ -389,167 +386,6 @@ export function adaptDiagnostics(
       type: d.type,
     }))
 }
-
-export type AnalyticsNoticeTone = 'loading' | 'partial' | 'empty' | 'error' | 'auth' | 'info'
-
-export interface AnalyticsContractNotice {
-  tone: AnalyticsNoticeTone
-  title: string
-  stateReason?: string | null
-  details: string[]
-  requestId?: string
-}
-
-export interface AnalyticsContractNoticeInput {
-  isLive: boolean
-  liveProjectId: string | null | undefined
-  overview?: (BrandOverviewOut & AnalyticsContractMetadata) | null
-  metrics?: (MetricsOut & AnalyticsContractMetadata) | null
-  isLoading?: boolean
-  error?: unknown
-}
-
-function errorField(error: unknown, key: string): unknown {
-  return error && typeof error === 'object' ? (error as Record<string, unknown>)[key] : undefined
-}
-
-function contractList(items: ContractListItem[] | undefined): string[] {
-  return (items ?? []).map(contractItemLabel).filter(Boolean)
-}
-
-function pushUnique(details: string[], value: string | null | undefined): void {
-  if (value && !details.includes(value)) details.push(value)
-}
-
-function metricContractDetails(overview: BrandOverviewOut | null | undefined): string[] {
-  const details: string[] = []
-  for (const card of overview?.kpi_cards ?? []) {
-    const key = card.metric_key
-    if (key !== 'mention_rate' && key !== 'sov') continue
-    const pieces = [
-      `${key} denominator: ${card.denominator_label || 'unspecified'}`,
-      card.value_scale ? `scale: ${card.value_scale}` : '',
-      card.formula_status ? `formula: ${card.formula_status}` : '',
-    ].filter(Boolean)
-    details.push(pieces.join('; '))
-  }
-  return details
-}
-
-export function buildAnalyticsContractNotice(
-  input: AnalyticsContractNoticeInput,
-): AnalyticsContractNotice | null {
-  if (!input.isLive) return null
-  if (input.isLoading) {
-    return {
-      tone: 'loading',
-      title: 'Loading analytics',
-      details: input.liveProjectId ? [`Project ${input.liveProjectId}`] : [],
-    }
-  }
-
-  if (input.error) {
-    const status = Number(errorField(input.error, 'status') ?? 0)
-    const requestId = String(
-      errorField(input.error, 'requestId') ||
-      errorField(input.error, 'request_id') ||
-      '',
-    )
-    const path = String(errorField(input.error, 'path') || '')
-    const details = [
-      status ? `status ${status}` : '',
-      requestId ? `request_id ${requestId}` : '',
-      path,
-    ].filter(Boolean)
-    return {
-      tone: status === 401 || status === 403 ? 'auth' : 'error',
-      title: status === 401 || status === 403
-        ? 'Analytics access needs authorization'
-        : 'Analytics failed to load',
-      details,
-      requestId,
-    }
-  }
-
-  const overview = input.overview
-  const metrics = input.metrics
-  if (!overview && !metrics) return null
-
-  const source = overview ?? metrics
-  const state = String(source?.state || 'ok')
-  const stateReason = source?.state_reason ?? null
-  const details: string[] = []
-  pushUnique(details, stateReason || undefined)
-  pushUnique(details, source?.state_detail || undefined)
-  for (const item of contractList(source?.missing_sources)) {
-    pushUnique(details, item)
-  }
-  for (const item of contractList(source?.missing_reasons)) {
-    pushUnique(details, item)
-  }
-  for (const item of contractList(source?.invalid_fields)) {
-    pushUnique(details, item)
-  }
-  for (const item of metricContractDetails(overview)) {
-    pushUnique(details, item)
-  }
-
-  const projectScope = source?.project_scope
-  const projectId = projectScope?.project_id || input.liveProjectId
-  if (projectScope && projectScope.exists === false) {
-    pushUnique(details, projectId ? `Project ${projectId}` : null)
-    pushUnique(details, projectScope.missing_reason || undefined)
-  }
-
-  const identity = source?.identity_diagnostics
-  if (identity?.canonical_alias_repair_count) {
-    pushUnique(details, `alias repairs ${identity.canonical_alias_repair_count}`)
-  }
-  for (const ownerId of identity?.raw_text_owner_brand_ids ?? []) {
-    pushUnique(details, `owner brand ${ownerId}`)
-  }
-
-  const counts = source?.evidence_counts ?? {}
-  if (counts.eligible_response_count != null) {
-    pushUnique(details, `eligible responses ${counts.eligible_response_count}`)
-  }
-  if (counts.brand_mentioned_response_count != null) {
-    pushUnique(details, `brand-mentioned responses ${counts.brand_mentioned_response_count}`)
-  }
-
-  if (state === 'partial') {
-    return {
-      tone: 'partial',
-      title: 'Partial analytics',
-      stateReason,
-      details,
-      requestId: source?.request_id || undefined,
-    }
-  }
-  if (state === 'empty') {
-    const projectPending =
-      projectScope?.exists === false ||
-      String(stateReason || '').includes('project')
-    return {
-      tone: 'empty',
-      title: projectPending ? 'Project context pending' : 'No analytics data yet',
-      stateReason,
-      details,
-      requestId: source?.request_id || undefined,
-    }
-  }
-  if (details.some((detail) => detail.includes('formula_pending') || detail.includes('upstream_formula'))) {
-    return {
-      tone: 'info',
-      title: 'Formula provenance pending',
-      stateReason,
-      details,
-      requestId: source?.request_id || undefined,
-    }
-  }
-  return null
-}
-
 
 // ── Sparkline arrays (for KpiSparklineSummary in BrandPanoramaPanel) ──
 //

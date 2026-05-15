@@ -200,7 +200,7 @@ vi.mock('../hooks/useIndustries', () => ({
 }))
 
 describe('DashboardPage partial analytics rendering', () => {
-  it('shows the partial banner while rendering usable overview SoV KPI without pie rows', () => {
+  it('renders usable overview SoV KPI without pie rows when analytics are partial', () => {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     })
@@ -215,9 +215,6 @@ describe('DashboardPage partial analytics rendering', () => {
       </QueryClientProvider>,
     )
 
-    expect(screen.getByText('partial')).toBeInTheDocument()
-    expect(screen.getByText('Partial analytics')).toBeInTheDocument()
-    expect(screen.getAllByText('rank_inputs_missing').length).toBeGreaterThan(0)
     expect(screen.getAllByText('82.9%').length).toBeGreaterThan(0)
     expect(screen.getAllByText('97.3%').length).toBeGreaterThan(0)
     expect(screen.getByText('暂无声量份额数据')).toBeInTheDocument()
