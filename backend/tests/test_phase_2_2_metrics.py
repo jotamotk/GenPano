@@ -9,6 +9,7 @@ from datetime import date, datetime, timedelta
 import pytest
 import pytest_asyncio
 from genpano_models import (
+    AnalysisFactLink,
     AnalyzerQualityFlag,
     AnalyzerRun,
     BrandMention,
@@ -402,6 +403,139 @@ async def test_sentiment_formula_status_partial_when_score_label_complete_with_a
     # ``missing_required_inputs``) — the frontend gate accepts ``partial``
     # since PR #960 and renders the value instead of ``—``.
     assert sentiment["formula_status"] == "partial"
+
+
+@pytest.mark.asyncio
+async def test_citation_formula_status_partial_when_attribution_complete_with_aux_flags(
+    db_session: AsyncSession,
+):
+    """Issue #948 follow-up: citation KPI rendered ``—`` on
+    ``/v1/projects/:id/overview`` and ``/metrics`` for BestCoffer even
+    after PR #976 attributed 27 citations to the target brand. Root
+    cause: ``_first_class_analyzer_fact_rollup`` set
+    ``citation.formula_status = missing_required_inputs`` whenever the
+    analyzer-side quality flags (``citation_unlinked``,
+    ``malformed_citation_dropped``, ``evidence_quote_mismatch`` from
+    ``analyzer_quality_flags``) were present, even when the citation
+    formula's required inputs (``citation_total > 0`` AND
+    ``attributed_citations > 0`` AND ``fact_link_count > 0``) were all
+    satisfied.
+
+    The fix: when those three inputs are complete AND no critical reason
+    in ``_METRIC_BLOCKING_REASONS["citation"]`` /
+    ``_COMMON_METRIC_BLOCKING_REASONS`` is present, downgrade to
+    ``formula_partial`` instead of ``missing_required_inputs``. Auxiliary
+    quality flags are preserved in ``reason_codes`` so the UI can render
+    the "Coverage partial" hover info. Mirrors the SoV / MentionRate /
+    GeoScore / Sentiment patterns from PR #953, #962, and #976 so the
+    frontend gate ``canUseContractMetricValue('partial', { formula_status:
+    'partial' })`` (added by PR #960) keeps surfacing the citation share.
+    """
+    today = datetime(2026, 5, 14, 12, 0, 0)
+    brand_id = 4242
+    target_response_ids: set[int] = set()
+    for i in range(3):
+        response_id = 9800 + i
+        target_response_ids.add(response_id)
+        run = AnalyzerRun(
+            response_id=response_id,
+            schema_version="analyzer_v4",
+            status="done",
+            trigger_source="test",
+            validator_summary_json={"schema_version": "analyzer_v4"},
+            started_at=today,
+            completed_at=today,
+        )
+        db_session.add(run)
+        await db_session.flush()
+
+        # Target brand mention so the citation can be attributed via mention_id.
+        mention = BrandMention(
+            response_id=response_id,
+            brand_id=brand_id,
+            brand_name="BestCoffer",
+            sentiment="positive",
+            sentiment_score=0.3,
+            mention_count=1,
+            position_rank=2,
+            created_at=today - timedelta(days=i),
+        )
+        db_session.add(mention)
+        await db_session.flush()
+
+        # Attributed citation: post PR #976 response-level proximity fallback,
+        # orphan citations in a target-mentioning response carry mention_id
+        # pointing at the target brand's BrandMention row.
+        db_session.add(
+            CitationSource(
+                response_id=response_id,
+                mention_id=mention.id,
+                url=f"https://news.example.cn/article-{i}",
+                domain="news.example.cn",
+                title=f"Coverage of BestCoffer #{i}",
+                source_type="news",
+                citation_index=i + 1,
+                created_at=today - timedelta(days=i),
+            )
+        )
+        # fact_link_count > 0: at least one analysis_fact_links row for citation
+        # facts on this run. Without it, line 377-378 of builder.py appends
+        # ``unresolved_citation_attribution`` to citation_reasons, which IS in
+        # the blocking set and correctly stays as missing_required_inputs.
+        db_session.add(
+            AnalysisFactLink(
+                run_id=run.id,
+                response_id=response_id,
+                fact_type="citation",
+                fact_key=f"citation_{i}",
+                linked_fact_type="brand",
+                linked_fact_key=f"brand_{brand_id}",
+                link_type="supports",
+                status="current",
+                created_at=today,
+            )
+        )
+        # Auxiliary analyzer-v4 quality flag: ``citation_unlinked`` is in
+        # ``flag_reasons["citation"]`` per the v4 contract but NOT in the
+        # citation blocking set. Without the fix, this single non-critical
+        # flag pushes citation_status to missing_required_inputs even though
+        # the formula inputs are complete.
+        db_session.add(
+            AnalyzerQualityFlag(
+                run_id=run.id,
+                response_id=response_id,
+                flag_key=f"flag_citation_unlinked_{i}",
+                severity="warning",
+                code="citation_unlinked",
+                message="Auxiliary citation flag — does not block attribution.",
+                target_type="citation",
+                target_key=f"citation_{i}",
+                blocks_metric_readiness=True,
+            )
+        )
+    await db_session.commit()
+
+    evidence, _counts, _reasons = await _first_class_analyzer_fact_rollup(
+        db_session,
+        brand_id=brand_id,
+        from_date=date(2026, 5, 1),
+        to_date=date(2026, 5, 31),
+        target_response_ids=target_response_ids,
+    )
+
+    citation = evidence["citation"]
+    # All three citation formula inputs are complete.
+    assert citation["citation_count"] == 3
+    assert citation["attributed_count"] == 3
+    assert citation["fact_link_count"] == 3
+    # Auxiliary flag reason codes preserved so the UI can render the
+    # "Coverage partial" hover info.
+    assert "citation_unlinked" in citation["reason_codes"]
+    # Issue #948 follow-up: with all formula inputs present and no critical
+    # blocking reason, status downgrades to ``partial`` (not
+    # ``missing_required_inputs``) — the frontend gate (PR #960) accepts
+    # ``partial`` and renders the citation share value instead of ``—``.
+    assert citation["formula_status"] == "partial"
 
 
 @pytest.mark.asyncio

@@ -376,7 +376,32 @@ async def _first_class_analyzer_fact_rollup(
         citation_reasons.append("unresolved_citation_attribution")
     if citation_total > 0 and fact_link_count <= 0:
         citation_reasons.append("unresolved_citation_attribution")
-    citation_status = FORMULA_OK_STATUS if not citation_reasons else FORMULA_MISSING_INPUTS_STATUS
+    # Issue #948 follow-up: the citation METRIC formula is
+    # `target_attributed_citations / eligible_project_citations`. When the
+    # numerator + denominator inputs are present (`citation_total > 0` AND
+    # `attributed_citations > 0` AND `fact_link_count > 0`), analyzer-side
+    # auxiliary flags like `citation_unlinked` / `malformed_citation_dropped`
+    # / `evidence_quote_mismatch` should not invalidate the metric value —
+    # they describe quality issues on OTHER citations in the same response,
+    # not on the attributed ones. Downgrade to `partial` so the frontend
+    # gate (`canUseContractMetricValue` after PR #960) keeps rendering the
+    # citation share. Mirrors the SoV / MentionRate / GeoScore / Sentiment
+    # patterns landed by PR #953, PR #962, and PR #976.
+    citation_has_formula_inputs = (
+        citation_total > 0 and attributed_citations > 0 and fact_link_count > 0
+    )
+    citation_critical_reasons = {
+        reason
+        for reason in citation_reasons
+        if reason in _METRIC_BLOCKING_REASONS["citation"]
+        or reason in _COMMON_METRIC_BLOCKING_REASONS
+    }
+    if not citation_reasons:
+        citation_status = FORMULA_OK_STATUS
+    elif citation_has_formula_inputs and not citation_critical_reasons:
+        citation_status = FORMULA_PARTIAL_STATUS
+    else:
+        citation_status = FORMULA_MISSING_INPUTS_STATUS
 
     pano_reasons = list(flag_reasons["pano_geo"])
     if coverage_status != FORMULA_OK_STATUS:
