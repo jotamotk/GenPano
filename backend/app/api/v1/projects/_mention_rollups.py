@@ -93,6 +93,25 @@ async def brand_mention_match_condition(
     return or_(BrandMention.brand_id == brand_id, name_condition)
 
 
+async def _industry_brand_ids(session: AsyncSession, industry_name: str | None) -> set[int] | None:
+    """Return brand_ids whose `brands.industry` matches `industry_name`.
+
+    Returns None when no scoping should apply (no industry, table empty,
+    or query unsupported) — callers treat None as "do not filter".
+    """
+    if not industry_name:
+        return None
+    try:
+        rows = await session.execute(
+            text("SELECT id FROM brands WHERE industry = :ind"),
+            {"ind": industry_name},
+        )
+        ids = {int(r[0]) for r in rows.all() if r[0] is not None}
+        return ids or None
+    except Exception:
+        return None
+
+
 async def discover_related_brand_ids(
     session: AsyncSession,
     brand_id: int,
@@ -100,7 +119,17 @@ async def discover_related_brand_ids(
     to_date: date,
     *,
     limit: int = 3,
+    industry_name: str | None = None,
 ) -> list[int]:
+    """Discover competitor brand_ids co-mentioned with `brand_id`.
+
+    When `industry_name` is provided, only brands listed under that
+    industry in `brands.industry` are returned — prevents cross-industry
+    products from leaking into the competitor comparison panel (issue
+    #975). When the industry scope cannot be applied (no name, empty
+    `brands` table, or no brands found for the industry), discovery
+    falls back to the unscoped behavior.
+    """
     from_dt, to_dt = _bounds(from_date, to_date)
     primary_names = await brand_mention_names(session, brand_id)
     primary_name_condition = brand_mention_name_condition(primary_names)
@@ -115,6 +144,12 @@ async def discover_related_brand_ids(
             exclude_primary_filter,
             not_(primary_name_condition),
         )
+
+    industry_brand_ids = await _industry_brand_ids(session, industry_name)
+    industry_filter = (
+        BrandMention.brand_id.in_(industry_brand_ids - {brand_id}) if industry_brand_ids else None
+    )
+
     primary_responses = (
         select(BrandMention.response_id)
         .where(
@@ -126,18 +161,19 @@ async def discover_related_brand_ids(
         )
         .scalar_subquery()
     )
+    related_where = [
+        BrandMention.brand_id.isnot(None),
+        exclude_primary_filter,
+        BrandMention.response_id.in_(primary_responses),
+        BrandMention.created_at >= from_dt,
+        BrandMention.created_at <= to_dt,
+    ]
+    if industry_filter is not None:
+        related_where.append(industry_filter)
     rows = (
         await session.execute(
             select(BrandMention.brand_id, func.count().label("cnt"))
-            .where(
-                and_(
-                    BrandMention.brand_id.isnot(None),
-                    exclude_primary_filter,
-                    BrandMention.response_id.in_(primary_responses),
-                    BrandMention.created_at >= from_dt,
-                    BrandMention.created_at <= to_dt,
-                )
-            )
+            .where(and_(*related_where))
             .group_by(BrandMention.brand_id)
             .order_by(desc("cnt"))
             .limit(limit)
@@ -147,17 +183,18 @@ async def discover_related_brand_ids(
     if related:
         return related
 
+    fallback_where = [
+        BrandMention.brand_id.isnot(None),
+        exclude_primary_filter,
+        BrandMention.created_at >= from_dt,
+        BrandMention.created_at <= to_dt,
+    ]
+    if industry_filter is not None:
+        fallback_where.append(industry_filter)
     rows = (
         await session.execute(
             select(BrandMention.brand_id, func.count().label("cnt"))
-            .where(
-                and_(
-                    BrandMention.brand_id.isnot(None),
-                    exclude_primary_filter,
-                    BrandMention.created_at >= from_dt,
-                    BrandMention.created_at <= to_dt,
-                )
-            )
+            .where(and_(*fallback_where))
             .group_by(BrandMention.brand_id)
             .order_by(desc("cnt"))
             .limit(limit)

@@ -47,8 +47,12 @@ from app.api.v1.projects._brand_dto import (
     ProductScenarioRow,
     ProductsOut,
 )
-from app.api.v1.projects._legacy_lookups import resolve_brand_names
+from app.api.v1.projects._legacy_lookups import (
+    resolve_brand_industry,
+    resolve_brand_names,
+)
 from app.api.v1.projects._mention_rollups import (
+    _industry_brand_ids,
     brand_mention_match_condition,
     brand_mention_names,
     discover_related_brand_ids,
@@ -371,6 +375,15 @@ async def _response_entity_competitor_metrics(
         for key, bucket in buckets.items()
         if key != _brand_entity_key(primary_id, None)
     ]
+    # Issue #975: drop competitor buckets whose brand_id falls outside the
+    # primary brand's industry. Name-only buckets (brand_id=None) cannot be
+    # scoped reliably and are kept as-is.
+    primary_industry = await resolve_brand_industry(session, primary_id)
+    industry_brand_ids = await _industry_brand_ids(session, primary_industry)
+    if industry_brand_ids:
+        competitors = [
+            row for row in competitors if row.brand_id is None or row.brand_id in industry_brand_ids
+        ]
     competitors.sort(key=lambda row: (-(row.avg_sov or 0), row.brand_name or row.brand_key or ""))
     state = "partial" if primary_row and not competitors else "ok"
     return primary_row, competitors, state
@@ -710,15 +723,20 @@ async def get_competitor_metrics(
         )
         return out.model_copy(update=context_update(context))
 
+    primary_industry = await resolve_brand_industry(session, primary_id)
     if has_effective_override:
-        competitor_ids = await discover_related_brand_ids(session, primary_id, from_d, to_d)
+        competitor_ids = await discover_related_brand_ids(
+            session, primary_id, from_d, to_d, industry_name=primary_industry
+        )
     else:
         competitor_stmt = select(ProjectCompetitor.brand_id).where(
             ProjectCompetitor.project_id == project.id
         )
         competitor_ids = [r[0] for r in (await session.execute(competitor_stmt)).all()]
         if not competitor_ids:
-            competitor_ids = await discover_related_brand_ids(session, primary_id, from_d, to_d)
+            competitor_ids = await discover_related_brand_ids(
+                session, primary_id, from_d, to_d, industry_name=primary_industry
+            )
     competitor_ids = [bid for bid in competitor_ids if bid is not None and bid != primary_id]
 
     async def _row_for(brand_id: int) -> CompetitorBrandRow:
@@ -1103,15 +1121,22 @@ async def get_competitor_trends(
                 base_state="ok",
             )
             return out.model_copy(update=context_update(context))
+    primary_industry = (
+        await resolve_brand_industry(session, primary_id) if primary_id is not None else None
+    )
     if has_effective_override and primary_id is not None:
-        competitor_ids = await discover_related_brand_ids(session, primary_id, from_d, to_d)
+        competitor_ids = await discover_related_brand_ids(
+            session, primary_id, from_d, to_d, industry_name=primary_industry
+        )
     else:
         competitor_stmt = select(ProjectCompetitor.brand_id).where(
             ProjectCompetitor.project_id == project.id
         )
         competitor_ids = [r[0] for r in (await session.execute(competitor_stmt)).all()]
         if primary_id is not None and not competitor_ids:
-            competitor_ids = await discover_related_brand_ids(session, primary_id, from_d, to_d)
+            competitor_ids = await discover_related_brand_ids(
+                session, primary_id, from_d, to_d, industry_name=primary_industry
+            )
 
     brand_ids = list({*competitor_ids, *([primary_id] if primary_id is not None else [])})
     if not brand_ids:
