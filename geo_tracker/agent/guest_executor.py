@@ -2516,8 +2516,17 @@ class GuestQueryExecutor:
                 return False
 
         self._set_execution_stage("submit_confirm")
+        # Refs PR #1006 review (Codex P1): initialize ``confirmed`` before the
+        # engine-gated submit-confirmation block. Otherwise engines outside
+        # the (doubao, chatgpt, deepseek) set (e.g. gemini, kimi, claude,
+        # grok, zhipu, perplexity) would raise UnboundLocalError when the
+        # response_wait extension passes ``confirmed`` into
+        # ``_maybe_extend_wait_total``. Default ``False`` matches the
+        # semantics for unconfirmed/non-applicable engines: the
+        # awaiting_answer extension trigger only fires when submit was
+        # explicitly confirmed.
+        confirmed = False
         if llm_name in ("doubao", "chatgpt", "deepseek"):
-            confirmed = False
             # Refs #963: the original ~5s window (10 iterations × 500ms) was
             # too short for Doubao's 2026 SPA on a slow render: the click
             # could land successfully and the request fire upstream, but the

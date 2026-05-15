@@ -3315,6 +3315,116 @@ async def test_doubao_response_wait_extends_after_submit_confirmed_without_progr
     )
 
 
+@pytest.mark.asyncio
+async def test_browser_query_does_not_unboundlocal_for_non_doubao_engines(monkeypatch):
+    """Refs PR #1006 review (Codex P1): the ``confirmed`` flag the
+    response_wait extension reads MUST be initialized for every engine,
+    not only inside the ``(doubao, chatgpt, deepseek)`` submit-confirm
+    block. Otherwise engines such as gemini / kimi / claude / grok /
+    zhipu / perplexity would raise UnboundLocalError when the
+    response_wait extension passes ``confirmed`` into
+    ``_maybe_extend_wait_total`` on the first iteration. This test
+    walks a fake gemini config end-to-end (response arrives quickly)
+    and asserts no UnboundLocalError is raised."""
+    _install_fake_playwright(monkeypatch)
+
+    from geo_tracker.agent.guest_executor import GuestQueryExecutor
+
+    class FakeElement:
+        def __init__(self, text: str):
+            self._text = text
+
+        async def inner_text(self):
+            return self._text
+
+        async def inner_html(self):
+            return f"<div>{self._text}</div>"
+
+        async def is_visible(self):
+            return False
+
+    class FakePage:
+        url = "https://gemini.google.com/app/abc"
+
+        def __init__(self):
+            self._round = 0
+
+        async def wait_for_timeout(self, _ms):
+            return None
+
+        async def evaluate(self, script, *_args, **_kwargs):
+            self._round += 1
+            if "innerText" in script:
+                return ""
+            return False
+
+        async def query_selector(self, _selector):
+            # Response immediately ready so the extension trigger does
+            # not need to fire — we just want to prove no exception.
+            return FakeElement("gemini answer about bestCoffer 12345 67890 abcdefghij")
+
+        async def query_selector_all(self, _selector):
+            return [FakeElement("gemini answer about bestCoffer 12345 67890 abcdefghij")]
+
+    cfg = {
+        "url": "https://gemini.google.com/app",
+        "input_selector": "textarea",
+        "submit_button": "button",
+        "submit_key": "Enter",
+        "response_selector": ".gemini-response",
+        "wait_after_submit": 5000,
+        "load_wait": 1000,
+        "requires_login": False,
+        "login_redirect_domains": [],
+    }
+
+    executor = GuestQueryExecutor()
+    fake_input = FakeElement("")
+    fake_page = FakePage()
+
+    async def _noop(*_a, **_k):
+        return None
+
+    monkeypatch.setattr("geo_tracker.agent.guest_executor._save_html", _noop)
+    monkeypatch.setattr("geo_tracker.agent.guest_executor._save_screenshot", _noop)
+    monkeypatch.setattr("geo_tracker.agent.guest_executor._save_runtime_snapshot", _noop)
+
+    async def fake_fill_plain_text_input(*_a, **_k):
+        return True
+
+    monkeypatch.setattr(executor, "_fill_plain_text_input", fake_fill_plain_text_input)
+
+    class FakeKeyboard:
+        async def press(self, _key):
+            return None
+
+        async def type(self, _text, **_k):
+            return None
+
+    fake_page.keyboard = FakeKeyboard()
+    fake_input.bounding_box = lambda **_k: asyncio.sleep(0)
+    fake_input.click = lambda **_k: asyncio.sleep(0)
+
+    class FakeJSHandle:
+        def as_element(self):
+            return None
+
+    fake_page.evaluate_handle = lambda *_a, **_k: asyncio.sleep(0, result=FakeJSHandle())
+
+    # Critical assertion: this MUST NOT raise UnboundLocalError on
+    # ``confirmed`` for gemini (or any engine outside the doubao-family
+    # submit-confirm block).
+    resp_text, _resp_html, _citations = await executor._browser_query(
+        fake_page,
+        cfg,
+        "bestCoffer advantages?",
+        "gemini",
+        fake_input,
+        query_id=184968,
+    )
+    assert "gemini answer" in resp_text
+
+
 def test_doubao_inner_playwright_timeout_upgrades_reason_to_stage_tagged(
     monkeypatch,
     tmp_path,
