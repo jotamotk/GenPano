@@ -24,7 +24,7 @@ on:
         required: false
         default: "2026-05-07"
       scraper_mode:
-        description: "diagnostics, bestcoffer_batch, account_quota_reset, doubao_auth_false_success_repair, doubao_sms_forensics, chatgpt_sms_env_check, vninja_proxy_check, vninja_subscription_update, or app_analytics_business_completeness"
+        description: "diagnostics, query_status, bestcoffer_batch, account_quota_reset, doubao_auth_false_success_repair, doubao_sms_forensics, chatgpt_sms_env_check, vninja_proxy_check, vninja_subscription_update, or app_analytics_business_completeness"
         required: false
         default: "diagnostics"
       target_llm:
@@ -1644,6 +1644,184 @@ jobs:
           name: hero-sms-env-${{ github.run_id }}
           path: hero-sms-env-artifacts/runtime-env.json
           if-no-files-found: error
+
+      - name: Run exact query status diagnostics
+        if: ${{ inputs.scraper_mode == 'query_status' }}
+        shell: bash
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+          QUERY_STATUS_IDS: ${{ inputs.brand_query }}
+          GH_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s' "${SERVER_SSH_KEY}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H "${SERVER_HOST}" >> ~/.ssh/known_hosts 2>/dev/null
+
+          remote_cmd="$(printf 'QUERY_STATUS_IDS=%q GH_RUN_ID=%q bash -s' \
+            "${QUERY_STATUS_IDS}" "${GH_RUN_ID}")"
+
+          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=accept-new \
+            "${SERVER_USER}@${SERVER_HOST}" "${remote_cmd}" <<'REMOTE'
+          set -Eeuo pipefail
+          cd /opt/genpano
+
+          fail() {
+            echo "ERROR: $*" >&2
+            exit 1
+          }
+
+          QUERY_IDS="$(printf '%s' "${QUERY_STATUS_IDS}" | tr -d '[:space:]')"
+          [[ "${QUERY_IDS}" =~ ^[0-9]+(,[0-9]+)*$ ]] || fail "brand_query must carry comma-separated query ids for scraper_mode=query_status"
+
+          psql_cmd() {
+            docker compose exec -T postgres psql -X -v ON_ERROR_STOP=1 -U genpano -d genpano "$@" </dev/null
+          }
+
+          echo "=== Exact query status diagnostics ==="
+          echo "run=https://github.com/jotamotk/trash_test/actions/runs/${GH_RUN_ID}"
+          echo "query_ids=${QUERY_IDS}"
+          echo "utc_started_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+          echo "write_intent=read_only"
+          echo "payloads_exported=false"
+
+          echo "=== Docker compose status ==="
+          docker compose ps
+
+          echo "=== Exact query DB status CSV ==="
+          psql_cmd -c "
+            COPY (
+              WITH selected AS (
+                SELECT unnest(string_to_array('${QUERY_IDS}', ',')::int[]) AS id
+              ),
+              latest_response AS (
+                SELECT DISTINCT ON (r.query_id)
+                  r.query_id,
+                  r.id AS response_id,
+                  LENGTH(COALESCE(r.raw_text, '')) AS response_len,
+                  CASE
+                    WHEN r.id IS NULL THEN NULL
+                    ELSE MD5(COALESCE(r.raw_text, ''))
+                  END AS response_text_hash,
+                  CASE
+                    WHEN r.citations_json IS NULL THEN 0
+                    WHEN jsonb_typeof(r.citations_json::jsonb) = 'array'
+                    THEN jsonb_array_length(r.citations_json::jsonb)
+                    ELSE 0
+                  END AS citation_count,
+                  r.screenshot_path IS NOT NULL AS screenshot_present,
+                  r.collected_at,
+                  r.analysis_status
+                FROM llm_responses r
+                JOIN selected s ON s.id = r.query_id
+                ORDER BY r.query_id, r.id DESC
+              ),
+              response_counts AS (
+                SELECT r.query_id, COUNT(*) AS response_count
+                FROM llm_responses r
+                JOIN selected s ON s.id = r.query_id
+                GROUP BY r.query_id
+              ),
+              analysis_counts AS (
+                SELECT r.query_id, COUNT(ra.id) AS analysis_count
+                FROM llm_responses r
+                JOIN selected s ON s.id = r.query_id
+                LEFT JOIN response_analyses ra ON ra.response_id = r.id
+                GROUP BY r.query_id
+              )
+              SELECT
+                s.id AS query_id,
+                q.brand_id,
+                q.target_llm,
+                q.status,
+                COALESCE(q.retry_reason, '') AS retry_reason,
+                q.retry_count,
+                q.account_id,
+                a.status AS account_status,
+                a.consecutive_fails AS account_consecutive_fails,
+                a.cooldown_until AS account_cooldown_until,
+                q.queued_at,
+                q.started_at,
+                q.finished_at,
+                q.latency_ms,
+                COALESCE(rc.response_count, 0) AS response_count,
+                lr.response_id,
+                COALESCE(lr.response_len, 0) AS latest_response_len,
+                lr.citation_count,
+                COALESCE(lr.screenshot_present, false) AS screenshot_present,
+                lr.collected_at AS latest_collected_at,
+                lr.analysis_status AS latest_analysis_status,
+                COALESCE(ac.analysis_count, 0) AS analysis_count,
+                CASE
+                  WHEN q.id IS NULL THEN 'QUERY_NOT_FOUND'
+                  WHEN lr.response_id IS NULL THEN 'NO_RESPONSE_ROW'
+                  WHEN COALESCE(lr.response_len, 0) < 80 THEN 'SUSPECT_SHORT_RESPONSE'
+                  WHEN COALESCE(lr.screenshot_present, false) = false THEN 'SUSPECT_NO_SCREENSHOT'
+                  ELSE 'HAS_RESPONSE_REVIEW_ARTIFACTS'
+                END AS evidence_state
+              FROM selected s
+              LEFT JOIN queries q ON q.id = s.id
+              LEFT JOIN llm_accounts a ON a.id = q.account_id
+              LEFT JOIN response_counts rc ON rc.query_id = s.id
+              LEFT JOIN latest_response lr ON lr.query_id = s.id
+              LEFT JOIN analysis_counts ac ON ac.query_id = s.id
+              ORDER BY s.id
+            ) TO STDOUT WITH CSV HEADER
+          "
+
+          echo "=== Scoped engine counters for involved brand ids ==="
+          psql_cmd -c "
+            WITH involved_brands AS (
+              SELECT DISTINCT q.brand_id
+              FROM queries q
+              WHERE q.id IN (${QUERY_IDS})
+                AND q.brand_id IS NOT NULL
+            ),
+            scoped AS (
+              SELECT q.id, q.brand_id, q.target_llm, q.status
+              FROM queries q
+              JOIN involved_brands b ON b.brand_id = q.brand_id
+              WHERE q.target_llm = 'doubao'
+            ),
+            response_counts AS (
+              SELECT query_id, COUNT(*) AS responses
+              FROM llm_responses
+              GROUP BY query_id
+            )
+            SELECT
+              s.brand_id,
+              s.target_llm,
+              s.status,
+              COUNT(*) AS queries,
+              COUNT(*) FILTER (WHERE COALESCE(r.responses, 0) > 0) AS queries_with_response,
+              COUNT(*) FILTER (WHERE COALESCE(r.responses, 0) = 0) AS queries_without_response
+            FROM scoped s
+            LEFT JOIN response_counts r ON r.query_id = s.id
+            GROUP BY s.brand_id, s.target_llm, s.status
+            ORDER BY s.brand_id, s.target_llm, s.status;
+          "
+
+          echo "=== Doubao account health summary ==="
+          psql_cmd -c "
+            SELECT
+              llm_name,
+              status,
+              COUNT(*) AS accounts,
+              COUNT(*) FILTER (WHERE cookies_json IS NOT NULL AND cookies_json <> '') AS with_cookies,
+              COUNT(*) FILTER (WHERE cooldown_until IS NOT NULL AND cooldown_until > NOW()) AS cooling_down,
+              SUM(query_count_today) AS query_count_today,
+              SUM(daily_limit) AS daily_limit,
+              MAX(consecutive_fails) AS max_consecutive_fails
+            FROM llm_accounts
+            WHERE llm_name = 'doubao'
+            GROUP BY llm_name, status
+            ORDER BY llm_name, status;
+          "
+          REMOTE
 
       - name: Run read-only diagnostics
         if: ${{ inputs.scraper_mode == 'diagnostics' }}
