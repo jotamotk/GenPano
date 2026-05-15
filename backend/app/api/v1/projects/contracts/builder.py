@@ -388,9 +388,7 @@ async def _first_class_analyzer_fact_rollup(
     # citation share. Mirrors the SoV / MentionRate / GeoScore / Sentiment
     # patterns landed by PR #953, PR #962, and PR #976.
     citation_has_formula_inputs = (
-        citation_total > 0
-        and attributed_citations > 0
-        and fact_link_count > 0
+        citation_total > 0 and attributed_citations > 0 and fact_link_count > 0
     )
     citation_critical_reasons = {
         reason
