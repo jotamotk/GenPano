@@ -271,6 +271,26 @@ DOUBAO_REAUTH_FAILURE_REASONS = frozenset(
         "doubao_auth_state_missing",
     }
 )
+DOUBAO_REAUTH_RETRY_REASON_PREFIX = "doubao_reauth_retry:"
+DOUBAO_POST_REAUTH_FAILURE_PREFIX = "doubao_post_reauth_"
+
+
+def _is_doubao_post_reauth_attempt(retry_reason: str | None) -> bool:
+    return bool(
+        retry_reason and retry_reason.startswith(DOUBAO_REAUTH_RETRY_REASON_PREFIX)
+    )
+
+
+def _doubao_post_reauth_failure_reason(
+    initial_retry_reason: str | None,
+    failure_reason: str | None,
+) -> str | None:
+    if (
+        _is_doubao_post_reauth_attempt(initial_retry_reason)
+        and failure_reason in DOUBAO_REAUTH_FAILURE_REASONS
+    ):
+        return f"{DOUBAO_POST_REAUTH_FAILURE_PREFIX}{failure_reason}"
+    return failure_reason
 
 
 async def _requeue_doubao_query_after_reauth(
@@ -297,16 +317,6 @@ async def _requeue_doubao_query_after_reauth(
         return False
     if query.retry_reason not in DOUBAO_REAUTH_FAILURE_REASONS:
         return False
-    if int(query.retry_count or 0) >= retry_max:
-        logger.warning(
-            "Query %s: Doubao reauth retry budget exhausted "
-            "account_id=%s retry_count=%s retry_max=%s",
-            query_id,
-            account_id,
-            query.retry_count or 0,
-            retry_max,
-        )
-        return False
 
     response_result = await db.execute(
         select(LLMResponse.id).where(LLMResponse.query_id == query_id)
@@ -329,7 +339,7 @@ async def _requeue_doubao_query_after_reauth(
     execute_query.apply_async(args=[query_id], queue="llm_doubao")
     logger.warning(
         "Query %s: requeued after Doubao account %s reauth success "
-        "(retry_count=%s/%s)",
+        "(retry_count=%s reauth_requeue_enabled=%s)",
         query_id,
         account_id,
         query.retry_count,
@@ -725,6 +735,7 @@ def execute_query(self, query_id: int) -> dict:
                 return {"skipped": True, "reason": "already_done"}
 
             # 更新状态为 RUNNING
+            initial_retry_reason = query.retry_reason
             started_at = mark_query_started(query)
             await db.commit()
 
@@ -896,11 +907,15 @@ def execute_query(self, query_id: int) -> dict:
                         response.response_html,
                     )
                     if auth_failure_reason:
+                        failure_reason = _doubao_post_reauth_failure_reason(
+                            initial_retry_reason,
+                            auth_failure_reason,
+                        )
                         mark_query_finished(
                             query,
                             status=QueryStatus.FAILED.value,
                             started_at=started_at,
-                            reason=auth_failure_reason,
+                            reason=failure_reason,
                         )
                         await quota_settlement.settle_failure(
                             db,
@@ -912,26 +927,29 @@ def execute_query(self, query_id: int) -> dict:
                             pool=pool,
                             query=query,
                             account_id=account_id,
-                            failure_reason=auth_failure_reason,
+                            failure_reason=failure_reason,
                         )
                         await db.commit()
                         logger.warning(
                             "Query %s failed: Doubao auth state rejected before DONE (%s), "
                             "account %s",
                             query_id,
-                            auth_failure_reason,
+                            failure_reason,
                             account_id,
                         )
                         return {
                             "query_id": query_id,
                             "status": "failed",
-                            "reason": auth_failure_reason,
+                            "reason": failure_reason,
                         }
 
                     invalid_reason = invalid_response_reason(query.target_llm, response.raw_text)
                     if invalid_reason:
                         # 响应内容是登录页/过期页，不是 AI 回答
-                        failure_reason = invalid_reason
+                        failure_reason = _doubao_post_reauth_failure_reason(
+                            initial_retry_reason,
+                            invalid_reason,
+                        )
                         mark_query_finished(
                             query,
                             status=QueryStatus.FAILED.value,
@@ -941,7 +959,7 @@ def execute_query(self, query_id: int) -> dict:
                         await quota_settlement.settle_failure(
                             db,
                             pool,
-                            reason=failure_reason,
+                            reason=invalid_reason,
                         )
                         await _handle_doubao_account_failure_handoff(
                             db=db,
@@ -1010,6 +1028,11 @@ def execute_query(self, query_id: int) -> dict:
                         executor=guest_executor,
                         account_cookies=account_cookies,
                     )
+                    original_failure_reason = failure_reason
+                    failure_reason = _doubao_post_reauth_failure_reason(
+                        initial_retry_reason,
+                        original_failure_reason,
+                    )
                     mark_query_finished(
                         query,
                         status=QueryStatus.FAILED.value,
@@ -1020,7 +1043,7 @@ def execute_query(self, query_id: int) -> dict:
                     await quota_settlement.settle_failure(
                         db,
                         pool,
-                        reason=failure_reason,
+                        reason=original_failure_reason,
                     )
                     await _handle_doubao_account_failure_handoff(
                         db=db,

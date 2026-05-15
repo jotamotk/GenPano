@@ -2846,7 +2846,116 @@ def test_doubao_auto_login_default_budget_allows_current_row_after_manual_retry(
     assert requeued == [{"args": [query_id], "queue": "llm_doubao"}]
 
 
-def test_doubao_auto_login_does_not_requeue_after_retry_budget(monkeypatch, tmp_path):
+def test_doubao_auto_login_reauth_requeue_ignores_manual_retry_count(
+    monkeypatch,
+    tmp_path,
+):
+    _install_fake_playwright(monkeypatch)
+
+    from geo_tracker.tasks import celery_tasks
+    import geo_tracker.agent.sms_login as sms_login
+
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'doubao-reauth-manual-count.db'}"
+    query_id = 184968
+    account_id = 42
+
+    async def seed_database():
+        engine = create_async_engine(db_url, future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        maker = async_sessionmaker(engine, expire_on_commit=False)
+        async with maker() as session:
+            session.add_all(
+                [
+                    LLMAccount(
+                        id=account_id,
+                        llm_name="doubao",
+                        status=AccountStatus.EXPIRED.value,
+                        cookies_json='[{"name":"stale"}]',
+                        query_count_today=5,
+                        daily_limit=100,
+                        phone_number="17000007065",
+                    ),
+                    Query(
+                        id=query_id,
+                        account_id=account_id,
+                        target_llm="doubao",
+                        query_text="bestCoffer advantages",
+                        status=QueryStatus.FAILED.value,
+                        retry_count=11,
+                        retry_reason="doubao_not_logged_in",
+                    ),
+                ]
+            )
+            await session.commit()
+        await engine.dispose()
+
+    asyncio.run(seed_database())
+
+    def create_engine():
+        return create_async_engine(db_url, future=True)
+
+    def get_session(engine):
+        return _TaskSessionContext(async_sessionmaker(engine, expire_on_commit=False))
+
+    class FakeHandler:
+        async def login_or_register(self, *, existing_cookies=None, phone=None):
+            return {
+                "cookies": [{"name": "session", "value": "fresh"}],
+                "phone": phone,
+            }
+
+    requeued: list[dict] = []
+
+    class FakeExecuteQuery:
+        @staticmethod
+        def apply_async(*, args, queue):
+            requeued.append({"args": args, "queue": queue})
+
+    async def fake_release_relogin_lock(_account_id):
+        return None
+
+    monkeypatch.delenv("DOUBAO_REAUTH_QUERY_RETRY_MAX", raising=False)
+    monkeypatch.setattr(celery_tasks, "create_task_engine", create_engine)
+    monkeypatch.setattr(celery_tasks, "get_task_async_session", get_session)
+    monkeypatch.setattr(sms_login, "get_handler", lambda _platform: FakeHandler())
+    monkeypatch.setattr(celery_tasks, "execute_query", FakeExecuteQuery)
+    monkeypatch.setattr(celery_tasks, "release_relogin_lock", fake_release_relogin_lock)
+
+    result = celery_tasks.auto_login.run(account_id=account_id, query_id=query_id)
+
+    async def load_query():
+        engine = create_async_engine(db_url, future=True)
+        maker = async_sessionmaker(engine, expire_on_commit=False)
+        async with maker() as session:
+            query = await session.get(Query, query_id)
+            state = {
+                "status": query.status,
+                "retry_count": query.retry_count,
+                "retry_reason": query.retry_reason,
+            }
+        await engine.dispose()
+        return state
+
+    state = asyncio.run(load_query())
+
+    assert result == {
+        "status": "success",
+        "account_id": account_id,
+        "requeued_query_id": query_id,
+    }
+    assert state == {
+        "status": QueryStatus.PENDING.value,
+        "retry_count": 12,
+        "retry_reason": "doubao_reauth_retry:42",
+    }
+    assert requeued == [{"args": [query_id], "queue": "llm_doubao"}]
+
+
+def test_doubao_auto_login_does_not_requeue_when_reauth_retry_disabled(
+    monkeypatch,
+    tmp_path,
+):
     _install_fake_playwright(monkeypatch)
 
     from geo_tracker.tasks import celery_tasks
@@ -2913,7 +3022,7 @@ def test_doubao_auto_login_does_not_requeue_after_retry_budget(monkeypatch, tmp_
     monkeypatch.setattr(sms_login, "get_handler", lambda _platform: FakeHandler())
     monkeypatch.setattr(celery_tasks, "execute_query", FakeExecuteQuery)
     monkeypatch.setattr(celery_tasks, "release_relogin_lock", fake_release_relogin_lock)
-    monkeypatch.setenv("DOUBAO_REAUTH_QUERY_RETRY_MAX", "1")
+    monkeypatch.setenv("DOUBAO_REAUTH_QUERY_RETRY_MAX", "0")
 
     result = celery_tasks.auto_login.run(account_id=account_id, query_id=query_id)
 
@@ -3148,6 +3257,119 @@ def test_execute_query_cools_doubao_account_on_page_unavailable(monkeypatch, tmp
     assert state["response"] is None
     assert state["account_status"] == AccountStatus.COOLDOWN.value
     assert state["account_cooldown_until"] is not None
+
+
+def test_execute_query_does_not_loop_auto_login_after_post_reauth_failure(
+    monkeypatch,
+    tmp_path,
+):
+    _install_fake_playwright(monkeypatch)
+
+    from geo_tracker.tasks import celery_tasks
+
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'doubao-post-reauth-failed.db'}"
+    query_id = 184968
+    account_id = 42
+
+    async def seed_database():
+        engine = create_async_engine(db_url, future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        maker = async_sessionmaker(engine, expire_on_commit=False)
+        async with maker() as session:
+            session.add_all(
+                [
+                    LLMAccount(
+                        id=account_id,
+                        llm_name="doubao",
+                        status=AccountStatus.ACTIVE.value,
+                        cookies_json='[{"name":"session"}]',
+                        query_count_today=1,
+                        daily_limit=20,
+                    ),
+                    Query(
+                        id=query_id,
+                        account_id=account_id,
+                        target_llm="doubao",
+                        query_text="bestCoffer advantages",
+                        status=QueryStatus.PENDING.value,
+                        retry_count=12,
+                        retry_reason="doubao_reauth_retry:42",
+                    ),
+                ]
+            )
+            await session.commit()
+        await engine.dispose()
+
+    asyncio.run(seed_database())
+
+    def create_engine():
+        return create_async_engine(db_url, future=True)
+
+    def get_session(engine):
+        return _TaskSessionContext(async_sessionmaker(engine, expire_on_commit=False))
+
+    async def fake_acquire_query_account(db, query, pool=None):
+        return LLMAccount(
+            id=account_id,
+            llm_name="doubao",
+            status=AccountStatus.ACTIVE.value,
+            cookies_json='[{"name":"session"}]',
+        )
+
+    class FakeGuestQueryExecutor:
+        def __init__(self, *args, **kwargs):
+            self.last_error_reason = "doubao_not_logged_in"
+
+        async def execute(self, query):
+            return None
+
+    relogin_requests: list[dict] = []
+
+    class FakeAutoLogin:
+        @staticmethod
+        def apply_async(*, kwargs, queue):
+            relogin_requests.append({"kwargs": kwargs, "queue": queue})
+
+    async def fake_should_enqueue_relogin(_account_id):
+        return True
+
+    monkeypatch.setattr(celery_tasks, "create_task_engine", create_engine)
+    monkeypatch.setattr(celery_tasks, "get_task_async_session", get_session)
+    monkeypatch.setattr(celery_tasks, "acquire_query_account", fake_acquire_query_account)
+    monkeypatch.setattr(celery_tasks, "GuestQueryExecutor", FakeGuestQueryExecutor)
+    monkeypatch.setattr(celery_tasks, "auto_login", FakeAutoLogin)
+    monkeypatch.setattr(celery_tasks, "should_enqueue_relogin", fake_should_enqueue_relogin)
+
+    result = celery_tasks.execute_query.run(query_id)
+
+    async def load_state():
+        engine = create_async_engine(db_url, future=True)
+        maker = async_sessionmaker(engine, expire_on_commit=False)
+        async with maker() as session:
+            query = await session.get(Query, query_id)
+            account = await session.get(LLMAccount, account_id)
+            state = {
+                "query_status": query.status,
+                "retry_reason": query.retry_reason,
+                "account_status": account.status,
+            }
+        await engine.dispose()
+        return state
+
+    state = asyncio.run(load_state())
+
+    assert result == {
+        "query_id": query_id,
+        "status": "failed",
+        "reason": "doubao_post_reauth_doubao_not_logged_in:0",
+    }
+    assert state == {
+        "query_status": QueryStatus.FAILED.value,
+        "retry_reason": "doubao_post_reauth_doubao_not_logged_in",
+        "account_status": AccountStatus.EXPIRED.value,
+    }
+    assert relogin_requests == []
 
 
 @pytest.mark.asyncio
