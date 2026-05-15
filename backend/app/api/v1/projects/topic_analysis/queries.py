@@ -410,6 +410,24 @@ async def _fact_rows(
             "AS citation_count"
         )
 
+    # Issue #948 follow-up: target_citation_count is the per-response count
+    # of citations attributed to the target brand (via citation_sources.mention_id
+    # → brand_mentions). Without this, the citation METRIC formula in
+    # _metrics_service._fact_metric_value used the raw citation_count as
+    # both numerator and denominator, so the ratio was always 100% whenever
+    # the LLM emitted any citations on a target-mentioning response. The
+    # contract's metric_formula_evidence.citation already tracks
+    # `target_attributed_citations / eligible_project_citations`; this
+    # per-row field lets the per-day metric series match that semantic.
+    target_citation_select = "0 AS target_citation_count"
+    if has_citations and response_join and has_mentions and target_mention_condition:
+        target_citation_select = (
+            "(SELECT COUNT(*) FROM citation_sources cs "
+            "JOIN brand_mentions bm ON cs.mention_id = bm.id "
+            f"WHERE cs.response_id = r.id AND {target_mention_condition}) "
+            "AS target_citation_count"
+        )
+
     where_clause = f"WHERE {' AND '.join(topic_where)}" if topic_where else ""
     sql = text(
         f"""
@@ -438,7 +456,8 @@ async def _fact_rows(
             {brand_scope_match_select},
             {", ".join(analysis_selects)},
             {", ".join(mention_selects)},
-            {citation_select}
+            {citation_select},
+            {target_citation_select}
         FROM topics t
         LEFT JOIN prompts p ON {" AND ".join(prompt_join_conditions)}
         LEFT JOIN queries q ON {" AND ".join(query_join_conditions)}
