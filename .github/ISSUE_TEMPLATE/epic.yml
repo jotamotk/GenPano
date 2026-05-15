@@ -38,6 +38,19 @@ body:
     validations:
       required: true
   - type: textarea
+    id: business-goal
+    attributes:
+      label: Business Goal
+      description: Define the parent business outcome and final evidence before splitting child issues.
+      value: |
+        - Business outcome:
+        - User-visible success:
+        - Exact object/path:
+        - Final success evidence:
+        - What does NOT count as done:
+    validations:
+      required: true
+  - type: textarea
     id: current-state
     attributes:
       label: Current State
@@ -82,6 +95,12 @@ body:
         | --- | --- | --- | --- |
         |  |  |  |  |
 
+        Business Result Gate:
+        - Exact business object/path:
+        - Required final state:
+        - Required artifact/readback:
+        - Evidence source:
+
         Open QUESTION items:
         -
     validations:
@@ -116,15 +135,19 @@ body:
       description: What must be true before merge or closeout?
       value: |
         - [ ] PRD decisions accepted or explicitly not needed
+        - [ ] Business Goal and Final Success Evidence are explicit
+        - [ ] Child issues map back to the parent Business Goal
         - [ ] Visualization confirmed or explicitly not needed
         - [ ] Acceptance Translation complete before implementation
         - [ ] Coverage gaps accepted or converted to questions
         - [ ] Deliverable issues complete
         - [ ] Required PRs reviewed
+        - [ ] Root-cause and failure-chain gates passed for incident fixes
         - [ ] Verification Evidence Ledgers complete on child PRs
         - [ ] Test Integrity Statements complete on child PRs
         - [ ] CI/CD tied to current head SHA and understood
         - [ ] Tiered E2E planned or completed if live-facing
+        - [ ] Final business result proven; diagnostics-only progress is not used as closure
     validations:
       required: true
   - type: textarea
@@ -163,6 +186,7 @@ body:
         - Type:
         - Reason:
         - Linked PR/commit or replacement/canonical issue:
+        - Business Goal result:
         - Verification evidence:
     validations:
       required: false

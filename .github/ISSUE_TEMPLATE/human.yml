@@ -38,6 +38,39 @@ body:
     validations:
       required: true
   - type: textarea
+    id: business-goal
+    attributes:
+      label: Business Goal
+      description: State the user-visible business outcome. If unclear, stop triage and raise HUMAN DECISION NEEDED.
+      value: |
+        - Business outcome:
+        - Exact user-visible object/path:
+        - Why this matters:
+    validations:
+      required: true
+  - type: textarea
+    id: final-success-evidence
+    attributes:
+      label: Final Success Evidence
+      description: Name the evidence that proves the business goal, not just deployment or a changed error code.
+      value: |
+        - Required final state:
+        - Required artifact/readback:
+        - Evidence source:
+    validations:
+      required: true
+  - type: textarea
+    id: not-done
+    attributes:
+      label: What Does NOT Count As Done
+      description: List states that must not be mistaken for completion.
+      value: |
+        - CI/CD green alone is not done.
+        - Deploy green alone is not done.
+        - A different error code alone is not done.
+    validations:
+      required: true
+  - type: textarea
     id: current-state
     attributes:
       label: Current State
@@ -55,6 +88,8 @@ body:
       description: Rules Codex must follow when reading this channel.
       value: |
         - Do not implement directly from a vague raw note.
+        - Do not split child work until Business Goal and Final Success Evidence are explicit.
+        - If the Business Goal is unclear, post HUMAN DECISION NEEDED before routing work.
         - Classify each item as bug, feature change, new requirement, question/idea, or needs clarification.
         - Convert actionable work into a scoped Fast Path issue, Full Path Coordination issue, deliverable issue, or PRD-change request.
         - Use PRD-CHANGE when the item changes product behavior or contract.
@@ -81,6 +116,10 @@ body:
 
         Receipt:
         - Original note:
+        - Business goal understood? yes/no:
+        - Final success evidence:
+        - What does not count as done:
+        - HUMAN DECISION NEEDED? yes/no:
         - Last updated:
     validations:
       required: true
@@ -103,6 +142,7 @@ body:
 
         Evidence:
         - Playwright/screenshot/API/server diagnostic:
+        - Final success evidence matches Business Goal? yes/no:
 
         Caveats:
         - Remaining risk or none:

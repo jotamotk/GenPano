@@ -74,10 +74,13 @@ comment with these fields:
 - Path: `fast` or `full`
 - PRD Source and requirement IDs when product behavior is involved
 - Goal
+- Parent Business Goal and Final Success Evidence
 - Allowed Scope
 - Forbidden Scope
 - Contract Snapshot
 - Acceptance Matrix with source for every row
+- Root Cause Gate when assigned to incident work
+- Failure Chain Review before PR readiness or live retry/account budget spend
 - Coverage Gaps, if any
 - Verification Evidence Ledger expectations
 - User-Symptom Replay target when user-reported or UI-visible
@@ -129,6 +132,8 @@ PR. Keep it concise; it is a readiness signal, not a diary.
 - Branch:
 - Linked Issue:
 - PRD Source:
+- Parent Business Goal:
+- Final Success Evidence:
 - Files/docs read:
   - AGENTS.md
   - docs/AI_LEAD_WORKFLOW.md
@@ -140,6 +145,9 @@ PR. Keep it concise; it is a readiness signal, not a diary.
 - Acceptance Matrix source coverage:
 - Expected Evidence Ledger rows:
 - User-Symptom Replay target:
+- Root Cause Gate:
+- Failure Chain Review:
+- Completion state allowed: Business success proven | Diagnostic progress only | Blocked / decision needed
 - Test Integrity risk:
 - Missing context or blocker:
 ```
@@ -177,10 +185,28 @@ Claude Code issue comments follow the repository writing standard:
   or next action
 
 Use prefixes as appropriate: `QUESTION`, `DECISION`, `BLOCKER`, `STATUS`,
-`PRD-CHANGE`, `EVIDENCE`.
+`PRD-CHANGE`, `EVIDENCE`, `HUMAN DECISION NEEDED`.
 
 When blocked, report the blocker plainly and early. Do not hide uncertainty,
 invent context, or keep working outside the assigned contract.
+
+Human-facing updates should stay within this shape:
+
+- Status: one sentence.
+- Blocker or decision: one sentence.
+- Evidence: up to three bullets.
+- Next action: one sentence.
+
+Claude Code must use one of three completion states:
+
+- `Business success proven`: final business artifact or readback exists.
+- `Diagnostic progress only`: observability or root-cause visibility improved,
+  but the business result is not proven.
+- `Blocked / decision needed`: root cause, acceptance, or safe next action is
+  uncertain.
+
+Do not describe diagnostics-only work, a better error code, green CI, or deploy
+success as issue completion when the assigned business artifact is missing.
 
 ## Implementation Handoff
 
@@ -192,6 +218,8 @@ Claude Code PRs must include:
 - scope kept and scope explicitly not changed
 - PRD coverage table when product behavior is involved
 - Acceptance Matrix status
+- Root Cause Gate result for incident work
+- Failure Chain Review and next-layer risk
 - Verification Evidence Ledger with command/run, exit/conclusion, key output,
   scope, artifact/link, and commit SHA
 - User-Symptom Replay evidence if user-reported or UI-visible
@@ -216,6 +244,8 @@ Suggested PR handoff:
 - Changed Files:
 - Not Changed:
 - Acceptance Matrix:
+- Root Cause Gate:
+- Failure Chain Review:
 - Verification Evidence Ledger:
 - Screenshots/Traces:
 - User-Symptom Replay:
@@ -237,12 +267,24 @@ For review-only assignments, Claude Code must not patch code. It reports:
 - missing tests or verification gaps
 - open questions
 
+For incident PRs, review must also ask:
+
+- Why did this happen?
+- Why did the previous guard fail?
+- Why does this fix reach the business goal?
+- What is the next likely failure mode?
+- What live evidence will prove final success?
+
+If those answers are weak, request changes or mark the PR as
+`Diagnostic progress only`; do not approve it as the incident fix.
+
 For QA/E2E assignments, Claude Code must not implement business behavior. It
 reports:
 
 - base URL
 - exact scenario, including route, row, brand, query, request, payload, action,
   and expected visible result when available
+- final business artifact/readback required
 - commands run
 - exit codes or CI job conclusions
 - screenshots, traces, or request details
@@ -250,6 +292,10 @@ reports:
 - failed request URL, status, response body summary, and timestamp when
   available
 - commit SHA tested
+
+For live retry or other live budget usage, QA/E2E must record current object
+state, retry count or equivalent budget, account/session state when relevant,
+post-action consequence, and whether automatic Playwright retries were disabled.
 
 For pruning assignments, Claude Code must not delete files or change workflow
 rules. It reports:
@@ -309,9 +355,13 @@ If Claude Code finds required work outside its issue:
 - PR Target:
 - Linked Issue:
 - PRD Source:
+- Parent Business Goal:
+- Final Success Evidence:
 - Allowed Scope:
 - Forbidden Scope:
 - Contract Snapshot:
+- Root Cause Gate:
+- Failure Chain Review:
 - Required Verification:
 - Handoff:
 
@@ -326,7 +376,10 @@ Before merge or user-facing completion, the Codex Lead verifies:
 - linked issue body is current
 - source Human Input issue is linked when the work started from user intake
 - PRD IDs are linked when product behavior is involved
+- Business Goal and Final Success Evidence are explicit
 - Acceptance Matrix is source-backed and complete
+- incident fixes have a complete Root Cause Gate and Failure Chain Review, or
+  are explicitly classified as diagnostics/instrumentation only
 - Coverage Gaps are empty or accepted
 - PR stays inside one deliverable scope
 - required local tests are present
@@ -338,6 +391,8 @@ Before merge or user-facing completion, the Codex Lead verifies:
 - deployment path is known
 - live-facing behavior is verified on the test environment `http://116.62.36.173/`
 - live Playwright E2E evidence is attached when applicable
+- completion state is `Business success proven` before closing business
+  incidents; `Diagnostic progress only` is not closure
 - Human Input has a `Ready for User Acceptance` record when applicable
 - issue closure type and closure record are ready; Human Input remains open for
   user closure unless closure was explicitly delegated

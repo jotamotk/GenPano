@@ -72,6 +72,18 @@ body:
     validations:
       required: true
   - type: textarea
+    id: parent-business-goal
+    attributes:
+      label: Parent Business Goal
+      description: Link this deliverable to the parent business outcome. Use "standalone" only for standalone Fast Path tasks.
+      value: |
+        - Parent issue:
+        - Parent Business Goal:
+        - This deliverable proves or enables:
+        - What does NOT count as done:
+    validations:
+      required: true
+  - type: textarea
     id: current-state
     attributes:
       label: Current State
@@ -137,6 +149,41 @@ body:
         | Source Requirement | Missing Coverage | Decision Needed |
         | --- | --- | --- |
         |  |  |  |
+
+        Business Result Gate:
+        - Exact business object/path:
+        - Required final state:
+        - Required artifact/readback:
+        - Evidence source:
+    validations:
+      required: true
+  - type: textarea
+    id: root-cause-gate
+    attributes:
+      label: Root Cause Gate
+      description: Required for incident fixes. Use "not an incident - reason" only when this task is not fixing a reported failure.
+      value: |
+        - Direct trigger:
+        - Underlying product/system root cause:
+        - Evidence proving it:
+        - Alternatives ruled out:
+        - Unknowns that remain:
+        - Why this fix should produce the final business outcome, not only remove the current error:
+        - Classification: incident fix | diagnostics/instrumentation only | not an incident
+    validations:
+      required: true
+  - type: textarea
+    id: failure-chain-review
+    attributes:
+      label: Failure Chain Review
+      description: Identify the next likely failure before marking a PR ready or spending live retry/account budget.
+      value: |
+        - Current failure layer:
+        - Next likely failure mode:
+        - Guard or evidence for the next layer:
+        - Live retry/account/session preflight needed? yes/no:
+        - If yes, current row status / retry_count / account-session state / post-retry consequence:
+        - Expected final success evidence:
     validations:
       required: true
   - type: textarea
@@ -156,6 +203,7 @@ body:
         - Expected visible result:
         - E2E tier used: Tier 0 | Tier 1 | Tier 2 | Tier 3
         - Evidence or blocker:
+        - Completion state: Business success proven | Diagnostic progress only | Blocked / decision needed
     validations:
       required: true
   - type: textarea

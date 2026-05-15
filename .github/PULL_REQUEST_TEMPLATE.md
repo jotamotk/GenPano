@@ -5,6 +5,8 @@
 - Path: fast | full
 - PRD IDs, if product behavior is involved:
   - PRD-AREA-FEATURE-001
+- Parent Business Goal:
+- Final Success Evidence:
 
 ## Owner Hat
 
@@ -42,8 +44,35 @@ Use `none - no product behavior change` when this is docs-only, tooling-only, or
 | --- | --- | --- | --- | --- | --- |
 | AC-1 |  |  |  |  | pending |
 
+Business Result Gate, if applicable:
+- Exact business object/path:
+- Required final state:
+- Required artifact/readback:
+- Evidence source:
+
 Coverage gaps:
 -
+
+## Root Cause Gate
+
+Use `not an incident - reason` when this PR is not fixing a reported failure.
+
+- Direct trigger:
+- Underlying product/system root cause:
+- Evidence proving it:
+- Alternatives ruled out:
+- Unknowns that remain:
+- Why this fix should produce the final business outcome, not only remove the current error:
+- Classification: incident fix | diagnostics/instrumentation only | not an incident
+
+## Failure Chain Review
+
+- Current failure layer:
+- Next likely failure mode:
+- Guard or evidence for the next layer:
+- Live retry/account/session preflight needed? yes/no:
+- If yes, current row status / retry_count / account-session state / post-retry consequence:
+- Expected final success evidence:
 
 ## Verification Evidence Ledger
 
@@ -62,6 +91,7 @@ Required for user-reported bugs and UI-visible changes. Use `not applicable - re
 - Expected visible result:
 - E2E tier used: Tier 0 | Tier 1 | Tier 2 | Tier 3
 - Evidence or blocker:
+- Completion state: Business success proven | Diagnostic progress only | Blocked / decision needed
 
 ## Test Integrity Statement
 
@@ -94,6 +124,8 @@ Required for user-reported bugs and UI-visible changes. Use `not applicable - re
 - [ ] PR avoids the issue's Forbidden Scope.
 - [ ] PRD Coverage matches the linked issue's Acceptance Matrix when product behavior is involved.
 - [ ] Acceptance Matrix rows have sources and no unaccepted coverage gaps.
+- [ ] Business Result Gate is complete for live incidents or existing-object outcomes.
+- [ ] Incident fixes include Root Cause Gate and Failure Chain Review, or are explicitly diagnostics/instrumentation only.
 - [ ] Verification Evidence Ledger includes command/run, exit/conclusion, key output, scope, artifact/link when available, and commit SHA.
 - [ ] User-Symptom Replay is present for user-reported bugs or explicitly blocked.
 - [ ] Test Integrity Statement is complete.

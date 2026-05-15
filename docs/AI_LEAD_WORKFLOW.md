@@ -47,6 +47,18 @@ existing issue before durable work continues.
 
 At intake, choose one path.
 
+Before choosing a path, the Lead must capture:
+
+- `Business Goal`: the user-visible business outcome.
+- `Final Success Evidence`: the artifact, readback, screenshot, diagnostic, or
+  live E2E result that proves the outcome.
+- `What Does NOT Count As Done`: states that must not be mistaken for closure,
+  such as CI green, deploy green, a different error code, or diagnostics-only
+  progress.
+
+If any of these are unclear, post `HUMAN DECISION NEEDED` and pause executable
+work instead of splitting tasks from an ambiguous intake.
+
 ### Fast Path
 
 Use Fast Path for small, bounded changes:
@@ -117,6 +129,8 @@ Recommended issue body sections:
 ```md
 ## Goal
 
+## Business Goal
+
 ## Current State
 
 ## Decisions
@@ -182,6 +196,7 @@ Recommended contract:
 - Path: fast | full
 - Owner Hat:
 - Branch:
+- Parent Business Goal:
 - Allowed Scope:
   -
 - Forbidden Scope:
@@ -196,6 +211,23 @@ Recommended contract:
   | Source Requirement | Missing Coverage | Decision Needed |
   | --- | --- | --- |
   |  |  |  |
+- Business Result Gate:
+  - Exact business object/path:
+  - Required final state:
+  - Required artifact/readback:
+  - Evidence source:
+- Root Cause Gate:
+  - Direct trigger:
+  - Underlying product/system root cause:
+  - Evidence:
+  - Alternatives ruled out:
+  - Unknowns:
+  - Why this fix reaches the business goal:
+- Failure Chain Review:
+  - Current failure layer:
+  - Next likely failure mode:
+  - Guard or evidence for next layer:
+  - Live retry/account preflight if relevant:
 - Verification Evidence Ledger:
   | Check | Command/Run | Exit | Key Output | Scope Covered | Artifact/Link | Commit |
   | --- | --- | --- | --- | --- | --- | --- |
@@ -218,6 +250,37 @@ Recommended contract:
 `Contract Snapshot` is the frozen instruction for this issue. It should include
 the relevant user-facing behavior, API shape, data rule, or PRD slice that the
 worker should execute without chasing unresolved upstream comments.
+
+## Root Cause And Failure Chain Gate
+
+Incident work must separate root-cause proof from diagnostics progress.
+
+Before a worker PR can be marked ready as an incident fix, it must answer:
+
+- Direct trigger
+- Underlying product/system root cause
+- Evidence proving the root cause
+- Alternatives ruled out
+- Unknowns that remain
+- Why this fix should produce the final business outcome, not only remove the
+  current error
+
+If the final answer is weak, classify the PR as `diagnostics/instrumentation
+only`. It may improve the next investigation, but it cannot close the incident
+or satisfy a Business Result Gate by itself.
+
+Review must include a failure-chain challenge:
+
+- Why did this happen?
+- Why did the previous guard fail?
+- Why does this fix reach the business goal?
+- What is the next likely failure mode?
+- What live evidence will prove final success?
+
+Before a live retry or other live budget spend, the issue must record current
+object state, retry count or equivalent budget, account/session state when
+relevant, post-action consequence, expected final evidence, and fallback if the
+next layer fails.
 
 ## Acceptance Translation Gate
 
@@ -255,6 +318,9 @@ Rules:
   outcome on an existing object. Name the exact object, required final state,
   and readback source. Example: `query 184968 -> done + response evidence from
   Server Diagnostics`, not merely `retry workflow passed`.
+- Do not close a Business Result Gate with CI, deploy, a better error code, or
+  observability-only output. Those can be release or diagnostics evidence, but
+  the affected business object must reach the required final state.
 - For live mutation gates, size the poll window for the full recovery path
   being tested. If a scraper retry can trigger account reauth and then one
   post-reauth query attempt, the gate must wait long enough for that chain or
@@ -394,6 +460,8 @@ A PR cannot be marked ready because tests are green. It can be ready only when:
 - Acceptance Matrix exists and each row is complete, blocked, or explicitly out
   of scope with source
 - Coverage Gaps are empty or accepted by the Lead/product owner
+- incident fixes include Root Cause Gate and Failure Chain Review, or are
+  explicitly classified as diagnostics/instrumentation only
 - Verification Evidence Ledger includes command/run, exit/conclusion, key
   output, scope, artifact/link when available, and commit SHA
 - user-reported symptoms have targeted replay evidence or a `BLOCKER`
@@ -415,6 +483,9 @@ Use these prefixes as writing guidance:
 - `STATUS`: records a material state change
 - `PRD-CHANGE`: requests product-owner decision on PRD conflict
 - `EVIDENCE`: records verification proof
+- `HUMAN DECISION NEEDED`: asks the user/product owner for a decision when the
+  Business Goal, final evidence, product intent, root cause, or safe next action
+  is unclear
 
 Default comment shape:
 
@@ -458,6 +529,33 @@ Questions:
 Default if unanswered:
 - The assumption Codex will use, or "pause until answered" if no safe default.
 ```
+
+Human decision comment shape:
+
+```md
+HUMAN DECISION NEEDED: One-sentence decision needed.
+
+Options:
+- A:
+- B:
+
+Recommendation:
+- Recommended option and why.
+
+Evidence:
+- Up to three facts.
+
+Risk if we guess:
+- What could break or waste live budget.
+```
+
+Completion status language is restricted:
+
+- `Business success proven`: final business artifact or readback exists.
+- `Diagnostic progress only`: root cause visibility improved but final outcome
+  is not proven.
+- `Blocked / decision needed`: root cause, acceptance, or safe next action is
+  uncertain.
 
 Do not post a `STATUS` comment just to narrate work performed. If the comment
 does not change state, risk, decision, evidence, or next action, keep it out of
@@ -507,6 +605,9 @@ Rules:
 - Do not assign the Human Input issue itself to a branch or PR.
 - Do not close it when a child task completes or when a PR merges.
 - Do not implement directly from a vague raw note.
+- Do not route executable work until Business Goal, Final Success Evidence, and
+  What Does NOT Count As Done are explicit, or a `HUMAN DECISION NEEDED` comment
+  has been posted.
 - Do not treat it as product fact until a triage disposition, scoped issue,
   issue `DECISION`, or PRD decision exists.
 - Use the Human Input issue as the parent acceptance ledger. If Full Path needs
@@ -526,6 +627,10 @@ Disposition:
 
 Receipt:
 - Original note:
+- Business goal understood? yes/no:
+- Final success evidence:
+- What does not count as done:
+- HUMAN DECISION NEEDED? yes/no:
 - Last updated:
 ```
 
