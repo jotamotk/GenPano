@@ -29,6 +29,11 @@ on:
         required: false
         default: "180"
         type: string
+      tracker_retry_success_required:
+        description: "When true, the controlled Tracker retry must finish as done/success with response evidence; terminal non-quota failures are not accepted."
+        required: false
+        default: false
+        type: boolean
       analyzer_attempts:
         description: "Run analyzer-specific Admin Attempts E2E: status, drawer, batch dry-run, and optional controlled submit inputs."
         required: false
@@ -71,6 +76,7 @@ jobs:
       ADMIN_E2E_TRACKER_RETRY_QUERY_ID: ${{ inputs.tracker_retry_query_id }}
       ADMIN_E2E_TRACKER_RETRY_EXPECTED_ENGINE: ${{ inputs.tracker_retry_expected_engine }}
       ADMIN_E2E_TRACKER_RETRY_POLL_SECONDS: ${{ inputs.tracker_retry_poll_seconds }}
+      ADMIN_E2E_TRACKER_RETRY_SUCCESS_REQUIRED_INPUT: ${{ inputs.tracker_retry_success_required }}
       ADMIN_E2E_ANALYZER_ATTEMPTS: ${{ inputs.analyzer_attempts && '1' || '0' }}
       ADMIN_E2E_ANALYZER_SINGLE_RESPONSE_ID: ${{ inputs.analyzer_single_response_id }}
       ADMIN_E2E_ANALYZER_BATCH_RESPONSE_IDS: ${{ inputs.analyzer_batch_response_ids }}
@@ -112,6 +118,7 @@ jobs:
           tracker_retry_expected_engine="${tracker_retry_expected_engine%"${tracker_retry_expected_engine##*[![:space:]]}"}"
           tracker_retry_poll_seconds="${ADMIN_E2E_TRACKER_RETRY_POLL_SECONDS#"${ADMIN_E2E_TRACKER_RETRY_POLL_SECONDS%%[![:space:]]*}"}"
           tracker_retry_poll_seconds="${tracker_retry_poll_seconds%"${tracker_retry_poll_seconds##*[![:space:]]}"}"
+          tracker_retry_success_required="${ADMIN_E2E_TRACKER_RETRY_SUCCESS_REQUIRED_INPUT}"
           analyzer_single_response_id="${ADMIN_E2E_ANALYZER_SINGLE_RESPONSE_ID#"${ADMIN_E2E_ANALYZER_SINGLE_RESPONSE_ID%%[![:space:]]*}"}"
           analyzer_single_response_id="${analyzer_single_response_id%"${analyzer_single_response_id##*[![:space:]]}"}"
           analyzer_batch_response_ids="${ADMIN_E2E_ANALYZER_BATCH_RESPONSE_IDS#"${ADMIN_E2E_ANALYZER_BATCH_RESPONSE_IDS%%[![:space:]]*}"}"
@@ -138,10 +145,15 @@ jobs:
           fi
 
           echo "ADMIN_E2E_TRACKER_CONTROLLED_RETRY_INCLUDED=0" >> "${GITHUB_ENV}"
+          echo "ADMIN_E2E_TRACKER_RETRY_REQUIRE_SUCCESS=0" >> "${GITHUB_ENV}"
           if [[ -n "${tracker_retry_query_id}" ]]; then
             mutation_mode="controlled Tracker retry mutation"
             controlled_retry_state="included and expected to execute"
-            controlled_retry_note="\`tracker_retry_query_id=${tracker_retry_query_id}\`; mutates exactly this one query via the Tracker row retry UI. No batch retry, cleanup, or manual dispatch will run."
+            controlled_retry_note="\`tracker_retry_query_id=${tracker_retry_query_id}\`; mutates exactly this one query via the Tracker row retry UI. Playwright retries are disabled for this live mutation. No batch retry, cleanup, or manual dispatch will run."
+            if [[ "${tracker_retry_success_required}" == "true" ]]; then
+              echo "ADMIN_E2E_TRACKER_RETRY_REQUIRE_SUCCESS=1" >> "${GITHUB_ENV}"
+              controlled_retry_note="${controlled_retry_note} The final state must be done/success with response evidence."
+            fi
             if ! [[ "${tracker_retry_query_id}" =~ ^[0-9]+$ ]]; then
               input_error="tracker_retry_query_id must be a positive integer."
               controlled_retry_state="blocked before Playwright"
@@ -219,6 +231,7 @@ jobs:
             echo "| Tracker retry query id | \`${tracker_retry_query_id:-none}\` |"
             echo "| Tracker retry expected engine | \`${tracker_retry_expected_engine:-not enforced}\` |"
             echo "| Tracker retry poll seconds | \`${tracker_retry_poll_seconds:-180}\` (spec clamps to 15..180) |"
+            echo "| Tracker retry success required | \`${tracker_retry_success_required}\` |"
             echo "| Analyzer attempts | \`${ADMIN_E2E_ANALYZER_ATTEMPTS}\` |"
             echo "| Analyzer single response id | \`${analyzer_single_response_id:-none}\` |"
             echo "| Analyzer batch response ids | \`${analyzer_batch_response_ids:-none}\` |"
@@ -256,7 +269,7 @@ jobs:
             specs+=("${ADMIN_E2E_TRACKER_SPEC}")
           fi
           if [[ "${ADMIN_E2E_TRACKER_CONTROLLED_RETRY_INCLUDED:-0}" == "1" ]]; then
-            echo "MUTATION ENABLED: controlled Tracker retry will target query id ${ADMIN_E2E_TRACKER_RETRY_QUERY_ID} through the operator UI; poll seconds=${ADMIN_E2E_TRACKER_RETRY_POLL_SECONDS:-180} (spec clamps to 15..180); no batch retry, cleanup, or manual dispatch will run."
+            echo "MUTATION ENABLED: controlled Tracker retry will target query id ${ADMIN_E2E_TRACKER_RETRY_QUERY_ID} through the operator UI; poll seconds=${ADMIN_E2E_TRACKER_RETRY_POLL_SECONDS:-180} (spec clamps to 15..180); require_success=${ADMIN_E2E_TRACKER_RETRY_REQUIRE_SUCCESS:-0}; no batch retry, cleanup, or manual dispatch will run."
             specs+=("${ADMIN_E2E_TRACKER_CONTROLLED_RETRY_SPEC}")
           fi
           if [[ "${ADMIN_E2E_ANALYZER_ATTEMPTS_INCLUDED:-0}" == "1" ]]; then
@@ -268,8 +281,14 @@ jobs:
             specs+=("${ADMIN_E2E_ANALYZER_ATTEMPTS_SPEC}")
           fi
 
+          playwright_retry_args=()
+          if [[ "${ADMIN_E2E_TRACKER_CONTROLLED_RETRY_INCLUDED:-0}" == "1" || "${ADMIN_E2E_REAL_BUSINESS_FLOW}" == "1" || "${ADMIN_E2E_ANALYZER_MUTATION_CONFIRM}" == "1" ]]; then
+            playwright_retry_args+=(--retries=0)
+            echo "Live mutation requested; forcing Playwright --retries=0 so the workflow cannot repeat the mutation after a failure."
+          fi
+
           set +e
-          npx playwright test --project=chromium-desktop --workers=1 "${specs[@]}" --reporter=github
+          npx playwright test --project=chromium-desktop --workers=1 --reporter=github "${playwright_retry_args[@]}" "${specs[@]}"
           status=$?
           set -e
 
@@ -307,7 +326,7 @@ jobs:
               echo "- Business-flow state: \`ADMIN_E2E_REAL_BUSINESS_FLOW=1\`; controlled mutation was requested."
             fi
             if [[ "${ADMIN_E2E_TRACKER_CONTROLLED_RETRY_INCLUDED:-0}" == "1" ]]; then
-              echo "- Controlled Tracker retry state: \`tracker_retry_query_id=${ADMIN_E2E_TRACKER_RETRY_QUERY_ID}\`; poll seconds=\`${ADMIN_E2E_TRACKER_RETRY_POLL_SECONDS:-180}\` (spec clamps to 15..180); this run mutates exactly one query through the Tracker row retry UI and asserts \`dispatched=true\`, retry-count increase, and no quota exhaustion. No batch retry, cleanup, or manual dispatch is invoked."
+              echo "- Controlled Tracker retry state: \`tracker_retry_query_id=${ADMIN_E2E_TRACKER_RETRY_QUERY_ID}\`; poll seconds=\`${ADMIN_E2E_TRACKER_RETRY_POLL_SECONDS:-180}\` (spec clamps to 15..180); require success=\`${ADMIN_E2E_TRACKER_RETRY_REQUIRE_SUCCESS:-0}\`; this run mutates exactly one query through the Tracker row retry UI with Playwright \`--retries=0\`, and asserts \`dispatched=true\`, retry-count increase, and no quota exhaustion. When success is required, final readback must be done/success with response evidence. No batch retry, cleanup, or manual dispatch is invoked."
             else
               echo "- Controlled Tracker retry state: skipped; no \`tracker_retry_query_id\` input was provided."
             fi

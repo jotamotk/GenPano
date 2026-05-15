@@ -183,6 +183,14 @@ passed" by itself is not enough.
   route, row, brand, query, request, action, or visible result when available.
   If the exact replay is impossible, mark it `BLOCKER` instead of claiming
   acceptance from adjacent tests.
+- Live incidents require a `Business Result Gate` row that names the exact
+  business object and final state required. CI green, deploy green, or a
+  better error code is not acceptance unless that row also passes. For scraper
+  recovery, this means exact query readback such as `done + response evidence`
+  when the user asked for capture success.
+- Any Playwright test that mutates a live object, such as retrying a production
+  query or submitting analyzer work, must run with Playwright retries disabled.
+  A workflow must not repeat a live mutation because the first assertion failed.
 - Do not make tests green by deleting assertions, skipping cases, weakening
   expectations, swallowing exceptions, or moving checks away from the user path.
   If a test is wrong or obsolete, stop with `BLOCKER` or `PRD-CHANGE` and get
