@@ -9,6 +9,7 @@ INFRASTRUCTURE_FAILURE_REASONS = frozenset(
         "browser_exception",
         "browser_launch_timeout",
         "browser_timeout",
+        "doubao_browser_timeout",
         "doubao_image_challenge_load_failed",
         "doubao_visual_challenge",
         "exception",
@@ -30,6 +31,29 @@ INFRASTRUCTURE_FAILURE_REASONS = frozenset(
         "soft_time_limit",
     }
 )
+
+
+def _failure_reason_base(reason: str | None) -> str | None:
+    if not reason:
+        return None
+    return str(reason).split(":", 1)[0]
+
+
+def browser_execution_timeout_reason(
+    llm_name: str | None,
+    *,
+    stage: str | None = None,
+    has_existing_response: bool = False,
+) -> str:
+    if (llm_name or "").lower() == "doubao":
+        if has_existing_response:
+            return "doubao_browser_timeout:existing_response"
+        clean_stage = (stage or "unknown_stage").strip().lower().replace(" ", "_")
+        clean_stage = "".join(
+            ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in clean_stage
+        ).strip("_")
+        return f"doubao_browser_timeout:{clean_stage or 'unknown_stage'}"
+    return "browser_timeout"
 
 
 def classify_execution_failure(exc: BaseException) -> str:
@@ -68,6 +92,7 @@ def _empty_response_failure_reason(
 
 
 def _should_report_account_failure(reason: str | None) -> bool:
-    if not reason:
+    base_reason = _failure_reason_base(reason)
+    if not base_reason:
         return True
-    return reason not in INFRASTRUCTURE_FAILURE_REASONS
+    return base_reason not in INFRASTRUCTURE_FAILURE_REASONS

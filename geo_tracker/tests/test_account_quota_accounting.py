@@ -11,7 +11,14 @@ import pytest_asyncio
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from geo_tracker.db.models import AccountRotationLog, AccountStatus, Base, LLMAccount, Query
+from geo_tracker.db.models import (
+    AccountRotationLog,
+    AccountStatus,
+    Base,
+    LLMAccount,
+    LLMResponse,
+    Query,
+)
 from geo_tracker.pool.account_pool import (
     AccountPool,
 )
@@ -383,6 +390,106 @@ async def test_reserved_soft_timeout_abort_cleanup_refunds_quota(
     assert account.query_count_today == 0
     assert query.status == "failed"
     assert query.retry_reason == "soft_time_limit"
+
+
+@pytest.mark.asyncio
+async def test_doubao_soft_timeout_abort_cleanup_records_no_response_stage_reason(
+    session: AsyncSession,
+    monkeypatch,
+):
+    celery_tasks = _import_celery_tasks_with_fake_playwright(monkeypatch)
+    account = await _create_account(
+        session,
+        llm_name="doubao",
+        query_count_today=1,
+        daily_limit=2,
+    )
+    query = Query(
+        id=96301,
+        account_id=account.id,
+        target_llm="doubao",
+        query_text="hello",
+        status="running",
+    )
+    session.add(query)
+    await session.commit()
+    settlement = AccountQuotaSettlement(account.id)
+
+    monkeypatch.setattr(celery_tasks, "create_task_engine", lambda: _NoopEngine())
+    monkeypatch.setattr(
+        celery_tasks,
+        "get_task_async_session",
+        lambda engine: _ExistingSessionContext(session),
+    )
+
+    await celery_tasks._mark_query_failed_after_task_abort_async(
+        query.id,
+        "soft_time_limit",
+        quota_settlement=settlement,
+    )
+    await session.refresh(account)
+    await session.refresh(query)
+
+    assert settlement.settled is True
+    assert account.query_count_today == 0
+    assert query.status == "failed"
+    assert query.retry_reason == "doubao_browser_timeout:task_soft_limit"
+
+
+@pytest.mark.asyncio
+async def test_doubao_soft_timeout_abort_cleanup_preserves_existing_response_contract(
+    session: AsyncSession,
+    monkeypatch,
+):
+    celery_tasks = _import_celery_tasks_with_fake_playwright(monkeypatch)
+    account = await _create_account(
+        session,
+        llm_name="doubao",
+        query_count_today=1,
+        daily_limit=2,
+    )
+    query = Query(
+        id=96302,
+        account_id=account.id,
+        target_llm="doubao",
+        query_text="hello",
+        status="running",
+    )
+    response = LLMResponse(
+        id=9630201,
+        query_id=query.id,
+        raw_text="Existing Doubao answer retained from an earlier attempt.",
+        response_time_ms=123,
+        screenshot_path="/data/screenshots/query_96302_doubao.png",
+        analysis_status="done",
+    )
+    session.add_all([query, response])
+    await session.commit()
+    settlement = AccountQuotaSettlement(account.id)
+
+    monkeypatch.setattr(celery_tasks, "create_task_engine", lambda: _NoopEngine())
+    monkeypatch.setattr(
+        celery_tasks,
+        "get_task_async_session",
+        lambda engine: _ExistingSessionContext(session),
+    )
+
+    await celery_tasks._mark_query_failed_after_task_abort_async(
+        query.id,
+        "soft_time_limit",
+        quota_settlement=settlement,
+    )
+    await session.refresh(account)
+    await session.refresh(query)
+    response_result = await session.execute(
+        select(LLMResponse).where(LLMResponse.query_id == query.id)
+    )
+
+    assert settlement.settled is True
+    assert account.query_count_today == 0
+    assert query.status == "failed"
+    assert query.retry_reason == "doubao_browser_timeout:existing_response"
+    assert response_result.scalar_one().screenshot_path.endswith("query_96302_doubao.png")
 
 
 @pytest.mark.asyncio
