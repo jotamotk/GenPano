@@ -21,6 +21,7 @@ from app.api.v1.projects._mention_rollups import brand_mention_match_condition
 from app.api.v1.projects.charts._contracts import (
     _chart_contract_update,
     _contract_metric_blocked,
+    _metric_evidence_allows_partial_data,
 )
 
 
@@ -47,7 +48,9 @@ async def _with_authority_trend_contract(
     )
     if not update:
         return out
-    if _contract_metric_blocked(update, "citation"):
+    if _contract_metric_blocked(
+        update, "citation"
+    ) and not _metric_evidence_allows_partial_data(update, "citation"):
         update["points"] = []
     return out.model_copy(update=update)
 

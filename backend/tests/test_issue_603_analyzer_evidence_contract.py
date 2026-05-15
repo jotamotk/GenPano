@@ -1338,9 +1338,94 @@ async def test_sentiment_and_citation_charts_apply_analyzer_package_status(
     assert authority_body["state"] == "partial"
     assert authority_body["formula_status"] == "partial"
     assert "unresolved_citation_attribution" in authority_body["missing_inputs"]
+    # Issue #1002: `partial` formula_status preserves real chart data (mirror
+    # of PR #960 / #948 KPI+series loosening). The auxiliary
+    # `unresolved_citation_attribution` reason surfaces in `missing_inputs`
+    # for the trust-state UI but no longer empties the chart.
+    assert authority_body["points"], "authority points should survive partial status"
+    assert composition_body["state"] == "partial"
+    assert composition_body["formula_status"] == "partial"
+    assert composition_body["segments"], "composition segments should survive partial status"
+    assert composition_body["total"] >= 1
+    assert composition_body["metric_formula_evidence"]["citation"]["unresolved_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_citation_charts_clear_when_only_legacy_data_without_analyzer_packages(
+    client,
+    user: User,
+    db_session: AsyncSession,
+) -> None:
+    """Issue #1002 regression: partial-status loosening MUST NOT bleed into
+    the legacy-only synthetic-partial case from issue #603. When the admin
+    chain has responses but no analyzer fact packages, the contract
+    synthesizes `formula_status: partial` with
+    `reason_codes: ['missing_analyzer_fact_packages']`. The chart wrappers
+    must still clear authority_trend points and citation_composition
+    segments in that case — there is no real analyzer evidence to surface.
+    """
+    project = await _project(db_session, user)
+    await _seed_admin_chain_tables(db_session)
+    await _seed_chain_response(
+        db_session,
+        topic_id=6711,
+        prompt_id=6712,
+        query_id=6713,
+        response_id=6714,
+    )
+    mention = BrandMention(
+        response_id=6714,
+        brand_id=12,
+        brand_name="Estee Lauder",
+        mention_count=1,
+        sentiment="positive",
+        sentiment_score=0.8,
+        created_at=DAY,
+    )
+    db_session.add(mention)
+    await db_session.flush()
+    db_session.add(
+        CitationSource(
+            response_id=6714,
+            mention_id=mention.id,
+            url="https://example.com/legacy",
+            domain="example.com",
+            title="Legacy evidence",
+            source_type="publisher",
+            created_at=DAY,
+        )
+    )
+    # NOTE: deliberately no _analysis() — admin chain has data but the
+    # analyzer fact packages are absent.
+    await db_session.commit()
+
+    authority = await client.get(
+        f"/api/v1/projects/{project.id}/citations/authority-trend",
+        headers=_bearer(user),
+        params={"from": DAY.date().isoformat(), "to": DAY.date().isoformat()},
+    )
+    composition = await client.get(
+        f"/api/v1/projects/{project.id}/citations/composition",
+        headers=_bearer(user),
+        params={"from": DAY.date().isoformat(), "to": DAY.date().isoformat()},
+    )
+
+    assert authority.status_code == 200, authority.text
+    assert composition.status_code == 200, composition.text
+    authority_body = authority.json()
+    composition_body = composition.json()
+    assert authority_body["state"] == "partial"
+    assert authority_body["formula_status"] == "partial"
     assert authority_body["points"] == []
     assert composition_body["state"] == "partial"
     assert composition_body["formula_status"] == "partial"
     assert composition_body["segments"] == []
     assert composition_body["total"] == 0
-    assert composition_body["metric_formula_evidence"]["citation"]["unresolved_count"] == 1
+    assert (
+        "response_analyses.raw_analysis_json.analyzer_fact_packages"
+        in authority_body["missing_inputs"]
+    )
+    assert (
+        "response_analyses.raw_analysis_json.analyzer_fact_packages"
+        in composition_body["missing_inputs"]
+    )
