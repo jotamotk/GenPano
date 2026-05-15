@@ -2740,6 +2740,112 @@ def test_doubao_auto_login_default_budget_allows_post_reauth_retry_for_historica
     assert requeued == [{"args": [query_id], "queue": "llm_doubao"}]
 
 
+def test_doubao_auto_login_default_budget_allows_current_row_after_manual_retry(
+    monkeypatch,
+    tmp_path,
+):
+    _install_fake_playwright(monkeypatch)
+
+    from geo_tracker.tasks import celery_tasks
+    import geo_tracker.agent.sms_login as sms_login
+
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'doubao-reauth-current-row.db'}"
+    query_id = 184968
+    account_id = 42
+
+    async def seed_database():
+        engine = create_async_engine(db_url, future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        maker = async_sessionmaker(engine, expire_on_commit=False)
+        async with maker() as session:
+            session.add_all(
+                [
+                    LLMAccount(
+                        id=account_id,
+                        llm_name="doubao",
+                        status=AccountStatus.EXPIRED.value,
+                        cookies_json='[{"name":"stale"}]',
+                        query_count_today=4,
+                        daily_limit=100,
+                        phone_number="17000007065",
+                    ),
+                    Query(
+                        id=query_id,
+                        account_id=account_id,
+                        target_llm="doubao",
+                        query_text="bestCoffer advantages",
+                        status=QueryStatus.FAILED.value,
+                        retry_count=10,
+                        retry_reason="doubao_not_logged_in",
+                    ),
+                ]
+            )
+            await session.commit()
+        await engine.dispose()
+
+    asyncio.run(seed_database())
+
+    def create_engine():
+        return create_async_engine(db_url, future=True)
+
+    def get_session(engine):
+        return _TaskSessionContext(async_sessionmaker(engine, expire_on_commit=False))
+
+    class FakeHandler:
+        async def login_or_register(self, *, existing_cookies=None, phone=None):
+            return {
+                "cookies": [{"name": "session", "value": "fresh"}],
+                "phone": phone,
+            }
+
+    requeued: list[dict] = []
+
+    class FakeExecuteQuery:
+        @staticmethod
+        def apply_async(*, args, queue):
+            requeued.append({"args": args, "queue": queue})
+
+    async def fake_release_relogin_lock(_account_id):
+        return None
+
+    monkeypatch.delenv("DOUBAO_REAUTH_QUERY_RETRY_MAX", raising=False)
+    monkeypatch.setattr(celery_tasks, "create_task_engine", create_engine)
+    monkeypatch.setattr(celery_tasks, "get_task_async_session", get_session)
+    monkeypatch.setattr(sms_login, "get_handler", lambda _platform: FakeHandler())
+    monkeypatch.setattr(celery_tasks, "execute_query", FakeExecuteQuery)
+    monkeypatch.setattr(celery_tasks, "release_relogin_lock", fake_release_relogin_lock)
+
+    result = celery_tasks.auto_login.run(account_id=account_id, query_id=query_id)
+
+    async def load_query():
+        engine = create_async_engine(db_url, future=True)
+        maker = async_sessionmaker(engine, expire_on_commit=False)
+        async with maker() as session:
+            query = await session.get(Query, query_id)
+            state = {
+                "status": query.status,
+                "retry_count": query.retry_count,
+                "retry_reason": query.retry_reason,
+            }
+        await engine.dispose()
+        return state
+
+    state = asyncio.run(load_query())
+
+    assert result == {
+        "status": "success",
+        "account_id": account_id,
+        "requeued_query_id": query_id,
+    }
+    assert state == {
+        "status": QueryStatus.PENDING.value,
+        "retry_count": 11,
+        "retry_reason": "doubao_reauth_retry:42",
+    }
+    assert requeued == [{"args": [query_id], "queue": "llm_doubao"}]
+
+
 def test_doubao_auto_login_does_not_requeue_after_retry_budget(monkeypatch, tmp_path):
     _install_fake_playwright(monkeypatch)
 
