@@ -2431,6 +2431,17 @@ class GuestQueryExecutor:
             logger.info(f"[{llm_name}] JS 注入文字: {'成功' if injected else '失败'}")
             # 保存注入后的 HTML，确认文字是否真的进了编辑器
             await _save_html(page, debug_query_id, f"{llm_name}_after_inject")
+            # Refs Codex PR #1010 review (P2): a timed-out or failed
+            # contenteditable injection used to fall through to the submit
+            # logic and burn the response_wait budget on an empty/stale
+            # prompt. Mirror the textarea path — on injection failure,
+            # mark last_error_reason="no_input" and bail.
+            if not injected:
+                logger.warning(
+                    f"[{llm_name}] contenteditable 注入失败，放弃本次提交"
+                )
+                self.last_error_reason = "no_input"
+                return "", "", []
         else:
             filled = await self._fill_plain_text_input(page, input_el, query_text, llm_name)
             if not filled:

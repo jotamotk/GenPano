@@ -2221,6 +2221,95 @@ async def test_save_html_bails_when_page_content_hangs(monkeypatch, tmp_path):
     )
 
 
+@pytest.mark.asyncio
+async def test_contenteditable_injection_failure_returns_no_input(
+    monkeypatch,
+):
+    """Refs Codex PR #1010 review (P2): when a contenteditable
+    ``page.evaluate`` injection hits the bounded timeout (or returns
+    False), the prior code fell through to ``_save_html`` and then the
+    submit logic — burning the response_wait budget on an empty/stale
+    prompt. Mirror the textarea path: on injection failure mark
+    ``last_error_reason="no_input"`` and bail immediately.
+    """
+    import asyncio as _asyncio
+
+    _install_fake_playwright(monkeypatch)
+
+    from geo_tracker.agent import guest_executor as guest_executor_mod
+    from geo_tracker.agent.guest_executor import GuestQueryExecutor
+
+    # Inject_controlled_textarea_value path is not taken (contenteditable).
+    # Bound the contenteditable page.evaluate to a tiny timeout so the
+    # hanging mock trips it immediately.
+    monkeypatch.setattr(
+        guest_executor_mod, "PROMPT_FILL_INJECT_TIMEOUT_S", 0.1
+    )
+    monkeypatch.setattr(
+        guest_executor_mod, "PROMPT_FILL_VALUE_READ_TIMEOUT_S", 0.1
+    )
+
+    class FakeMouse:
+        async def move(self, *args, **kwargs):
+            return None
+
+    class FakeContentEditable:
+        url = "https://gemini.test/"
+
+        def __init__(self):
+            self.evaluate_calls = 0
+            self.content_calls = 0
+            self.mouse = FakeMouse()
+
+        async def wait_for_timeout(self, ms):
+            return None
+
+        async def evaluate(self, _script, _arg=None):
+            self.evaluate_calls += 1
+            # Simulate the production hang we just bounded.
+            await _asyncio.sleep(3600)
+            return False
+
+        async def content(self):
+            self.content_calls += 1
+            return "<html></html>"
+
+        async def title(self):
+            return ""
+
+    class FakeInput:
+        async def bounding_box(self):
+            return {"x": 10, "y": 10, "width": 100, "height": 30}
+
+        async def click(self, **_kwargs):
+            return None
+
+        async def evaluate(self, _script, _arg=None):
+            return ""
+
+    page = FakeContentEditable()
+    executor = GuestQueryExecutor()
+
+    cfg = {
+        "input_selector": "[contenteditable='true']",
+        "contenteditable": True,
+        "submit_button": "",
+        "response_selector": ".answer",
+    }
+
+    resp_text, resp_html, citations = await _asyncio.wait_for(
+        executor._browser_query(
+            page, cfg, "hello gemini", "gemini", input_el=FakeInput()
+        ),
+        timeout=5,
+    )
+
+    assert resp_text == ""
+    assert resp_html == ""
+    assert citations == []
+    assert executor.last_error_reason == "no_input"
+
+
 def test_doubao_response_selector_accepts_receive_message_container(monkeypatch):
     _install_fake_playwright(monkeypatch)
 
