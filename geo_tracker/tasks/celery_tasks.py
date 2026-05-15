@@ -282,7 +282,7 @@ async def _requeue_doubao_query_after_reauth(
     if not query_id:
         return False
 
-    retry_max = _env_int("DOUBAO_REAUTH_QUERY_RETRY_MAX", 1)
+    retry_max = _env_int("DOUBAO_REAUTH_QUERY_RETRY_MAX", 10)
     if retry_max <= 0:
         return False
 
