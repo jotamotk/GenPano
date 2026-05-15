@@ -1,0 +1,719 @@
+name: Issue 904 Q-185003 Evidence Capture
+
+# Self-triggering, one-shot diagnostic workflow for issue #904.
+#
+# Rationale: the AI Lead sandbox has no workflow_dispatch MCP tool, so this
+# workflow triggers itself on first push when the workflow file is added or
+# modified. It also supports workflow_dispatch so a human (or future MCP
+# tooling) can re-run it. Production read-only by contract — see the
+# Read-Only Promise in PR description.
+#
+# Scope per issue #904 "Allowed Scope":
+#   - SELECT-only DB reads against queries, llm_responses, citation_sources,
+#     analysis_status for query_id=185003.
+#   - Read-only copy of screenshot/HTML/runtime artifacts for
+#     query_185003_* from the deployed worker container.
+#   - Sanitized worker log slice for the execution window
+#     2026-05-14T05:32:16Z .. 2026-05-14T05:33:36Z.
+#   - Sanitized summary posted as a comment to issues #570, #904, #901.
+#   - Full sanitized bundle uploaded as a workflow artifact.
+#
+# Forbidden per issue #904 "Forbidden Scope":
+#   - No INSERT / UPDATE / DELETE / DROP / ALTER / TRUNCATE in any SQL.
+#   - No Redis writes.
+#   - No batch dispatch, retry, account reset, login/cookie/SMS action.
+#   - No scraper implementation change. No production state mutation.
+
+on:
+  push:
+    paths:
+      - .github/workflows/issue-904-q185003-evidence.yml
+  workflow_dispatch: {}
+
+concurrency:
+  group: issue-904-q185003-evidence
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  capture-evidence:
+    name: Capture Q-185003 Doubao citation evidence (read-only)
+    runs-on: ubuntu-latest
+
+    env:
+      QUERY_ID: "185003"
+      WINDOW_START_UTC: "2026-05-14T05:32:16Z"
+      WINDOW_END_UTC: "2026-05-14T05:33:36Z"
+      # Docker log --since accepts ISO timestamps; use a small buffer.
+      LOG_SINCE_UTC: "2026-05-14T05:32:00Z"
+      LOG_UNTIL_UTC: "2026-05-14T05:34:00Z"
+      ARTIFACT_DIR: q185003-evidence
+      ISSUE_REFS: "570 904 901"
+      SERVER_HOST: ${{ secrets.SERVER_HOST }}
+      SERVER_USER: ${{ secrets.SERVER_USER }}
+      SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPOSITORY: ${{ github.repository }}
+      GH_RUN_ID: ${{ github.run_id }}
+      GH_RUN_NUMBER: ${{ github.run_number }}
+      GH_SHA: ${{ github.sha }}
+      GH_ACTOR: ${{ github.actor }}
+
+    steps:
+      - name: Mask SSH key in logs
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "${SERVER_SSH_KEY}" ]; then
+            # Mask the key body (line-by-line) so any accidental echo is hidden.
+            while IFS= read -r line; do
+              [ -n "${line}" ] && echo "::add-mask::${line}"
+            done <<<"${SERVER_SSH_KEY}"
+          fi
+
+      - name: Secret preflight (names only)
+        id: preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          db_ready=true
+          for name in SERVER_HOST SERVER_USER SERVER_SSH_KEY; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Missing required secret: ${name}"
+              db_ready=false
+            fi
+          done
+          echo "db_ready=${db_ready}" >> "${GITHUB_OUTPUT}"
+          {
+            echo "### Issue 904 Q-185003 evidence preflight"
+            echo "- query_id: ${QUERY_ID}"
+            echo "- window_start_utc: ${WINDOW_START_UTC}"
+            echo "- window_end_utc: ${WINDOW_END_UTC}"
+            echo "- db_secrets_present: ${db_ready}"
+            echo "- repository: ${GH_REPOSITORY}"
+            echo "- run: https://github.com/${GH_REPOSITORY}/actions/runs/${GH_RUN_ID}"
+          } >> "${GITHUB_STEP_SUMMARY}"
+          if [ "${db_ready}" != "true" ]; then
+            echo "::error::DB probe secrets missing; aborting before any SSH attempt"
+            exit 1
+          fi
+
+      - name: Prepare workspace and SSH key
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${ARTIFACT_DIR}" "${ARTIFACT_DIR}/logs" "${ARTIFACT_DIR}/screenshots"
+          umask 077
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "${SERVER_SSH_KEY}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H "${SERVER_HOST}" >> ~/.ssh/known_hosts 2>/dev/null || true
+
+      - name: Write SELECT-only SQL probe file
+        shell: bash
+        run: |
+          set -euo pipefail
+          # All statements below are SELECT-only. A grep guard runs in the
+          # next step to fail closed if any write keyword leaks in.
+          cat > "${ARTIFACT_DIR}/q185003_selects.sql" <<'SQL'
+          -- Issue #904: read-only evidence for query_id=185003
+          -- Each block is a single SELECT; psql is invoked with
+          -- ON_ERROR_STOP=1 and -X (no .psqlrc) to keep output deterministic.
+
+          \echo '=== probe_1_query_row ==='
+          SELECT
+            id AS query_id,
+            target_llm,
+            status,
+            retry_reason,
+            queued_at,
+            started_at,
+            finished_at,
+            latency_ms,
+            CASE WHEN account_id IS NULL THEN NULL ELSE 'present_masked' END AS account_id_state,
+            LENGTH(COALESCE(query_text, '')) AS query_text_len,
+            MD5(COALESCE(query_text, '')) AS query_text_hash
+          FROM queries
+          WHERE id = 185003;
+
+          \echo '=== probe_2_latest_response_row ==='
+          SELECT
+            r.id AS response_id,
+            r.query_id,
+            r.collected_at,
+            LENGTH(COALESCE(r.raw_text, '')) AS response_len,
+            MD5(COALESCE(r.raw_text, '')) AS response_text_hash,
+            CASE
+              WHEN r.citations_json IS NULL THEN NULL
+              ELSE MD5(r.citations_json::text)
+            END AS citations_json_hash,
+            CASE
+              WHEN jsonb_typeof(r.citations_json::jsonb) = 'array'
+              THEN jsonb_array_length(r.citations_json::jsonb)
+              ELSE 0
+            END AS citations_json_count,
+            r.screenshot_path IS NOT NULL AS screenshot_path_present,
+            CASE
+              WHEN r.screenshot_path IS NULL THEN NULL
+              ELSE regexp_replace(r.screenshot_path, '.*/', '')
+            END AS screenshot_basename,
+            LENGTH(COALESCE(r.response_html, '')) AS response_html_len,
+            CASE
+              WHEN r.response_html IS NULL THEN NULL
+              ELSE MD5(r.response_html)
+            END AS response_html_hash,
+            r.analysis_status
+          FROM llm_responses r
+          WHERE r.query_id = 185003
+          ORDER BY r.id DESC
+          LIMIT 1;
+
+          \echo '=== probe_3_citation_sources_count ==='
+          SELECT
+            COUNT(*) AS citation_sources_count
+          FROM citation_sources cs
+          JOIN llm_responses r ON r.id = cs.response_id
+          WHERE r.query_id = 185003;
+
+          \echo '=== probe_4_citation_sources_sample ==='
+          SELECT
+            cs.id AS citation_source_id,
+            cs.response_id,
+            cs.source_type,
+            cs.position,
+            LENGTH(COALESCE(cs.title, '')) AS title_len,
+            CASE
+              WHEN cs.url IS NULL THEN NULL
+              ELSE regexp_replace(cs.url, '\?.*$', '?[query redacted]')
+            END AS url_redacted,
+            cs.created_at
+          FROM citation_sources cs
+          JOIN llm_responses r ON r.id = cs.response_id
+          WHERE r.query_id = 185003
+          ORDER BY cs.id ASC
+          LIMIT 25;
+
+          \echo '=== probe_5_analysis_status ==='
+          SELECT
+            r.id AS response_id,
+            r.analysis_status,
+            r.analyzed_at,
+            r.analysis_attempts,
+            r.analysis_error
+          FROM llm_responses r
+          WHERE r.query_id = 185003
+          ORDER BY r.id DESC
+          LIMIT 5;
+          SQL
+
+      - name: Guard SQL file is SELECT-only (fail closed on write keyword)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Strip SQL comments before grepping so the cautionary header comment
+          # does not trip the guard. Then look for any write keyword.
+          sed -E 's://[^\n]*::g; s:--.*$::; /\/\*/,/\*\//d' \
+            "${ARTIFACT_DIR}/q185003_selects.sql" > "${ARTIFACT_DIR}/q185003_selects.stripped.sql"
+          if grep -iE '\b(insert|update|delete|drop|alter|truncate|grant|revoke|copy[[:space:]]+[A-Za-z_"]+[[:space:]]+from|create[[:space:]]+(table|index|role|database|schema|extension))\b' \
+            "${ARTIFACT_DIR}/q185003_selects.stripped.sql"; then
+            echo "::error::Write SQL keyword detected in SELECT-only probe file"
+            exit 1
+          fi
+          echo "SELECT-only SQL guard passed."
+
+      - name: Write sanitizer (mirrors server-diagnostics.yml rules)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "${ARTIFACT_DIR}/sanitize.py" <<'PY'
+          """Sanitize worker logs and free-text evidence for issue #904.
+
+          Mirrors the redaction set used by server-diagnostics.yml's
+          sanitize_herosms_logs() so the evidence comment we post is safe to
+          read in a public issue thread. Adds redaction for URL query strings
+          containing tokens or auth-shaped params, since the #904 screenshot
+          surface implicates Doubao reference URLs.
+          """
+          from __future__ import annotations
+
+          import re
+          import sys
+          from pathlib import Path
+
+          HEROSMS_HANDLER_URL_RE = re.compile(
+              r"(?i)https?://[^\s\"'<>]*handler_api\.php[^\s\"'<>]*"
+          )
+          SECRET_ASSIGN_RE = re.compile(
+              r"(?ix)\b(api[_-]?key|apikey|access[_-]?token|refresh[_-]?token|"
+              r"token|secret|authorization|auth|cookie|set[_-]?cookie)\s*[:=]\s*"
+              r"(?:\"[^\"]*\"|'[^']*'|[^&\s\"'<>]+)"
+          )
+          AUTH_HEADER_RE = re.compile(
+              r"(?i)\b(authorization|auth)\s*:\s*(?:bearer\s+)?[^\s;]+"
+          )
+          COOKIE_HEADER_RE = re.compile(
+              r"(?i)\b(cookie|set-cookie)\s*:\s*[^;\r\n]+;?"
+          )
+          PHONE_FIELD_RE = re.compile(
+              r"(?ix)\b(phone(?:[_-]?number)?|msisdn|mobile|number)\s*[:=]\s*"
+              r"\+?\d[\d\s().-]{7,}\d"
+          )
+          E164_PHONE_RE = re.compile(r"(?<![\w])\+?\d{10,15}(?![\w])")
+          SMS_FIELD_RE = re.compile(
+              r"(?ix)\b(sms(?:[_-]?(?:text|body|message|code))?|text|body|message|code)"
+              r"\s*[:=]\s*(?:\"[^\"]*\"|'[^']*'|[^&\s\"'<>]+)"
+          )
+          ACTIVATION_FIELD_RE = re.compile(
+              r"(?ix)\b(activation[_-]?(?:id|ref|secret|code)|activationid)\s*[:=]\s*"
+              r"(?:\"[^\"]*\"|'[^']*'|[^&\s\"'<>]+)"
+          )
+          # URL with auth-shaped query params: redact entire query string.
+          URL_AUTH_QUERY_RE = re.compile(
+              r"(?i)(https?://[^\s\"'<>?]+)\?[^\s\"'<>]*"
+              r"(?:token|key|signature|sig|auth|secret|session|cookie|bearer)"
+              r"[^\s\"'<>]*"
+          )
+
+          def _redact_assignment(marker: str):
+              def replace(match: "re.Match[str]") -> str:
+                  return f"{match.group(1)}={marker}"
+              return replace
+
+          def _redact_header(match: "re.Match[str]") -> str:
+              return f"{match.group(1)}: [secret redacted]"
+
+          def sanitize_text(text: str) -> str:
+              text = HEROSMS_HANDLER_URL_RE.sub("[HeroSMS URL redacted]", text)
+              text = URL_AUTH_QUERY_RE.sub(r"\1?[auth query redacted]", text)
+              text = AUTH_HEADER_RE.sub(_redact_header, text)
+              text = COOKIE_HEADER_RE.sub(_redact_header, text)
+              text = SECRET_ASSIGN_RE.sub(_redact_assignment("[secret redacted]"), text)
+              text = PHONE_FIELD_RE.sub(_redact_assignment("[phone redacted]"), text)
+              text = E164_PHONE_RE.sub("[phone redacted]", text)
+              text = SMS_FIELD_RE.sub(_redact_assignment("[SMS field redacted]"), text)
+              text = ACTIVATION_FIELD_RE.sub(
+                  _redact_assignment("[activation field redacted]"), text
+              )
+              return text
+
+          def main(argv: list[str]) -> int:
+              if argv:
+                  for arg in argv:
+                      p = Path(arg)
+                      p.write_text(
+                          sanitize_text(p.read_text(encoding="utf-8", errors="replace")),
+                          encoding="utf-8",
+                      )
+                  return 0
+              sys.stdout.write(sanitize_text(sys.stdin.read()))
+              return 0
+
+          if __name__ == "__main__":
+              raise SystemExit(main(sys.argv[1:]))
+          PY
+          chmod 700 "${ARTIFACT_DIR}/sanitize.py"
+          # Self-test: ensure the sanitizer scrubs the markers we expect.
+          probe="$(python3 "${ARTIFACT_DIR}/sanitize.py" <<'EOF'
+          Authorization: Bearer selftest-token
+          Cookie: session=selftest-cookie
+          api_key=selftest-secret
+          phone=+15551234567
+          https://example.test/v1/sse?token=selftest-token&q=1
+          EOF
+          )"
+          case "${probe}" in
+            *selftest-token*|*selftest-cookie*|*selftest-secret*|*+15551234567*)
+              echo "::error::Sanitizer self-test FAILED — markers leaked"
+              exit 1
+              ;;
+          esac
+          echo "Sanitizer self-test passed."
+
+      - name: Run SELECT probes against deployed Postgres
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The SQL file is uploaded via stdin so it never lives on the server.
+          ssh -i ~/.ssh/id_rsa \
+              -o BatchMode=yes \
+              -o StrictHostKeyChecking=no \
+              "${SERVER_USER}@${SERVER_HOST}" \
+              "cd /opt/genpano && docker compose exec -T postgres psql -U genpano -d genpano -v ON_ERROR_STOP=1 -X" \
+              < "${ARTIFACT_DIR}/q185003_selects.sql" \
+              > "${ARTIFACT_DIR}/db_probes.txt" 2>&1
+          python3 "${ARTIFACT_DIR}/sanitize.py" "${ARTIFACT_DIR}/db_probes.txt"
+          echo "=== db_probes.txt (sanitized, first 200 lines) ==="
+          sed -n '1,200p' "${ARTIFACT_DIR}/db_probes.txt"
+
+      - name: Copy screenshot / HTML / runtime artifacts for query_185003_*
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Read-only copy from the worker container's screenshot mount.
+          # Mirrors the path convention used by bestcoffer-citation-geo-followup
+          # and server-diagnostics: /data/screenshots inside the worker, with
+          # query_<id>_* filenames.
+          ssh -i ~/.ssh/id_rsa \
+              -o BatchMode=yes \
+              -o StrictHostKeyChecking=no \
+              "${SERVER_USER}@${SERVER_HOST}" bash <<'REMOTE'
+          set -Eeuo pipefail
+          cd /opt/genpano
+          rm -rf /tmp/q185003-evidence
+          mkdir -p /tmp/q185003-evidence/screenshots
+          worker_cid="$(docker compose ps -q worker | head -n 1 || true)"
+          if [ -z "${worker_cid}" ]; then
+            echo "WARN: worker container not running; cannot read /data/screenshots" >&2
+            exit 0
+          fi
+          docker compose exec -T worker sh -lc '
+            set -e
+            mkdir -p /tmp/q185003-evidence/screenshots
+            for pattern in "query_185003_*" "query_185003*"; do
+              find /data/screenshots -maxdepth 2 -type f -name "${pattern}" \
+                -exec cp -p {} /tmp/q185003-evidence/screenshots/ \; 2>/dev/null || true
+            done
+            # Manifest only — no payload exfiltration to logs.
+            (cd /tmp/q185003-evidence/screenshots && \
+              find . -maxdepth 2 -type f -printf "%f\t%s\n" | sort) \
+              > /tmp/q185003-evidence/screenshots/_manifest.tsv || true
+          ' </dev/null
+          docker cp "${worker_cid}:/tmp/q185003-evidence/screenshots/." \
+            /tmp/q185003-evidence/screenshots/ 2>/dev/null || true
+          REMOTE
+
+          scp -i ~/.ssh/id_rsa \
+              -o BatchMode=yes \
+              -o StrictHostKeyChecking=no \
+              -r "${SERVER_USER}@${SERVER_HOST}:/tmp/q185003-evidence/screenshots/." \
+              "${ARTIFACT_DIR}/screenshots/" 2>/dev/null || true
+
+          # Build the public manifest: filename + size + extension only. No
+          # binary payloads in the public comment; the workflow artifact keeps
+          # everything for the worker agent.
+          python3 - "${ARTIFACT_DIR}/screenshots" "${ARTIFACT_DIR}/screenshot_manifest.txt" <<'PY'
+          import sys, os
+          src, out = sys.argv[1], sys.argv[2]
+          rows = []
+          if os.path.isdir(src):
+              for name in sorted(os.listdir(src)):
+                  p = os.path.join(src, name)
+                  if not os.path.isfile(p):
+                      continue
+                  size = os.path.getsize(p)
+                  ext = os.path.splitext(name)[1].lower() or "(noext)"
+                  rows.append(f"{name}\t{size}\t{ext}")
+          with open(out, "w", encoding="utf-8") as f:
+              f.write("filename\tsize_bytes\text\n")
+              if rows:
+                  f.write("\n".join(rows) + "\n")
+              else:
+                  f.write("(no query_185003_* files found in /data/screenshots)\n")
+          PY
+          cat "${ARTIFACT_DIR}/screenshot_manifest.txt"
+
+      - name: Summarize DOM evidence from saved HTML
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Per #904 Evidence To Capture: reference panel markers, entry-btn-v3,
+          # container-outer, search-item-*, data-testid="search-reference-ui-v3",
+          # plus link/data-href/cite URL counts. Counts only; no raw URLs.
+          python3 - "${ARTIFACT_DIR}/screenshots" "${ARTIFACT_DIR}/dom_evidence.json" <<'PY'
+          import json, os, re, sys
+          src, out = sys.argv[1], sys.argv[2]
+          markers = {
+              "entry_btn_v3": re.compile(r"entry-btn-v3", re.I),
+              "container_outer": re.compile(r"container-outer", re.I),
+              "search_item": re.compile(r"search-item-\w+", re.I),
+              "search_reference_ui_v3": re.compile(
+                  r'data-testid=["\']search-reference-ui-v3["\']', re.I
+              ),
+              "reference_label_cn": re.compile(r"参考资料"),
+              "reference_label_en": re.compile(r"\breferences?\b", re.I),
+          }
+          url_re = re.compile(
+              r"""(?:href|data-href|data-url|cite)\s*=\s*["'](https?://[^"']+)["']""",
+              re.I,
+          )
+          rows = []
+          if os.path.isdir(src):
+              for name in sorted(os.listdir(src)):
+                  if not name.lower().endswith((".html", ".htm", ".json")):
+                      continue
+                  p = os.path.join(src, name)
+                  try:
+                      body = open(p, encoding="utf-8", errors="ignore").read()
+                  except OSError:
+                      continue
+                  marker_counts = {k: len(v.findall(body)) for k, v in markers.items()}
+                  url_count = len(set(url_re.findall(body)))
+                  rows.append({
+                      "file": name,
+                      "size_bytes": os.path.getsize(p),
+                      "marker_counts": marker_counts,
+                      "distinct_attribute_url_count": url_count,
+                  })
+          with open(out, "w", encoding="utf-8") as f:
+              json.dump({"files_examined": len(rows), "rows": rows}, f, indent=2)
+          PY
+          cat "${ARTIFACT_DIR}/dom_evidence.json"
+
+      - name: Capture sanitized worker log slice for query 185003
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Use docker compose logs with --since / --until to scope to the
+          # known execution window (with a small buffer). Then grep for the
+          # query id and the citation extractor signal terms.
+          ssh -i ~/.ssh/id_rsa \
+              -o BatchMode=yes \
+              -o StrictHostKeyChecking=no \
+              "${SERVER_USER}@${SERVER_HOST}" bash <<REMOTE > "${ARTIFACT_DIR}/logs/worker_window.raw" 2>&1
+          set -Eeuo pipefail
+          cd /opt/genpano
+          docker compose logs --since "${LOG_SINCE_UTC}" --until "${LOG_UNTIL_UTC}" \
+            worker worker-analysis beat 2>&1 | \
+            grep -E '(\b185003\b|query_id=185003|q-185003|citation|reference|参考|doubao|execute_query|extract_)' \
+            | head -n 800 \
+            || true
+          REMOTE
+          python3 "${ARTIFACT_DIR}/sanitize.py" "${ARTIFACT_DIR}/logs/worker_window.raw"
+          mv "${ARTIFACT_DIR}/logs/worker_window.raw" "${ARTIFACT_DIR}/logs/worker_window.sanitized.log"
+          wc -l "${ARTIFACT_DIR}/logs/worker_window.sanitized.log" || true
+          head -n 40 "${ARTIFACT_DIR}/logs/worker_window.sanitized.log" || true
+
+      - name: Build sanitized Markdown evidence body
+        id: body
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' > "${ARTIFACT_DIR}/comment_body.md"
+          from __future__ import annotations
+
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          artifact_dir = Path(os.environ["ARTIFACT_DIR"])
+          run_id = os.environ["GH_RUN_ID"]
+          repo = os.environ["GH_REPOSITORY"]
+          run_url = f"https://github.com/{repo}/actions/runs/{run_id}"
+
+          db_text = ""
+          db_path = artifact_dir / "db_probes.txt"
+          if db_path.is_file():
+              db_text = db_path.read_text(encoding="utf-8", errors="replace")
+
+          def extract_block(label: str) -> str:
+              marker = f"=== {label} ==="
+              if marker not in db_text:
+                  return "(probe not present)"
+              after = db_text.split(marker, 1)[1]
+              # Block ends at the next === marker or EOF.
+              end = after.find("=== probe_")
+              block = after if end == -1 else after[:end]
+              # Trim to a reasonable size for a public comment.
+              lines = [ln for ln in block.splitlines() if ln.strip()]
+              return "\n".join(lines[:25]).strip() or "(empty)"
+
+          manifest_path = artifact_dir / "screenshot_manifest.txt"
+          manifest_text = (
+              manifest_path.read_text(encoding="utf-8", errors="replace")
+              if manifest_path.is_file()
+              else "(no manifest)"
+          )
+
+          dom_path = artifact_dir / "dom_evidence.json"
+          dom_summary = "(no DOM evidence)"
+          if dom_path.is_file():
+              try:
+                  dom = json.loads(dom_path.read_text(encoding="utf-8"))
+                  rows = dom.get("rows", [])
+                  bullets = []
+                  for row in rows:
+                      mc = row.get("marker_counts", {})
+                      bullets.append(
+                          f"- `{row.get('file')}` "
+                          f"({row.get('size_bytes')} B): "
+                          f"entry-btn-v3={mc.get('entry_btn_v3', 0)}, "
+                          f"container-outer={mc.get('container_outer', 0)}, "
+                          f"search-item={mc.get('search_item', 0)}, "
+                          f"search-reference-ui-v3={mc.get('search_reference_ui_v3', 0)}, "
+                          f"参考资料={mc.get('reference_label_cn', 0)}, "
+                          f"references={mc.get('reference_label_en', 0)}, "
+                          f"attr_urls={row.get('distinct_attribute_url_count', 0)}"
+                      )
+                  if bullets:
+                      dom_summary = "\n".join(bullets)
+                  else:
+                      dom_summary = "(no HTML/JSON files in screenshots/)"
+              except Exception as exc:
+                  dom_summary = f"(parse error: {exc})"
+
+          log_path = artifact_dir / "logs" / "worker_window.sanitized.log"
+          log_excerpt = "(no worker log slice captured)"
+          if log_path.is_file():
+              raw = log_path.read_text(encoding="utf-8", errors="replace")
+              lines = [ln for ln in raw.splitlines() if ln.strip()]
+              if lines:
+                  # Cap to first 40 sanitized lines for the public comment.
+                  log_excerpt = "\n".join(lines[:40])
+
+          parts: list[str] = []
+          parts.append("## Q-185003 Doubao citation evidence (Refs #904)")
+          parts.append("")
+          parts.append(
+              "Headline: read-only evidence captured for `query_id=185003` "
+              "(`豆包` / `doubao`). DB SELECTs, screenshot/HTML manifest, "
+              "DOM marker counts, and sanitized worker log slice are attached "
+              "to the workflow run."
+          )
+          parts.append("")
+          parts.append(f"- Run: {run_url}")
+          parts.append(f"- Workflow: `.github/workflows/issue-904-q185003-evidence.yml`")
+          parts.append(
+              "- Window scanned: `2026-05-14T05:32:16Z` to `2026-05-14T05:33:36Z` "
+              "(log slice uses a ~2-minute buffer)"
+          )
+          parts.append("")
+          parts.append("### Evidence To Capture (per #904)")
+          parts.append("")
+          parts.append("**1. Query row** (`queries`):")
+          parts.append("```")
+          parts.append(extract_block("probe_1_query_row"))
+          parts.append("```")
+          parts.append("")
+          parts.append("**2. Latest response row** (`llm_responses`):")
+          parts.append("```")
+          parts.append(extract_block("probe_2_latest_response_row"))
+          parts.append("```")
+          parts.append("")
+          parts.append("**3. Citation sources count** (`citation_sources`):")
+          parts.append("```")
+          parts.append(extract_block("probe_3_citation_sources_count"))
+          parts.append("```")
+          parts.append("")
+          parts.append("**4. Citation sources sample** (URLs are query-string redacted):")
+          parts.append("```")
+          parts.append(extract_block("probe_4_citation_sources_sample"))
+          parts.append("```")
+          parts.append("")
+          parts.append("**5. Analysis status** (`llm_responses.analysis_status`):")
+          parts.append("```")
+          parts.append(extract_block("probe_5_analysis_status"))
+          parts.append("```")
+          parts.append("")
+          parts.append("**6. Screenshot / HTML / runtime manifest** for `query_185003_*`:")
+          parts.append("```")
+          parts.append(manifest_text.strip() or "(empty)")
+          parts.append("```")
+          parts.append("")
+          parts.append("**7. DOM evidence summary** from saved HTML / runtime JSON (counts only):")
+          parts.append("")
+          parts.append(dom_summary)
+          parts.append("")
+          parts.append("**8. Sanitized worker log slice** (first 40 matching lines):")
+          parts.append("```")
+          parts.append(log_excerpt)
+          parts.append("```")
+          parts.append("")
+          parts.append("### Sanitization")
+          parts.append(
+              "- Authorization / Cookie / Set-Cookie headers and `*token*`, "
+              "`*secret*`, `api_key`, `apikey` assignments redacted to `[secret redacted]`."
+          )
+          parts.append(
+              "- E.164-shaped phone numbers and SMS / activation fields "
+              "redacted to `[phone redacted]` / `[SMS field redacted]` / "
+              "`[activation field redacted]`."
+          )
+          parts.append(
+              "- URLs with auth-shaped query params (token/key/sig/auth/secret/"
+              "session/cookie/bearer) have their query string redacted to "
+              "`?[auth query redacted]`. The host and path remain visible."
+          )
+          parts.append(
+              "- `citation_sources.url` query strings redacted at SQL time "
+              "(`?[query redacted]`). Hosts/paths preserved for the worker fix."
+          )
+          parts.append("")
+          parts.append("### Read-Only Promise")
+          parts.append(
+              "- SQL probe file is SELECT-only; grep guard runs in CI: "
+              "`grep -iE 'insert|update|delete|drop|alter|truncate' "
+              ".github/workflows/issue-904-q185003-evidence.yml` returns "
+              "matches only in the guard regex and comments, not in any SQL block."
+          )
+          parts.append(
+              "- No Redis writes, no batch dispatch, no retry, no account "
+              "reset, no scraper change — per #904 Forbidden Scope."
+          )
+          parts.append("")
+          parts.append("Full artifact bundle (DB probes, screenshots, HTML, log slice) is uploaded to the workflow run above.")
+
+          Path(os.environ["ARTIFACT_DIR"], "comment_body.md").write_text(
+              "\n".join(parts), encoding="utf-8"
+          )
+          PY
+          # Final sanitization pass over the comment body itself.
+          python3 "${ARTIFACT_DIR}/sanitize.py" "${ARTIFACT_DIR}/comment_body.md"
+          echo "=== comment_body.md (first 80 lines) ==="
+          sed -n '1,80p' "${ARTIFACT_DIR}/comment_body.md"
+
+      - name: Post evidence comment to issues 570, 904, 901
+        shell: bash
+        run: |
+          set -euo pipefail
+          repo="${GH_REPOSITORY}"
+          body_file="${ARTIFACT_DIR}/comment_body.md"
+          if [ ! -s "${body_file}" ]; then
+            echo "::error::comment body is empty"
+            exit 1
+          fi
+          # Build JSON safely: jq -Rs reads the file as a raw string and
+          # encodes it as a JSON string literal — no shell quoting hazards.
+          payload="$(jq -Rs '{body: .}' < "${body_file}")"
+          for issue in ${ISSUE_REFS}; do
+            echo "Posting evidence comment to issue #${issue}..."
+            http_status="$(curl -sS -o /tmp/curl_resp.json -w '%{http_code}' \
+              -X POST \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              -H "User-Agent: issue-904-q185003-evidence-workflow" \
+              --data "${payload}" \
+              "https://api.github.com/repos/${repo}/issues/${issue}/comments")"
+            if [ "${http_status}" != "201" ]; then
+              echo "::error::Failed to comment on #${issue} (HTTP ${http_status})"
+              cat /tmp/curl_resp.json || true
+              exit 1
+            fi
+            echo "  -> comment posted (HTTP ${http_status})"
+          done
+
+      - name: Sanitize artifact directory before upload (final pass)
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -d "${ARTIFACT_DIR}" ]; then
+            # Re-run sanitizer over text files to be defensive.
+            find "${ARTIFACT_DIR}" -type f \
+              \( -name '*.txt' -o -name '*.log' -o -name '*.md' \
+                 -o -name '*.json' -o -name '*.tsv' \) \
+              -print0 | xargs -0 -r -n1 python3 "${ARTIFACT_DIR}/sanitize.py" || true
+          fi
+
+      - name: Upload evidence bundle
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue-904-q185003-evidence-${{ github.run_id }}
+          path: ${{ env.ARTIFACT_DIR }}
+          retention-days: 30
