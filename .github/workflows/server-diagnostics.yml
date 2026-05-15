@@ -24,7 +24,7 @@ on:
         required: false
         default: "2026-05-07"
       scraper_mode:
-        description: "diagnostics, bestcoffer_batch, account_quota_reset, doubao_auth_false_success_repair, doubao_sms_forensics, chatgpt_sms_env_check, vninja_proxy_check, vninja_subscription_update, or app_analytics_business_completeness"
+        description: "diagnostics, query_status, bestcoffer_batch, account_quota_reset, doubao_auth_false_success_repair, doubao_sms_forensics, chatgpt_sms_env_check, vninja_proxy_check, vninja_subscription_update, or app_analytics_business_completeness"
         required: false
         default: "diagnostics"
       target_llm:
@@ -1644,6 +1644,149 @@ jobs:
           name: hero-sms-env-${{ github.run_id }}
           path: hero-sms-env-artifacts/runtime-env.json
           if-no-files-found: error
+
+      - name: Run exact query status diagnostics
+        if: ${{ inputs.scraper_mode == 'query_status' }}
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script: |
+            set -euo pipefail
+            cd /opt/genpano
+            QUERY_IDS='${{ inputs.brand_query }}'
+            QUERY_IDS="${QUERY_IDS#"${QUERY_IDS%%[![:space:]]*}"}"
+            QUERY_IDS="${QUERY_IDS%"${QUERY_IDS##*[![:space:]]}"}"
+            if ! [[ "${QUERY_IDS}" =~ ^[0-9]+(,[0-9]+)*$ ]]; then
+              echo "ERROR: query_status mode expects brand_query as comma-separated query ids, got '${QUERY_IDS}'" >&2
+              exit 1
+            fi
+
+            echo "=== Exact query readback ==="
+            docker compose exec -T postgres psql -U genpano -d genpano -P pager=off -c "
+              WITH selected_queries AS (
+                SELECT *
+                FROM queries
+                WHERE id IN (${QUERY_IDS})
+              ),
+              response_rollup AS (
+                SELECT
+                  r.query_id,
+                  COUNT(*) AS response_count,
+                  MAX(r.id) AS latest_response_id,
+                  MAX(LENGTH(COALESCE(r.raw_text, ''))) AS latest_response_len,
+                  BOOL_OR(COALESCE(r.screenshot_path, '') <> '') AS screenshot_present,
+                  MAX(r.collected_at) AS latest_collected_at,
+                  MAX(r.analysis_status) AS latest_response_analysis_status
+                FROM llm_responses r
+                WHERE r.query_id IN (${QUERY_IDS})
+                GROUP BY r.query_id
+              ),
+              analysis_rollup AS (
+                SELECT
+                  r.query_id,
+                  COUNT(ra.id) AS analysis_count
+                FROM llm_responses r
+                LEFT JOIN response_analyses ra ON ra.response_id = r.id
+                WHERE r.query_id IN (${QUERY_IDS})
+                GROUP BY r.query_id
+              )
+              SELECT
+                q.id AS query_id,
+                q.brand_id,
+                q.profile_id,
+                q.target_llm,
+                q.status,
+                q.retry_reason,
+                q.retry_count,
+                q.account_id,
+                a.status AS account_status,
+                (COALESCE(a.cookies_json, '') <> '') AS account_has_cookies,
+                a.query_count_today AS account_query_count_today,
+                a.daily_limit AS account_daily_limit,
+                q.queued_at,
+                q.started_at,
+                q.finished_at,
+                q.latency_ms,
+                COALESCE(rr.response_count, 0) AS response_count,
+                rr.latest_response_id,
+                rr.latest_response_len,
+                COALESCE(rr.screenshot_present, FALSE) AS screenshot_present,
+                rr.latest_collected_at,
+                rr.latest_response_analysis_status,
+                COALESCE(ar.analysis_count, 0) AS analysis_count,
+                CASE
+                  WHEN COALESCE(rr.response_count, 0) > 0 THEN 'HAS_RESPONSE_REVIEW_ARTIFACTS'
+                  ELSE 'NO_RESPONSE_ROW'
+                END AS evidence_state
+              FROM selected_queries q
+              LEFT JOIN llm_accounts a ON a.id = q.account_id
+              LEFT JOIN response_rollup rr ON rr.query_id = q.id
+              LEFT JOIN analysis_rollup ar ON ar.query_id = q.id
+              ORDER BY q.id;
+            "
+
+            echo "=== Doubao account availability for affected profiles ==="
+            docker compose exec -T postgres psql -U genpano -d genpano -P pager=off -c "
+              WITH affected_profiles AS (
+                SELECT DISTINCT q.profile_id::text AS profile_id
+                FROM queries q
+                WHERE q.id IN (${QUERY_IDS}) AND q.profile_id IS NOT NULL
+              )
+              SELECT
+                ap.profile_id,
+                a.id AS account_id,
+                a.status,
+                (COALESCE(a.cookies_json, '') <> '') AS has_cookies,
+                a.query_count_today,
+                a.daily_limit,
+                a.cooldown_until,
+                EXISTS (
+                  SELECT 1
+                  FROM account_profile_map apm
+                  WHERE apm.account_id = a.id
+                    AND apm.profile_id = ap.profile_id
+                ) AS explicit_profile_binding,
+                (a.profile_id::text = ap.profile_id) AS legacy_profile_binding,
+                (
+                  a.status = 'active'
+                  AND COALESCE(a.cookies_json, '') <> ''
+                  AND (a.cooldown_until IS NULL OR a.cooldown_until <= NOW())
+                  AND COALESCE(a.daily_limit, 0) > 0
+                  AND COALESCE(a.query_count_today, 0) < a.daily_limit
+                ) AS executable_now
+              FROM affected_profiles ap
+              JOIN llm_accounts a
+                ON a.llm_name = 'doubao'
+               AND (
+                 EXISTS (
+                   SELECT 1
+                   FROM account_profile_map apm
+                   WHERE apm.account_id = a.id
+                     AND apm.profile_id = ap.profile_id
+                 )
+                 OR a.profile_id::text = ap.profile_id
+               )
+              ORDER BY ap.profile_id, executable_now DESC, a.status, a.id;
+            "
+
+            echo "=== Doubao account summary ==="
+            docker compose exec -T postgres psql -U genpano -d genpano -P pager=off -c "
+              SELECT
+                llm_name,
+                status,
+                COUNT(*) AS accounts,
+                COUNT(*) FILTER (WHERE COALESCE(cookies_json, '') <> '') AS with_cookies,
+                COUNT(*) FILTER (WHERE cooldown_until IS NOT NULL AND cooldown_until > NOW()) AS cooling_down,
+                SUM(query_count_today) AS query_count_today,
+                SUM(daily_limit) AS daily_limit,
+                MAX(consecutive_fails) AS max_consecutive_fails
+              FROM llm_accounts
+              WHERE llm_name = 'doubao'
+              GROUP BY llm_name, status
+              ORDER BY status;
+            "
 
       - name: Run read-only diagnostics
         if: ${{ inputs.scraper_mode == 'diagnostics' }}

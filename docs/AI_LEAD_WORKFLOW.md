@@ -247,6 +247,14 @@ Rules:
 - Every product-facing PRD requirement in scope needs at least one acceptance
   row. Missing rows go into `Coverage Gaps` before coding.
 - Acceptance rows should name the user path when the work is UI-visible.
+- Live incident rows must distinguish release evidence from business result
+  evidence. CI, deploy, and smoke E2E can prove the fix was shipped, but they
+  do not prove the incident is accepted unless the exact affected object reaches
+  the requested final state.
+- Add a `Business Result Gate` row whenever the user asks for a concrete
+  outcome on an existing object. Name the exact object, required final state,
+  and readback source. Example: `query 184968 -> done + response evidence from
+  Server Diagnostics`, not merely `retry workflow passed`.
 - For docs-only or tooling-only work, state `none - no product behavior change`
   and define the documentation or tooling acceptance evidence instead.
 - If translation is ambiguous, ask one `QUESTION` that lists all known choices,
@@ -369,6 +377,11 @@ Use when risk or release shape justifies the time cost:
 Tier 3 should run in CI when possible so pass/fail is a machine artifact tied to
 a commit SHA. Local full E2E can supplement CI but does not replace current-head
 CI for ready-to-review or merge decisions when CI is required.
+
+Live mutation E2E has an extra safety rule: disable automatic test retries for
+any spec that mutates an existing live object. A retry that clicks the same
+operator action twice is a second mutation, not a harmless test rerun. The gate
+must record whether mutation specs ran with retries disabled.
 
 ## Ready-To-Review Gate
 

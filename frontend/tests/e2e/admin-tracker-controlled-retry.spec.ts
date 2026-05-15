@@ -11,6 +11,7 @@ import {
 const stagingEnabled = process.env.ADMIN_E2E_STAGING === '1';
 const retryQueryIdInput = (process.env.ADMIN_E2E_TRACKER_RETRY_QUERY_ID || '').trim();
 const expectedEngineInput = (process.env.ADMIN_E2E_TRACKER_RETRY_EXPECTED_ENGINE || '').trim();
+const retryRequiresSuccess = process.env.ADMIN_E2E_TRACKER_RETRY_REQUIRE_SUCCESS === '1';
 const pollSeconds = Math.max(
   15,
   Math.min(180, Number(process.env.ADMIN_E2E_TRACKER_RETRY_POLL_SECONDS || 180) || 180),
@@ -34,6 +35,8 @@ type QueryRow = {
   retry_count?: number | string | null;
   retry_reason?: string | null;
   error_code?: string | null;
+  response?: string | null;
+  response_id?: number | string | null;
 };
 
 type QuerySnapshot = {
@@ -42,7 +45,13 @@ type QuerySnapshot = {
   retryCount: number | null;
   targetLlm: string;
   retryReason: string;
+  responseId: string;
+  responseLength: number;
   rawRowJson: string;
+};
+
+type PollOptions = {
+  requireSuccess?: boolean;
 };
 
 test.setTimeout((pollSeconds + 90) * 1000);
@@ -104,14 +113,24 @@ const readSingleQuery = async (page: Page, queryId: number, count = '1') => {
   return rows[0];
 };
 
-const querySnapshot = (queryId: number, row: QueryRow): QuerySnapshot => ({
-  queryId,
-  status: String(row.status || ''),
-  retryCount: row.retry_count == null ? null : Number(row.retry_count),
-  targetLlm: String(row.target_llm || ''),
-  retryReason: String(row.retry_reason || row.error_code || ''),
-  rawRowJson: JSON.stringify(row),
-});
+const querySnapshot = (queryId: number, row: QueryRow): QuerySnapshot => {
+  const responseText = typeof row.response === 'string' ? row.response : '';
+  const responseId = row.response_id == null ? '' : String(row.response_id);
+  const safeRow = {
+    ...row,
+    response: responseText ? `[redacted len=${responseText.length}]` : row.response,
+  };
+  return {
+    queryId,
+    status: String(row.status || ''),
+    retryCount: row.retry_count == null ? null : Number(row.retry_count),
+    targetLlm: String(row.target_llm || ''),
+    retryReason: String(row.retry_reason || row.error_code || ''),
+    responseId,
+    responseLength: responseText.length,
+    rawRowJson: JSON.stringify(safeRow),
+  };
+};
 
 const assertNoQuotaExhaustionText = (queryId: number, label: string, value: unknown) => {
   const haystack = String(typeof value === 'string' ? value : JSON.stringify(value)).toLowerCase();
@@ -195,17 +214,38 @@ const hasRetryCountIncrease = (before: QuerySnapshot, after: QuerySnapshot) => (
 
 const isRequestMarkerReason = (reason: string) => retryRequestMarkers.has(reason.trim().toLowerCase());
 
-const classifyPassingOutcome = (snapshot: QuerySnapshot, before: QuerySnapshot) => {
+const hasResponseEvidence = (snapshot: QuerySnapshot) => (
+  snapshot.responseId.trim().length > 0 || snapshot.responseLength > 0
+);
+
+const classifyPassingOutcome = (
+  snapshot: QuerySnapshot,
+  before: QuerySnapshot,
+  options: PollOptions = {},
+) => {
   const normalizedStatus = snapshot.status.toLowerCase();
   if (!hasRetryCountIncrease(before, snapshot)) return '';
   if (['done', 'success'].includes(normalizedStatus)) {
-    return `terminal success status=${snapshot.status}`;
+    if (options.requireSuccess && !hasResponseEvidence(snapshot)) {
+      throw new Error(
+        `Controlled retry for query ${snapshot.queryId} reached ${snapshot.status} without response evidence; ` +
+        `response_id=${snapshot.responseId || 'empty'}; response_length=${snapshot.responseLength}; ` +
+        `raw=${snapshot.rawRowJson.slice(0, 1000)}`,
+      );
+    }
+    return `terminal success status=${snapshot.status}; response_evidence=${hasResponseEvidence(snapshot) ? 'present' : 'not-required'}`;
   }
   if (
     ['failed', 'dlq', 'waiting_manual'].includes(normalizedStatus)
     && snapshot.retryReason
     && !isRequestMarkerReason(snapshot.retryReason)
   ) {
+    if (options.requireSuccess) {
+      throw new Error(
+        `Controlled retry for query ${snapshot.queryId} requires terminal success with response evidence, ` +
+        `got status=${snapshot.status}; retry_reason=${snapshot.retryReason}; raw=${snapshot.rawRowJson.slice(0, 1000)}`,
+      );
+    }
     return `terminal non-quota failure status=${snapshot.status}; retry_reason=${snapshot.retryReason}`;
   }
   return '';
@@ -216,6 +256,7 @@ const pollForAcceptedOutcome = async (
   queryId: number,
   before: QuerySnapshot,
   maxPollSeconds = pollSeconds,
+  options: PollOptions = {},
 ) => {
   const deadline = Date.now() + maxPollSeconds * 1000;
   const pollDelayMs = Math.min(5_000, Math.max(250, Math.floor(maxPollSeconds * 500)));
@@ -226,7 +267,7 @@ const pollForAcceptedOutcome = async (
     lastSnapshot = querySnapshot(queryId, await readSingleQuery(page, queryId, '0'));
     assertNotQuotaExhausted(lastSnapshot);
 
-    outcome = classifyPassingOutcome(lastSnapshot, before);
+    outcome = classifyPassingOutcome(lastSnapshot, before, options);
     if (outcome) {
       return { outcome, snapshot: lastSnapshot };
     }
@@ -239,7 +280,8 @@ const pollForAcceptedOutcome = async (
     `Controlled retry for query ${queryId} did not reach an accepted terminal outcome within ${maxPollSeconds}s: ` +
     `status=${lastSnapshot.status || 'empty'}; retry_count=${lastSnapshot.retryCount}; ` +
     `expected_retry_count_min=${before.retryCount === null ? 'unknown' : before.retryCount + 1}; target_llm=${lastSnapshot.targetLlm}; ` +
-    `retry_reason=${lastSnapshot.retryReason || 'empty'}; raw=${lastSnapshot.rawRowJson.slice(0, 1000)}`,
+    `retry_reason=${lastSnapshot.retryReason || 'empty'}; ` +
+    `response_evidence=${hasResponseEvidence(lastSnapshot) ? 'present' : 'missing'}; raw=${lastSnapshot.rawRowJson.slice(0, 1000)}`,
   );
 };
 
@@ -254,7 +296,7 @@ test(`${mutationMode} dispatches one explicit query and rejects quota exhaustion
     type: 'mode',
     description: `${mutationMode}; mutates exactly one query id=${queryId}; no batch retry, no cleanup, no manual dispatch.`,
   });
-  console.info(`[Admin Tracker controlled retry] MUTATION ENABLED: targeting exactly one query id=${queryId}; poll_seconds=${pollSeconds}; no batch retry, cleanup, or manual dispatch will run.`);
+  console.info(`[Admin Tracker controlled retry] MUTATION ENABLED: targeting exactly one query id=${queryId}; poll_seconds=${pollSeconds}; require_success=${retryRequiresSuccess ? '1' : '0'}; no batch retry, cleanup, or manual dispatch will run.`);
 
   const errors = installAdminErrorGuards(page);
   await ensureAdminSession(page);
@@ -279,13 +321,20 @@ test(`${mutationMode} dispatches one explicit query and rejects quota exhaustion
   expect(retryResult.body?.dispatched, `Retry POST must dispatch to worker; dispatched=false is not accepted for query ${queryId}. Body=${JSON.stringify(retryResult.body)}`).toBe(true);
   console.info(`[Admin Tracker controlled retry] Retry POST accepted via ${path}; dispatched=true for query ${queryId}.`);
 
-  const { outcome, snapshot } = await pollForAcceptedOutcome(page, queryId, before);
+  const { outcome, snapshot } = await pollForAcceptedOutcome(
+    page,
+    queryId,
+    before,
+    pollSeconds,
+    { requireSuccess: retryRequiresSuccess },
+  );
   await loadTrackerFilteredToQuery(page, queryId);
   await expect(page.locator('tbody tr', { hasText: `Q-${queryId}` }).first()).toBeVisible({ timeout: 30_000 });
 
   console.info(
     `[Admin Tracker controlled retry] Final outcome for query ${queryId}: ${outcome}; ` +
-    `status=${snapshot.status}; retry_count=${snapshot.retryCount}; target_llm=${snapshot.targetLlm}; retry_reason=${snapshot.retryReason || 'empty'}.`,
+    `status=${snapshot.status}; retry_count=${snapshot.retryCount}; target_llm=${snapshot.targetLlm}; ` +
+    `retry_reason=${snapshot.retryReason || 'empty'}; response_evidence=${hasResponseEvidence(snapshot) ? 'present' : 'missing'}.`,
   );
 
   await errors.assertClean();
@@ -399,4 +448,38 @@ test('controlled retry polling requires retry_count to increase before accepting
   ]);
   await page.goto('/admin/tracker-attempts', { waitUntil: 'domcontentloaded' });
   await expect(pollForAcceptedOutcome(page, fakeQueryId, querySnapshot(fakeQueryId, fakeQueryRow({ retry_count: 2 })), 1)).rejects.toThrow(/expected_retry_count_min=3/);
+});
+
+test('controlled retry success-required mode rejects terminal failure', async ({ page }) => {
+  await installControlledRetryRoutes(page, [
+    fakeQueryRow({ retry_count: 2 }),
+    fakeQueryRow({ status: 'failed', retry_count: 3, retry_reason: 'doubao_not_logged_in' }),
+  ]);
+  await page.goto('/admin/tracker-attempts', { waitUntil: 'domcontentloaded' });
+  await expect(
+    pollForAcceptedOutcome(
+      page,
+      fakeQueryId,
+      querySnapshot(fakeQueryId, fakeQueryRow({ retry_count: 2 })),
+      1,
+      { requireSuccess: true },
+    ),
+  ).rejects.toThrow(/requires terminal success/i);
+});
+
+test('controlled retry success-required mode requires response evidence for done rows', async ({ page }) => {
+  await installControlledRetryRoutes(page, [
+    fakeQueryRow({ retry_count: 2 }),
+    fakeQueryRow({ status: 'done', retry_count: 3, retry_reason: null, response: '' }),
+  ]);
+  await page.goto('/admin/tracker-attempts', { waitUntil: 'domcontentloaded' });
+  await expect(
+    pollForAcceptedOutcome(
+      page,
+      fakeQueryId,
+      querySnapshot(fakeQueryId, fakeQueryRow({ retry_count: 2 })),
+      1,
+      { requireSuccess: true },
+    ),
+  ).rejects.toThrow(/response evidence/i);
 });
