@@ -75,6 +75,7 @@ from app.api.v1.projects._legacy_lookups import (
     resolve_topic_names,
 )
 from app.api.v1.projects._mention_rollups import (
+    _industry_brand_ids,
     brand_mention_match_condition,
     brand_mention_names,
 )
@@ -794,7 +795,13 @@ async def get_topic_heatmap(
         comp_stmt = select(ProjectCompetitor.brand_id).where(
             ProjectCompetitor.project_id == project.id
         )
-        compare_with = [r[0] for r in (await session.execute(comp_stmt)).all()][:4]
+        compare_with = [r[0] for r in (await session.execute(comp_stmt)).all()]
+        # Issue #975: scope pins to same industry as primary brand.
+        primary_industry = await resolve_brand_industry(session, primary)
+        industry_brand_ids = await _industry_brand_ids(session, primary_industry)
+        if industry_brand_ids and compare_with:
+            compare_with = [bid for bid in compare_with if bid in industry_brand_ids]
+        compare_with = compare_with[:4]
 
     brand_ids = list(dict.fromkeys([primary, *compare_with]))
     f, t = _dt_range(from_d, to_d)
@@ -2275,7 +2282,15 @@ async def get_pr_targets(
                 select(ProjectCompetitor.brand_id).where(ProjectCompetitor.project_id == project.id)
             )
         ).all()
-    ][:3]
+    ]
+    # Issue #975: scope pinned competitors to primary brand's industry
+    # before truncating to 3 so cross-industry pins don't displace
+    # legitimate same-industry rivals from the tier-2 matrix.
+    primary_industry = await resolve_brand_industry(session, primary)
+    industry_brand_ids = await _industry_brand_ids(session, primary_industry)
+    if industry_brand_ids and competitor_ids:
+        competitor_ids = [bid for bid in competitor_ids if bid in industry_brand_ids]
+    competitor_ids = competitor_ids[:3]
 
     # Tier 2 domain x brand citation matrix.
     matrix_brands = [primary, *competitor_ids]
@@ -2553,6 +2568,12 @@ async def get_authority_radar(
             )
         ).all()
     ]
+    # Issue #975: scope pinned competitors to primary brand's industry
+    # so the tier breakdown chart doesn't compare against unrelated brands.
+    primary_industry_for_tier = await resolve_brand_industry(session, primary)
+    industry_brand_ids_for_tier = await _industry_brand_ids(session, primary_industry_for_tier)
+    if industry_brand_ids_for_tier and competitor_ids:
+        competitor_ids = [bid for bid in competitor_ids if bid in industry_brand_ids_for_tier]
 
     async def _tier_counts(brand_id: int) -> tuple[int, int, int, int, int]:
         stmt = (
