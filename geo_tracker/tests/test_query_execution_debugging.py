@@ -2222,6 +2222,100 @@ def test_execute_query_enqueues_chatgpt_new_account_when_pool_has_no_active(
     ]
 
 
+def test_execute_query_enqueues_doubao_new_account_with_query_handoff(
+    monkeypatch,
+    tmp_path,
+):
+    _install_fake_playwright(monkeypatch)
+
+    from geo_tracker.tasks import celery_tasks
+
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'doubao-no-active.db'}"
+    query_id = 184968
+
+    async def seed_database():
+        engine = create_async_engine(db_url, future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        maker = async_sessionmaker(engine, expire_on_commit=False)
+        async with maker() as session:
+            session.add(
+                Query(
+                    id=query_id,
+                    target_llm="doubao",
+                    query_text="bestCoffer advantages",
+                    status=QueryStatus.PENDING.value,
+                    retry_count=10,
+                    retry_reason="manual retry from admin",
+                )
+            )
+            await session.commit()
+        await engine.dispose()
+
+    asyncio.run(seed_database())
+
+    def create_engine():
+        return create_async_engine(db_url, future=True)
+
+    def get_session(engine):
+        return _TaskSessionContext(async_sessionmaker(engine, expire_on_commit=False))
+
+    async def fake_acquire_query_account(db, query, pool=None):
+        return None
+
+    async def fake_diagnose_account_unavailable(db, llm_name):
+        assert llm_name == "doubao"
+        return "account_no_active"
+
+    enqueue_calls: list[dict] = []
+
+    async def fake_should_enqueue_new_account(platform):
+        assert platform == "doubao"
+        return True
+
+    class FakeAutoLogin:
+        @staticmethod
+        def apply_async(*, kwargs, queue):
+            enqueue_calls.append({"kwargs": kwargs, "queue": queue})
+
+    monkeypatch.setattr(celery_tasks, "create_task_engine", create_engine)
+    monkeypatch.setattr(celery_tasks, "get_task_async_session", get_session)
+    monkeypatch.setattr(
+        celery_tasks,
+        "acquire_query_account",
+        fake_acquire_query_account,
+    )
+    monkeypatch.setattr(
+        celery_tasks,
+        "diagnose_account_unavailable",
+        fake_diagnose_account_unavailable,
+    )
+    monkeypatch.setattr(
+        celery_tasks,
+        "should_enqueue_new_account",
+        fake_should_enqueue_new_account,
+    )
+    monkeypatch.setattr(celery_tasks, "auto_login", FakeAutoLogin)
+
+    result = celery_tasks.execute_query.run(query_id)
+
+    assert result == {
+        "query_id": query_id,
+        "status": "failed",
+        "reason": "account_no_active",
+    }
+    assert enqueue_calls == [
+        {
+            "kwargs": {
+                "platform": "doubao",
+                "new_account": True,
+                "query_id": query_id,
+            },
+            "queue": "account_login",
+        }
+    ]
+
+
 def test_auto_login_chatgpt_manual_challenge_does_not_create_account(
     monkeypatch,
     tmp_path,
@@ -2292,6 +2386,162 @@ def test_auto_login_chatgpt_manual_challenge_does_not_create_account(
         "reason": "requires_manual_challenge",
     }
     assert asyncio.run(count_accounts()) == 0
+
+
+def test_doubao_auto_login_new_account_requeues_no_active_query(
+    monkeypatch,
+    tmp_path,
+):
+    _install_fake_playwright(monkeypatch)
+
+    import redis.asyncio as aioredis
+
+    from geo_tracker.agent import sms_login
+    from geo_tracker.tasks import celery_tasks
+
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'doubao-new-account-handoff.db'}"
+    query_id = 184968
+    old_account_id = 42
+
+    async def seed_database():
+        engine = create_async_engine(db_url, future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        maker = async_sessionmaker(engine, expire_on_commit=False)
+        async with maker() as session:
+            session.add_all(
+                [
+                    LLMAccount(
+                        id=old_account_id,
+                        llm_name="doubao",
+                        status=AccountStatus.EXPIRED.value,
+                        cookies_json='[{"name":"stale"}]',
+                        query_count_today=5,
+                        daily_limit=100,
+                        phone_number="17000007065",
+                    ),
+                    Query(
+                        id=query_id,
+                        account_id=old_account_id,
+                        target_llm="doubao",
+                        query_text="bestCoffer advantages",
+                        status=QueryStatus.FAILED.value,
+                        retry_count=11,
+                        retry_reason="account_no_active",
+                    ),
+                ]
+            )
+            await session.commit()
+        await engine.dispose()
+
+    asyncio.run(seed_database())
+
+    def create_engine():
+        return create_async_engine(db_url, future=True)
+
+    def get_session(engine):
+        return _TaskSessionContext(async_sessionmaker(engine, expire_on_commit=False))
+
+    class FakeRedisClient:
+        async def exists(self, _key):
+            return False
+
+        async def delete(self, _key):
+            return 1
+
+        async def set(self, *_args, **_kwargs):
+            return True
+
+        async def aclose(self):
+            return None
+
+    class FakeDoubaoHandler:
+        async def login_or_register(self, **_kwargs):
+            return {
+                "cookies": [{"name": "session", "value": "fresh"}],
+                "phone": "17000008888",
+                "localStorage": {"session": "fresh"},
+            }
+
+    requeued: list[dict] = []
+
+    class FakeExecuteQuery:
+        @staticmethod
+        def apply_async(*, args, queue):
+            requeued.append({"args": args, "queue": queue})
+
+    async def fake_release_new_account_lock(_platform, *, failed=False):
+        return None
+
+    monkeypatch.setattr(celery_tasks, "create_task_engine", create_engine)
+    monkeypatch.setattr(celery_tasks, "get_task_async_session", get_session)
+    monkeypatch.setattr(aioredis, "from_url", lambda *args, **kwargs: FakeRedisClient())
+    monkeypatch.setattr(
+        sms_login,
+        "get_handler",
+        lambda platform: FakeDoubaoHandler() if platform == "doubao" else None,
+    )
+    monkeypatch.setattr(celery_tasks, "execute_query", FakeExecuteQuery)
+    monkeypatch.setattr(
+        celery_tasks,
+        "release_new_account_lock",
+        fake_release_new_account_lock,
+    )
+
+    result = celery_tasks.auto_login.run(
+        platform="doubao",
+        new_account=True,
+        query_id=query_id,
+    )
+
+    async def load_state():
+        engine = create_async_engine(db_url, future=True)
+        maker = async_sessionmaker(engine, expire_on_commit=False)
+        async with maker() as session:
+            query = await session.get(Query, query_id)
+            accounts = (await session.execute(select(LLMAccount))).scalars().all()
+            new_accounts = [
+                account for account in accounts if account.id != old_account_id
+            ]
+            assert len(new_accounts) == 1
+            new_account = new_accounts[0]
+            state = {
+                "query_status": query.status,
+                "query_account_id": query.account_id,
+                "retry_count": query.retry_count,
+                "retry_reason": query.retry_reason,
+                "started_at": query.started_at,
+                "finished_at": query.finished_at,
+                "latency_ms": query.latency_ms,
+                "new_account_id": new_account.id,
+                "new_account_status": new_account.status,
+                "new_account_has_cookies": bool(new_account.cookies_json),
+            }
+        await engine.dispose()
+        return state
+
+    state = asyncio.run(load_state())
+    new_account_id = state["new_account_id"]
+
+    assert result == {
+        "status": "success",
+        "account_id": new_account_id,
+        "phone": "17000008888",
+        "requeued_query_id": query_id,
+    }
+    assert state == {
+        "query_status": QueryStatus.PENDING.value,
+        "query_account_id": new_account_id,
+        "retry_count": 12,
+        "retry_reason": f"doubao_new_account_retry:{new_account_id}",
+        "started_at": None,
+        "finished_at": None,
+        "latency_ms": None,
+        "new_account_id": new_account_id,
+        "new_account_status": AccountStatus.ACTIVE.value,
+        "new_account_has_cookies": True,
+    }
+    assert requeued == [{"args": [query_id], "queue": "llm_doubao"}]
 
 
 def test_execute_query_persists_doubao_answer_with_generic_toolbar_login(

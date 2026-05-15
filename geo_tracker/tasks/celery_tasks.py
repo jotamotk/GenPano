@@ -62,9 +62,8 @@ from geo_tracker.tasks.query_failure import (
 )
 from geo_tracker.tasks.query_lifecycle import mark_query_finished, mark_query_started
 from geo_tracker.tasks.no_account_requeue import (
-    NO_ACCOUNT_REQUEUE_LLMS,
     NO_ACCOUNT_REQUEUE_REASONS,
-    _env_int,
+    NO_ACCOUNT_REQUEUE_REASON_TAG,
     maybe_requeue_for_no_account,
 )
 from geo_tracker.tasks.stale_running_repair import (
@@ -273,6 +272,7 @@ DOUBAO_REAUTH_FAILURE_REASONS = frozenset(
 )
 DOUBAO_REAUTH_RETRY_REASON_PREFIX = "doubao_reauth_retry:"
 DOUBAO_POST_REAUTH_FAILURE_PREFIX = "doubao_post_reauth_"
+DOUBAO_NEW_ACCOUNT_RETRY_REASON_PREFIX = "doubao_new_account_retry:"
 
 
 def _is_doubao_post_reauth_attempt(retry_reason: str | None) -> bool:
@@ -344,6 +344,59 @@ async def _requeue_doubao_query_after_reauth(
         account_id,
         query.retry_count,
         retry_max,
+    )
+    return True
+
+
+async def _requeue_doubao_query_after_new_account(
+    db,
+    *,
+    account_id: int,
+    query_id: int | None,
+) -> bool:
+    if not query_id:
+        return False
+
+    result = await db.execute(select(Query).where(Query.id == query_id))
+    query = result.scalar_one_or_none()
+    if not query:
+        return False
+
+    eligible_retry_reasons = set(NO_ACCOUNT_REQUEUE_REASONS)
+    eligible_retry_reasons.add(NO_ACCOUNT_REQUEUE_REASON_TAG)
+    if query.target_llm != "doubao":
+        return False
+    if query.status not in {QueryStatus.FAILED.value, QueryStatus.PENDING.value}:
+        return False
+    if query.retry_reason not in eligible_retry_reasons:
+        return False
+
+    response_result = await db.execute(
+        select(LLMResponse.id).where(LLMResponse.query_id == query_id)
+    )
+    if response_result.scalar_one_or_none() is not None:
+        return False
+
+    from datetime import datetime as dt
+
+    query.account_id = account_id
+    query.status = QueryStatus.PENDING.value
+    query.retry_count = int(query.retry_count or 0) + 1
+    query.retry_reason = f"{DOUBAO_NEW_ACCOUNT_RETRY_REASON_PREFIX}{account_id}"
+    query.queued_at = dt.utcnow()
+    query.started_at = None
+    query.finished_at = None
+    query.executed_at = None
+    query.latency_ms = None
+    await db.commit()
+
+    execute_query.apply_async(args=[query_id], queue="llm_doubao")
+    logger.warning(
+        "Query %s: assigned new Doubao account %s and requeued after "
+        "new-account login success (retry_count=%s)",
+        query_id,
+        account_id,
+        query.retry_count,
     )
     return True
 
@@ -786,8 +839,14 @@ def execute_query(self, query_id: int) -> dict:
                         and failure_reason in NO_ACCOUNT_REQUEUE_REASONS
                         and await should_enqueue_new_account(query.target_llm)
                     ):
+                        login_kwargs = {
+                            "platform": query.target_llm,
+                            "new_account": True,
+                        }
+                        if query.target_llm == "doubao":
+                            login_kwargs["query_id"] = query.id
                         auto_login.apply_async(
-                            kwargs={"platform": query.target_llm, "new_account": True},
+                            kwargs=login_kwargs,
                             queue="account_login",
                         )
                     return {
@@ -819,8 +878,11 @@ def execute_query(self, query_id: int) -> dict:
                     and failure_reason in NO_ACCOUNT_REQUEUE_REASONS
                     and await should_enqueue_new_account(query.target_llm)
                 ):
+                    login_kwargs = {"platform": query.target_llm, "new_account": True}
+                    if query.target_llm == "doubao":
+                        login_kwargs["query_id"] = query.id
                     auto_login.apply_async(
-                        kwargs={"platform": query.target_llm, "new_account": True},
+                        kwargs=login_kwargs,
                         queue="account_login",
                     )
                 return {
@@ -1566,11 +1628,20 @@ def auto_login(
                         f"auto_login: new {platform} account #{new_account_obj.id} "
                         f"created (phone={mask_phone(login_result['phone'])})"
                     )
-                    return {
+                    result_payload = {
                         "status": "success",
                         "account_id": new_account_obj.id,
                         "phone": login_result["phone"],
                     }
+                    if platform == "doubao":
+                        requeued = await _requeue_doubao_query_after_new_account(
+                            db,
+                            account_id=new_account_obj.id,
+                            query_id=query_id,
+                        )
+                        if requeued:
+                            result_payload["requeued_query_id"] = query_id
+                    return result_payload
                 else:
                     reason = (login_result or {}).get("reason", "unknown")
                     logger.warning(f"auto_login: new {platform} registration FAILED: {reason}")
