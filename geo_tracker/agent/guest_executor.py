@@ -104,6 +104,7 @@ PROMPT_FILL_INJECT_TIMEOUT_S = 15
 PROMPT_FILL_KEYBOARD_TYPE_TIMEOUT_S = 60
 PROMPT_FILL_VALUE_READ_TIMEOUT_S = 10
 
+
 _SENSITIVE_TEXT_PATTERNS = [
     (
         re.compile(
@@ -2338,15 +2339,24 @@ class GuestQueryExecutor:
             input_el = await page.wait_for_selector(cfg["input_selector"].split(",")[0], timeout=10000)
 
         # 模拟人类行为：随机延迟 + 鼠标移动到输入框
+        # Refs #963 follow-up to PR #1009 live evidence (run 25926214958):
+        # ``bounding_box()`` and ``mouse.move(...)`` had no timeout and a
+        # degenerate page state could hang either of them for the full
+        # outer budget. Each is best-effort (caller's try/except already
+        # tolerates failure) so a tight 5s bound is fine; production
+        # values complete in <100ms when the browser is healthy.
         await page.wait_for_timeout(random.randint(800, 2000))
         try:
             # 先模拟鼠标移动到输入框附近
-            box = await input_el.bounding_box()
+            box = await asyncio.wait_for(input_el.bounding_box(), timeout=5)
             if box:
-                await page.mouse.move(
-                    box["x"] + box["width"] * random.uniform(0.2, 0.8),
-                    box["y"] + box["height"] * random.uniform(0.2, 0.8),
-                    steps=random.randint(5, 15),
+                await asyncio.wait_for(
+                    page.mouse.move(
+                        box["x"] + box["width"] * random.uniform(0.2, 0.8),
+                        box["y"] + box["height"] * random.uniform(0.2, 0.8),
+                        steps=random.randint(5, 15),
+                    ),
+                    timeout=5,
                 )
                 await page.wait_for_timeout(random.randint(200, 500))
         except Exception:
@@ -2364,8 +2374,11 @@ class GuestQueryExecutor:
         # 改用 JS 直接注入文字并触发 Quill/Angular 所需的 input 事件
         if cfg.get("contenteditable"):
             # 把 LLM 自己的选择器列表传给 JS，避免硬编码 Gemini 的 Quill 选择器
+            # Refs #963 follow-up to PR #1009: bound the JS evaluate so a
+            # hung page cannot turn this branch into a full-budget timeout.
             input_selectors = [s.strip() for s in cfg.get("input_selector", "").split(",")]
-            injected = await page.evaluate("""
+            try:
+                injected = await asyncio.wait_for(page.evaluate("""
                 ([text, selectors]) => {
                     // 依次尝试各选择器，找第一个 contenteditable 元素
                     let editor = null;
@@ -2408,7 +2421,13 @@ class GuestQueryExecutor:
                     });
                     return (editor.textContent || '').trim().length > 0;
                 }
-            """, [query_text, input_selectors])
+            """, [query_text, input_selectors]), timeout=PROMPT_FILL_INJECT_TIMEOUT_S)
+            except (asyncio.TimeoutError, Exception) as ce_err:
+                logger.warning(
+                    f"[{llm_name}] contenteditable JS 注入超时/异常: "
+                    f"{_redact_sensitive_text(str(ce_err))[:200]}"
+                )
+                injected = False
             logger.info(f"[{llm_name}] JS 注入文字: {'成功' if injected else '失败'}")
             # 保存注入后的 HTML，确认文字是否真的进了编辑器
             await _save_html(page, debug_query_id, f"{llm_name}_after_inject")
@@ -3396,15 +3415,35 @@ async def _doubao_response_auth_reason_from_page(
 
 
 async def _save_html(page: Page, query_id: int, suffix: str = "") -> Optional[Path]:
-    """保存页面 HTML 供调试（比截图更容易分析 DOM 结构）"""
+    """保存页面 HTML 供调试（比截图更容易分析 DOM 结构）
+
+    Refs #963 follow-up to PR #1009 live evidence (Admin E2E run
+    25926214958 query 184968 retry 21, stage=prompt_fill,
+    latency=480856ms): PR #1009 bounded each step inside
+    ``_fill_plain_text_input`` but the production retry still spent
+    the full 480s budget at stage=prompt_fill. The post-fix code path
+    on a "no_input" failure is: bounded fill returns False →
+    ``_save_html(page, ..., "{llm}_input_fill_failed")`` → ``await
+    page.content()`` — and that ``page.content()`` call is unbounded.
+    On a dead/hung page it can wait indefinitely. Bound the
+    ``page.content()`` call so a hung page cannot turn a fast fill
+    failure into a full-budget timeout. 15s is plenty for the
+    real call (returns in <100ms when the page is healthy).
+    """
     try:
         timestamp = int(datetime.utcnow().timestamp())
         filename = f"query_{query_id}_{suffix}_{timestamp}.html" if suffix else f"query_{query_id}_{timestamp}.html"
         path = SCREENSHOT_DIR / filename
-        html = await page.content()
+        html = await asyncio.wait_for(page.content(), timeout=PROMPT_FILL_VALUE_READ_TIMEOUT_S)
         path.write_text(html, encoding="utf-8")
         logger.info(f"HTML 已保存: {path} ({len(html)} bytes)")
         return path
+    except asyncio.TimeoutError:
+        logger.warning(
+            f"保存 HTML 超时 ({PROMPT_FILL_VALUE_READ_TIMEOUT_S}s) "
+            f"page.content() did not return for query_{query_id}_{suffix}"
+        )
+        return None
     except Exception as e:
         logger.warning(f"保存 HTML 失败: {e}")
         return None

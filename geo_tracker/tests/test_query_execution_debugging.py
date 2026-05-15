@@ -2178,6 +2178,49 @@ async def test_doubao_fill_plain_text_input_bails_when_keyboard_type_hangs(
     assert page.keyboard.type_calls == 1
 
 
+@pytest.mark.asyncio
+async def test_save_html_bails_when_page_content_hangs(monkeypatch, tmp_path):
+    """Refs #963 follow-up to PR #1009 live evidence (Admin E2E run
+    25926214958 query 184968 retry 21, stage=prompt_fill,
+    latency=480856ms): PR #1009 bounded each step inside
+    ``_fill_plain_text_input`` so a hung keyboard.type could not burn
+    the budget — but the production retry STILL hit 480s at the same
+    stage. The root cause was the next step on the no_input path:
+    ``_save_html(page, ..., "doubao_input_fill_failed")`` calls
+    ``page.content()`` with no timeout, and a dead page can leave that
+    hanging indefinitely. This test simulates a forever-hanging
+    page.content() and asserts ``_save_html`` returns None within the
+    bounded budget.
+    """
+    import asyncio as _asyncio
+
+    _install_fake_playwright(monkeypatch)
+
+    from geo_tracker.agent import guest_executor as guest_executor_mod
+    from geo_tracker.agent.guest_executor import _save_html
+
+    # Patch SCREENSHOT_DIR to tmp_path so the test does not write to /data.
+    monkeypatch.setattr(guest_executor_mod, "SCREENSHOT_DIR", tmp_path)
+    monkeypatch.setattr(
+        guest_executor_mod, "PROMPT_FILL_VALUE_READ_TIMEOUT_S", 0.1
+    )
+
+    class HangingPage:
+        async def content(self):
+            await _asyncio.sleep(3600)
+            return "should never return"
+
+    result = await _asyncio.wait_for(
+        _save_html(HangingPage(), 184968, "doubao_input_fill_failed"),
+        timeout=2,
+    )
+
+    assert result is None, (
+        "_save_html must return None instead of hanging when "
+        "page.content() stalls"
+    )
+
+
 def test_doubao_response_selector_accepts_receive_message_container(monkeypatch):
     _install_fake_playwright(monkeypatch)
 
