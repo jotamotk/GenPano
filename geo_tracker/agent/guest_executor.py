@@ -89,6 +89,21 @@ DOUBAO_IMAGE_CHALLENGE_LOAD_FAILED_MARKERS = (
 SCREENSHOT_DIR = Path(os.getenv("SCREENSHOT_DIR", "/data/screenshots"))
 SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
 
+# Refs #963 follow-up to PR #1008 live evidence (Admin E2E run 25924635842
+# query 184968 retry 20, stage=prompt_fill, latency=481115ms): each
+# ``_fill_plain_text_input`` step is individually bounded so a page in a
+# degenerate state (overlay covering input, focus stolen, browser context
+# dead-but-not-yet-collected) cannot burn the outer execute_query budget.
+# Bounds are kept generous vs. the expected work (typical 30-char query
+# completes in ~3s) so legitimate slow renders still succeed; they exist to
+# fail fast on a stuck page. Exposed as module constants so the regression
+# test can monkeypatch them down for sub-second CI runs (Codex review on
+# PR #1009, P2). Production values must not change.
+PROMPT_FILL_CLEAR_TIMEOUT_S = 10
+PROMPT_FILL_INJECT_TIMEOUT_S = 15
+PROMPT_FILL_KEYBOARD_TYPE_TIMEOUT_S = 60
+PROMPT_FILL_VALUE_READ_TIMEOUT_S = 10
+
 _SENSITIVE_TEXT_PATTERNS = [
     (
         re.compile(
@@ -2225,7 +2240,9 @@ class GuestQueryExecutor:
         succeed; the bounds exist to fail fast on a stuck page.
         """
         try:
-            await asyncio.wait_for(input_el.fill(""), timeout=10)
+            await asyncio.wait_for(
+                input_el.fill(""), timeout=PROMPT_FILL_CLEAR_TIMEOUT_S
+            )
         except Exception:
             pass
         await page.wait_for_timeout(random.randint(200, 500))
@@ -2234,7 +2251,7 @@ class GuestQueryExecutor:
             try:
                 actual = await asyncio.wait_for(
                     self._inject_controlled_textarea_value(input_el, query_text),
-                    timeout=15,
+                    timeout=PROMPT_FILL_INJECT_TIMEOUT_S,
                 )
             except (asyncio.TimeoutError, Exception) as inject_err:
                 logger.warning(
@@ -2253,16 +2270,17 @@ class GuestQueryExecutor:
         try:
             await asyncio.wait_for(
                 page.keyboard.type(query_text, delay=random.randint(50, 120)),
-                timeout=60,
+                timeout=PROMPT_FILL_KEYBOARD_TYPE_TIMEOUT_S,
             )
         except asyncio.TimeoutError:
             logger.warning(
-                f"[{llm_name}] keyboard.type 超时 (60s)，回退到 JS 注入"
+                f"[{llm_name}] keyboard.type 超时 "
+                f"({PROMPT_FILL_KEYBOARD_TYPE_TIMEOUT_S}s)，回退到 JS 注入"
             )
             try:
                 actual = await asyncio.wait_for(
                     self._inject_controlled_textarea_value(input_el, query_text),
-                    timeout=15,
+                    timeout=PROMPT_FILL_INJECT_TIMEOUT_S,
                 )
                 return actual.strip() == query_text.strip()
             except (asyncio.TimeoutError, Exception) as fallback_err:
@@ -2275,7 +2293,7 @@ class GuestQueryExecutor:
         try:
             actual = await asyncio.wait_for(
                 input_el.evaluate("el => el.value ?? el.textContent ?? ''"),
-                timeout=10,
+                timeout=PROMPT_FILL_VALUE_READ_TIMEOUT_S,
             )
         except Exception:
             actual = None
@@ -2287,7 +2305,7 @@ class GuestQueryExecutor:
             try:
                 actual = await asyncio.wait_for(
                     self._inject_controlled_textarea_value(input_el, query_text),
-                    timeout=15,
+                    timeout=PROMPT_FILL_INJECT_TIMEOUT_S,
                 )
                 return actual.strip() == query_text.strip()
             except (asyncio.TimeoutError, Exception):

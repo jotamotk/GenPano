@@ -2092,12 +2092,32 @@ async def test_doubao_fill_plain_text_input_bails_when_keyboard_type_hangs(
     out fast instead of waiting forever — both via TimeoutError-driven
     fallback to JS injection and, if that also fails, by returning
     False so the caller can surface the failure cleanly.
+
+    Codex PR #1009 review (P2): the prior version of this test invoked
+    the real 60s production bound, deterministically slowing every CI
+    run by ~60s. Monkeypatch the module-level timeout constants to
+    sub-second values so the test still proves the bound is active
+    without burning CI time. Production bounds are unaffected.
     """
     import asyncio as _asyncio
 
     _install_fake_playwright(monkeypatch)
 
+    from geo_tracker.agent import guest_executor as guest_executor_mod
     from geo_tracker.agent.guest_executor import GuestQueryExecutor
+
+    monkeypatch.setattr(
+        guest_executor_mod, "PROMPT_FILL_KEYBOARD_TYPE_TIMEOUT_S", 0.1
+    )
+    monkeypatch.setattr(
+        guest_executor_mod, "PROMPT_FILL_INJECT_TIMEOUT_S", 0.1
+    )
+    monkeypatch.setattr(
+        guest_executor_mod, "PROMPT_FILL_CLEAR_TIMEOUT_S", 0.1
+    )
+    monkeypatch.setattr(
+        guest_executor_mod, "PROMPT_FILL_VALUE_READ_TIMEOUT_S", 0.1
+    )
 
     class HangingKeyboard:
         def __init__(self):
@@ -2135,15 +2155,16 @@ async def test_doubao_fill_plain_text_input_bails_when_keyboard_type_hangs(
     executor = GuestQueryExecutor()
 
     async def _run():
-        # The bounded fill should give up well under 120s even though
-        # the keyboard.type would hang forever; 120s is a comfortable
-        # ceiling above the 60s keyboard bound + 15s JS-inject fallback
-        # and exists only to fail the test cleanly if the bound regresses.
+        # With monkeypatched sub-second bounds the bounded fill must
+        # return well under 5 seconds even though keyboard.type would
+        # hang forever; 5s is a comfortable ceiling vs. the ~0.1s × 4-step
+        # total and exists only to fail the test cleanly if the bounds
+        # regress to "no timeout".
         return await _asyncio.wait_for(
             executor._fill_plain_text_input(
                 page, input_el, "hello doubao", "doubao"
             ),
-            timeout=120,
+            timeout=5,
         )
 
     result = await _run()
