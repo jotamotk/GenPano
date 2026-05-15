@@ -10,7 +10,6 @@ import {
   adaptOverviewToPrimary,
   adaptOverviewToSov,
   adaptOverviewToTrend,
-  buildAnalyticsContractNotice,
 } from '../../src/adapters/dashboardAdapter'
 import type { BrandOverviewOut } from '../../src/api/brandOverview'
 import type { CompetitorMetricsOut, CompetitorTrendsOut, MetricsOut } from '../../src/api/brandMetrics'
@@ -688,71 +687,4 @@ describe('dashboard adapter', () => {
     ])
   })
 
-  it('summarizes partial alias-repair payloads without treating them as ok', () => {
-    const notice = buildAnalyticsContractNotice({
-      isLive: true,
-      liveProjectId: '95d43022-a5c8-5944-b6d6-34b29faa18b5',
-      overview: {
-        ...emptyOverview,
-        brand_id: 12,
-        brand_name: 'Estee Lauder',
-        state: 'partial',
-        state_reason: 'partial_analyzer_data',
-        identity_diagnostics: {
-          canonical_brand_id: 12,
-          canonical_alias_repair_count: 1,
-          raw_text_owner_brand_ids: [2],
-        },
-        missing_sources: ['canonical_alias_repair.partial'],
-        evidence_counts: {
-          eligible_response_count: 58,
-          brand_mentioned_response_count: 9,
-        },
-      } as unknown as BrandOverviewOut,
-      isLoading: false,
-    })
-
-    expect(notice?.tone).toBe('partial')
-    expect(notice?.stateReason).toBe('partial_analyzer_data')
-    expect(notice?.details.join(' ')).toContain('canonical_alias_repair.partial')
-    expect(notice?.details.join(' ')).toContain('owner brand 2')
-  })
-
-  it('summarizes missing project context as an empty state with the target id', () => {
-    const notice = buildAnalyticsContractNotice({
-      isLive: true,
-      liveProjectId: '95d43022-a5c8-5944-b6d6-34b29faa18b5',
-      overview: {
-        ...emptyOverview,
-        state: 'empty',
-        state_reason: 'missing_project_context',
-        project_scope: {
-          exists: false,
-          project_id: '95d43022-a5c8-5944-b6d6-34b29faa18b5',
-          primary_brand_id: 12,
-          requested_brand_id: 12,
-          competitor_brand_ids: [2],
-          missing_reason: 'no_project_for_primary_brand',
-        },
-        missing_sources: ['projects.primary_brand_id=12'],
-      } as unknown as BrandOverviewOut,
-      isLoading: false,
-    })
-
-    expect(notice?.tone).toBe('empty')
-    expect(notice?.title).toContain('Project context pending')
-    expect(notice?.details.join(' ')).toContain('95d43022-a5c8-5944-b6d6-34b29faa18b5')
-  })
-
-  it('summarizes 401 and 403 failures as auth states', () => {
-    const notice = buildAnalyticsContractNotice({
-      isLive: true,
-      liveProjectId: '95d43022-a5c8-5944-b6d6-34b29faa18b5',
-      isLoading: false,
-      error: { status: 403, requestId: 'req-forbidden', path: '/api/v1/projects/x/overview' },
-    })
-
-    expect(notice?.tone).toBe('auth')
-    expect(notice?.details.join(' ')).toContain('req-forbidden')
-  })
 })

@@ -27,8 +27,6 @@ import {
   adaptDiagnostics,
   adaptMetricsToSparklines,
   adaptIndustryAvgGeo,
-  buildAnalyticsContractNotice,
-  type AnalyticsContractNotice,
 } from '../adapters/dashboardAdapter';
 import {
   brandIdFromSearchParams,
@@ -48,49 +46,6 @@ function engineId(raw: string) {
   if (value.includes('deepseek')) return 'deepseek';
   if (value.includes('chatgpt') || value.includes('chat')) return 'chatgpt';
   return value;
-}
-
-function AnalyticsContractStatus({ notice }: { notice: AnalyticsContractNotice | null }) {
-  if (!notice) return null;
-  const toneColor =
-    notice.tone === 'auth' || notice.tone === 'error'
-      ? 'var(--color-danger)'
-      : notice.tone === 'partial'
-        ? 'var(--color-warning)'
-        : notice.tone === 'loading'
-          ? 'var(--color-accent)'
-          : 'var(--color-border-subtle)';
-  const details = notice.details.filter(Boolean).slice(0, 5);
-
-  return (
-    <div
-      role={notice.tone === 'auth' || notice.tone === 'error' ? 'alert' : 'status'}
-      className="mb-3 rounded-card border bg-themed-card p-3 text-themed-primary"
-      style={{ borderColor: toneColor }}
-    >
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="text-xs font-semibold uppercase tracking-wide">
-          {notice.tone}
-        </span>
-        <span className="text-sm font-semibold">{notice.title}</span>
-        {notice.stateReason && (
-          <span className="text-xs text-themed-muted">{notice.stateReason}</span>
-        )}
-      </div>
-      {details.length > 0 && (
-        <div className="mt-2 flex flex-wrap gap-1.5">
-          {details.map((detail) => (
-            <span
-              key={detail}
-              className="rounded-pill border border-themed-card px-2 py-0.5 text-[11px] text-themed-muted"
-            >
-              {detail}
-            </span>
-          ))}
-        </div>
-      )}
-    </div>
-  );
 }
 
 /* ─────────────────────────────────────────────────────────────
@@ -197,40 +152,6 @@ export default function DashboardPage() {
     isLive && liveIndustryId ? liveIndustryId : null,
     liveIndustryName ? { name: liveIndustryName } : undefined,
   );
-  const analyticsError =
-    overviewQ.error ||
-    metricsQ.error ||
-    competitorsQ.error ||
-    competitorTrendsQ.error ||
-    diagnosticsQ.error ||
-    industryAvgQ.error;
-  const analyticsNotice = useMemo(
-    () => buildAnalyticsContractNotice({
-      isLive,
-      liveProjectId,
-      overview: overviewQ.data ?? null,
-      metrics: metricsQ.data ?? null,
-      isLoading: isLive && (
-        overviewQ.isLoading ||
-        metricsQ.isLoading ||
-        competitorsQ.isLoading ||
-        competitorTrendsQ.isLoading
-      ),
-      error: analyticsError,
-    }),
-    [
-      isLive,
-      liveProjectId,
-      overviewQ.data,
-      metricsQ.data,
-      overviewQ.isLoading,
-      metricsQ.isLoading,
-      competitorsQ.isLoading,
-      competitorTrendsQ.isLoading,
-      analyticsError,
-    ],
-  );
-
   /* ── Adapter: convert backend → BrandPanoramaPanel prop shape ── */
   const adapted = useMemo(() => {
     if (!isLive) return null;
@@ -380,7 +301,6 @@ export default function DashboardPage() {
 
   return (
     <>
-      <AnalyticsContractStatus notice={analyticsNotice} />
       <BrandPanoramaPanel
         primary={primaryForPanel}
         industry={industryForPanel}
