@@ -980,7 +980,21 @@ def execute_query(self, query_id: int) -> dict:
                             )
                         return await guest_executor.execute(query)
                     except asyncio.TimeoutError:
-                        stage = getattr(guest_executor, "execution_stage", None)
+                        # Refs #963 follow-up to PR #1005 (run 25919843002,
+                        # query 184968): a doubao_browser_timeout:cleanup
+                        # was being reported even when the work was actually
+                        # stuck in response_wait — the inner _execute_once
+                        # finally block sets execution_stage="cleanup" before
+                        # the outer wait_for raises here, so the post-finally
+                        # value clobbers the real stage. Prefer the
+                        # ``stage_at_failure`` attribute latched by the
+                        # CancelledError / except Exception handlers BEFORE
+                        # the finally ran, falling back to execution_stage
+                        # only when nothing was latched (e.g., the timeout
+                        # fired before any handler ran).
+                        stage = getattr(
+                            guest_executor, "stage_at_failure", None
+                        ) or getattr(guest_executor, "execution_stage", None)
                         failure_reason = browser_execution_timeout_reason(
                             query.target_llm,
                             stage=stage,

@@ -2774,6 +2774,137 @@ def test_execute_query_converts_doubao_browser_hang_to_stage_timeout_reason(
     }
 
 
+def test_execute_query_browser_timeout_reads_stage_at_failure_not_post_cleanup_stage(
+    monkeypatch,
+    tmp_path,
+):
+    """Refs #963 follow-up to PR #1005 (live evidence: Admin E2E run
+    25919843002, query 184968 retry 19): the outer
+    ``asyncio.wait_for(execute, timeout)`` in
+    ``celery_tasks._execute_with_timeout`` was reading
+    ``guest_executor.execution_stage`` only AFTER the inner finally block
+    had already set it to ``"cleanup"``. That made every soft-time-limit
+    hang surface as ``doubao_browser_timeout:cleanup`` regardless of where
+    execution was actually stuck. The fix latches the real stage on
+    ``stage_at_failure`` from the executor's CancelledError / except
+    Exception handlers BEFORE the finally runs, and the celery wait_for
+    path now prefers that latched value.
+    """
+    _install_fake_playwright(monkeypatch)
+
+    from geo_tracker.tasks import celery_tasks
+
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'doubao-stage-latch.db'}"
+    query_id = 184968
+    account_id = 44
+
+    async def seed_database():
+        engine = create_async_engine(db_url, future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        maker = async_sessionmaker(engine, expire_on_commit=False)
+        async with maker() as session:
+            session.add_all(
+                [
+                    LLMAccount(
+                        id=account_id,
+                        llm_name="doubao",
+                        status=AccountStatus.ACTIVE.value,
+                        cookies_json='[{"name":"session"}]',
+                        query_count_today=3,
+                        daily_limit=20,
+                    ),
+                    Query(
+                        id=query_id,
+                        target_llm="doubao",
+                        query_text="bestCoffer的企业级AI数据脱敏工具适合金融行业用吗",
+                        status=QueryStatus.PENDING.value,
+                    ),
+                ]
+            )
+            await session.commit()
+        await engine.dispose()
+
+    asyncio.run(seed_database())
+
+    def create_engine():
+        return create_async_engine(db_url, future=True)
+
+    def get_session(engine):
+        return _TaskSessionContext(async_sessionmaker(engine, expire_on_commit=False))
+
+    async def fake_acquire_query_account(db, query, pool=None):
+        return LLMAccount(
+            id=account_id,
+            llm_name="doubao",
+            status=AccountStatus.ACTIVE.value,
+            cookies_json='[{"name":"session"}]',
+        )
+
+    class FakeGuestQueryExecutor:
+        """Simulate the production race: while execute() is awaiting, the
+        real stage is response_wait. When outer wait_for cancels execute(),
+        the cancel handler latches ``stage_at_failure = "response_wait"``
+        BEFORE the finally block overwrites ``execution_stage`` to
+        ``"cleanup"``. Without my fix the celery reader would see only
+        "cleanup"; with the fix it must see "response_wait".
+        """
+
+        def __init__(self, *args, **kwargs):
+            self.last_error_reason = None
+            self.execution_stage = "response_wait"
+            self.stage_at_failure = None
+
+        async def execute(self, query):
+            try:
+                await asyncio.sleep(5)
+                return None
+            except asyncio.CancelledError:
+                # Mirror the production CancelledError handler:
+                # latch the real stage at cancel time.
+                self.stage_at_failure = self.execution_stage
+                # Mirror the production finally block: clobber stage.
+                self.execution_stage = "cleanup"
+                raise
+
+    monkeypatch.setattr(celery_tasks, "create_task_engine", create_engine)
+    monkeypatch.setattr(celery_tasks, "get_task_async_session", get_session)
+    monkeypatch.setattr(
+        celery_tasks, "acquire_query_account", fake_acquire_query_account
+    )
+    monkeypatch.setattr(celery_tasks, "GuestQueryExecutor", FakeGuestQueryExecutor)
+    monkeypatch.setattr(
+        celery_tasks, "_browser_execution_timeout_seconds", lambda llm: 0.05
+    )
+
+    result = celery_tasks.execute_query.run(query_id)
+
+    async def load_state():
+        engine = create_async_engine(db_url, future=True)
+        maker = async_sessionmaker(engine, expire_on_commit=False)
+        async with maker() as session:
+            query = await session.get(Query, query_id)
+            state = {
+                "status": query.status,
+                "retry_reason": query.retry_reason,
+            }
+        await engine.dispose()
+        return state
+
+    state = asyncio.run(load_state())
+
+    # The retry_reason MUST carry the real stage (response_wait), not the
+    # post-finally cleanup placeholder.
+    assert result["reason"].startswith("doubao_browser_timeout:response_wait"), (
+        f"Expected real stage 'response_wait' in retry_reason, got {result['reason']!r} — "
+        "stage_at_failure latch missing or celery reader not consulting it"
+    )
+    assert state["retry_reason"] == "doubao_browser_timeout:response_wait", (
+        f"Expected DB retry_reason 'doubao_browser_timeout:response_wait', got "
+        f"{state['retry_reason']!r} — cleanup stage leaked into classification"
+    )
+
+
 @pytest.mark.asyncio
 async def test_preserve_cancellation_evidence_captures_page_state_and_snapshot(
     monkeypatch,
