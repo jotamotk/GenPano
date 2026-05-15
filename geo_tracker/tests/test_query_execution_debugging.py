@@ -3152,6 +3152,279 @@ async def test_doubao_response_wait_extends_while_still_generating(monkeypatch, 
     assert extension_logs, "response_wait should extend when still_generating is true"
 
 
+@pytest.mark.asyncio
+async def test_doubao_response_wait_extends_after_submit_confirmed_without_progress_indicator(
+    monkeypatch,
+    caplog,
+):
+    """Refs #963 PR #1005 deploy live evidence (query 184968 retry 17 on
+    account 44): the browser ran end-to-end on a real logged-in account,
+    submit_confirmed was true, but Doubao did not keep the
+    "深度思考"/"正在搜索" indicator visible the whole time the answer
+    was in flight. The previous extension trigger only fired when the
+    indicator was visible OR the response was actively growing, so the
+    loop exited at the configured ``wait_after_submit`` and the JS
+    fallback picked up homepage placeholder text — the executor
+    correctly discarded it as ``doubao_homepage_content``. With this
+    fix, ``submit_confirmed && !resp_ready`` is also a valid extension
+    trigger so a slow answer still inside the
+    ``wait_after_submit_max_extension`` budget gets captured."""
+    _install_fake_playwright(monkeypatch)
+
+    from geo_tracker.agent.guest_executor import GuestQueryExecutor
+
+    # No still_generating indicator at all; resp comes in late inside the
+    # extension budget.
+    response_text_by_iter = [
+        "",  # 1: empty
+        "",  # 2: empty (would have exited the loop at wait_total=10s without the fix)
+        "",  # 3: empty (still no response, extension fires once)
+        "",  # 4: empty (extension fires again)
+        "doubao late answer first chunk for bestCoffer 111 111 111",  # 5: now visible
+        "doubao late answer first chunk for bestCoffer 111 111 111 second chunk",  # 6: growing
+        "doubao late answer first chunk for bestCoffer 111 111 111 second chunk",  # 7: stable
+        "doubao late answer first chunk for bestCoffer 111 111 111 second chunk",  # 8: stable -> break
+    ]
+
+    class FakeElement:
+        def __init__(self, text: str):
+            self._text = text
+
+        async def inner_text(self):
+            return self._text
+
+        async def inner_html(self):
+            return f"<div>{self._text}</div>"
+
+        async def is_visible(self):
+            return False
+
+    class FakePage:
+        url = "https://www.doubao.com/chat/conv-stuck-id"  # in-conversation URL
+
+        def __init__(self):
+            self._round = 0
+
+        async def wait_for_timeout(self, _ms):
+            return None
+
+        async def evaluate(self, script, *_args, **_kwargs):
+            self._round += 1
+            if "innerText" in script:
+                # No "深度思考" etc. — empty progress indicator path.
+                return "user-avatar 我的账号"
+            return False
+
+        async def query_selector(self, _selector):
+            idx = min(self._round - 1, len(response_text_by_iter) - 1)
+            txt = response_text_by_iter[idx] if self._round > 0 else ""
+            return FakeElement(txt) if txt else None
+
+        async def query_selector_all(self, _selector):
+            idx = min(self._round - 1, len(response_text_by_iter) - 1)
+            txt = response_text_by_iter[idx] if self._round > 0 else ""
+            return [FakeElement(txt)] if txt else []
+
+    cfg = {
+        "url": "https://www.doubao.com/chat",
+        "input_selector": "textarea",
+        "submit_button": "button",
+        "submit_key": "Enter",
+        "response_selector": ".flow-markdown-body",
+        # tight base + generous extension so the test exercises the new
+        # awaiting_answer extension trigger.
+        "wait_after_submit": 10000,
+        "wait_after_submit_max_extension": 30000,
+        "load_wait": 1000,
+        "requires_login": False,
+        "login_redirect_domains": [],
+    }
+
+    executor = GuestQueryExecutor()
+
+    fake_input = FakeElement("")
+    fake_page = FakePage()
+
+    async def fake_save_html(*_a, **_k):
+        return None
+
+    async def fake_save_screenshot(*_a, **_k):
+        return None
+
+    async def fake_save_runtime_snapshot(*_a, **_k):
+        return None
+
+    monkeypatch.setattr("geo_tracker.agent.guest_executor._save_html", fake_save_html)
+    monkeypatch.setattr("geo_tracker.agent.guest_executor._save_screenshot", fake_save_screenshot)
+    monkeypatch.setattr(
+        "geo_tracker.agent.guest_executor._save_runtime_snapshot", fake_save_runtime_snapshot
+    )
+
+    async def fake_fill_plain_text_input(*_a, **_k):
+        return True
+
+    async def fake_doubao_response_auth_reason(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(executor, "_fill_plain_text_input", fake_fill_plain_text_input)
+    monkeypatch.setattr(
+        "geo_tracker.agent.guest_executor._doubao_response_auth_reason_from_page",
+        fake_doubao_response_auth_reason,
+    )
+
+    class FakeKeyboard:
+        async def press(self, _key):
+            return None
+
+        async def type(self, _text, **_k):
+            return None
+
+    fake_page.keyboard = FakeKeyboard()
+    fake_input.bounding_box = lambda **_k: asyncio.sleep(0)
+    fake_input.click = lambda **_k: asyncio.sleep(0)
+
+    class FakeJSHandle:
+        def as_element(self):
+            return None
+
+    fake_page.evaluate_handle = lambda *_a, **_k: asyncio.sleep(0, result=FakeJSHandle())
+
+    with caplog.at_level("INFO", logger="geo_tracker.agent.guest_executor"):
+        resp_text, _resp_html, _citations = await executor._browser_query(
+            fake_page,
+            cfg,
+            "bestCoffer advantages?",
+            "doubao",
+            fake_input,
+            query_id=184968,
+        )
+
+    assert "late answer" in resp_text, (
+        "slow answer arriving INSIDE the extension budget must be captured "
+        f"even without a still-generating indicator visible; got {resp_text!r}"
+    )
+    awaiting_logs = [
+        rec.getMessage()
+        for rec in caplog.records
+        if "response_wait extended" in rec.getMessage()
+        and "awaiting_answer=True" in rec.getMessage()
+    ]
+    assert awaiting_logs, (
+        "extension should fire with awaiting_answer=True when submit was "
+        "confirmed but no response selector has matched yet"
+    )
+
+
+@pytest.mark.asyncio
+async def test_browser_query_does_not_unboundlocal_for_non_doubao_engines(monkeypatch):
+    """Refs PR #1006 review (Codex P1): the ``confirmed`` flag the
+    response_wait extension reads MUST be initialized for every engine,
+    not only inside the ``(doubao, chatgpt, deepseek)`` submit-confirm
+    block. Otherwise engines such as gemini / kimi / claude / grok /
+    zhipu / perplexity would raise UnboundLocalError when the
+    response_wait extension passes ``confirmed`` into
+    ``_maybe_extend_wait_total`` on the first iteration. This test
+    walks a fake gemini config end-to-end (response arrives quickly)
+    and asserts no UnboundLocalError is raised."""
+    _install_fake_playwright(monkeypatch)
+
+    from geo_tracker.agent.guest_executor import GuestQueryExecutor
+
+    class FakeElement:
+        def __init__(self, text: str):
+            self._text = text
+
+        async def inner_text(self):
+            return self._text
+
+        async def inner_html(self):
+            return f"<div>{self._text}</div>"
+
+        async def is_visible(self):
+            return False
+
+    class FakePage:
+        url = "https://gemini.google.com/app/abc"
+
+        def __init__(self):
+            self._round = 0
+
+        async def wait_for_timeout(self, _ms):
+            return None
+
+        async def evaluate(self, script, *_args, **_kwargs):
+            self._round += 1
+            if "innerText" in script:
+                return ""
+            return False
+
+        async def query_selector(self, _selector):
+            # Response immediately ready so the extension trigger does
+            # not need to fire — we just want to prove no exception.
+            return FakeElement("gemini answer about bestCoffer 12345 67890 abcdefghij")
+
+        async def query_selector_all(self, _selector):
+            return [FakeElement("gemini answer about bestCoffer 12345 67890 abcdefghij")]
+
+    cfg = {
+        "url": "https://gemini.google.com/app",
+        "input_selector": "textarea",
+        "submit_button": "button",
+        "submit_key": "Enter",
+        "response_selector": ".gemini-response",
+        "wait_after_submit": 5000,
+        "load_wait": 1000,
+        "requires_login": False,
+        "login_redirect_domains": [],
+    }
+
+    executor = GuestQueryExecutor()
+    fake_input = FakeElement("")
+    fake_page = FakePage()
+
+    async def _noop(*_a, **_k):
+        return None
+
+    monkeypatch.setattr("geo_tracker.agent.guest_executor._save_html", _noop)
+    monkeypatch.setattr("geo_tracker.agent.guest_executor._save_screenshot", _noop)
+    monkeypatch.setattr("geo_tracker.agent.guest_executor._save_runtime_snapshot", _noop)
+
+    async def fake_fill_plain_text_input(*_a, **_k):
+        return True
+
+    monkeypatch.setattr(executor, "_fill_plain_text_input", fake_fill_plain_text_input)
+
+    class FakeKeyboard:
+        async def press(self, _key):
+            return None
+
+        async def type(self, _text, **_k):
+            return None
+
+    fake_page.keyboard = FakeKeyboard()
+    fake_input.bounding_box = lambda **_k: asyncio.sleep(0)
+    fake_input.click = lambda **_k: asyncio.sleep(0)
+
+    class FakeJSHandle:
+        def as_element(self):
+            return None
+
+    fake_page.evaluate_handle = lambda *_a, **_k: asyncio.sleep(0, result=FakeJSHandle())
+
+    # Critical assertion: this MUST NOT raise UnboundLocalError on
+    # ``confirmed`` for gemini (or any engine outside the doubao-family
+    # submit-confirm block).
+    resp_text, _resp_html, _citations = await executor._browser_query(
+        fake_page,
+        cfg,
+        "bestCoffer advantages?",
+        "gemini",
+        fake_input,
+        query_id=184968,
+    )
+    assert "gemini answer" in resp_text
+
+
 def test_doubao_inner_playwright_timeout_upgrades_reason_to_stage_tagged(
     monkeypatch,
     tmp_path,

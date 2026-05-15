@@ -2516,8 +2516,17 @@ class GuestQueryExecutor:
                 return False
 
         self._set_execution_stage("submit_confirm")
+        # Refs PR #1006 review (Codex P1): initialize ``confirmed`` before the
+        # engine-gated submit-confirmation block. Otherwise engines outside
+        # the (doubao, chatgpt, deepseek) set (e.g. gemini, kimi, claude,
+        # grok, zhipu, perplexity) would raise UnboundLocalError when the
+        # response_wait extension passes ``confirmed`` into
+        # ``_maybe_extend_wait_total``. Default ``False`` matches the
+        # semantics for unconfirmed/non-applicable engines: the
+        # awaiting_answer extension trigger only fires when submit was
+        # explicitly confirmed.
+        confirmed = False
         if llm_name in ("doubao", "chatgpt", "deepseek"):
-            confirmed = False
             # Refs #963: the original ~5s window (10 iterations × 500ms) was
             # too short for Doubao's 2026 SPA on a slow render: the click
             # could land successfully and the request fire upstream, but the
@@ -2628,19 +2637,38 @@ class GuestQueryExecutor:
             resp_ready_flag: bool,
             resp_growing: bool,
             extension_used_so_far: int,
+            submit_was_confirmed: bool,
         ) -> tuple[int, int]:
             """Extend wait_total when there is concrete evidence the model is
-            still working. Returns ``(new_wait_total, new_extension_used)``."""
+            still working. Returns ``(new_wait_total, new_extension_used)``.
+
+            Refs #963 PR #1005 deploy live evidence (E2E run 25920221085 +
+            Server Diagnostics): query 184968 ran end-to-end on the fresh
+            account 44 but the AI answer wasn't ready inside the configured
+            ``wait_after_submit`` window. Doubao 2026's SPA does not always
+            keep the "深度思考" / "正在搜索" indicator visible while the
+            answer is in flight, so the original ``still_generating``-only
+            extension trigger missed this case, the loop exited at base
+            budget, the JS fallback then picked up homepage placeholder
+            text, and the executor correctly discarded the row as
+            ``doubao_homepage_content``. Extend whenever submit was
+            confirmed AND we have no response yet — that is concrete
+            evidence the user message went through but the answer is
+            still in flight."""
             if extension_max <= 0:
                 return current_wait_total, extension_used_so_far
             if extension_used_so_far >= extension_max:
                 return current_wait_total, extension_used_so_far
             # Only extend when we are about to exit the loop AND we have a
-            # real reason to wait longer (still-generating indicator visible
-            # or the response is actively growing).
+            # real reason to wait longer.
             if current_elapsed + wait_interval < current_wait_total:
                 return current_wait_total, extension_used_so_far
-            should_extend = still_generating_flag or (resp_ready_flag and resp_growing)
+            awaiting_answer = submit_was_confirmed and not resp_ready_flag
+            should_extend = (
+                still_generating_flag
+                or (resp_ready_flag and resp_growing)
+                or awaiting_answer
+            )
             if not should_extend:
                 return current_wait_total, extension_used_so_far
             step = min(extension_step, extension_max - extension_used_so_far)
@@ -2648,7 +2676,7 @@ class GuestQueryExecutor:
                 return current_wait_total, extension_used_so_far
             logger.info(
                 "[%s] response_wait extended (+%dms, total +%dms / max +%dms): "
-                "still_generating=%s, resp_growing=%s, resp_ready=%s",
+                "still_generating=%s, resp_growing=%s, resp_ready=%s, awaiting_answer=%s",
                 llm_name,
                 step,
                 extension_used_so_far + step,
@@ -2656,6 +2684,7 @@ class GuestQueryExecutor:
                 still_generating_flag,
                 resp_growing,
                 resp_ready_flag,
+                awaiting_answer,
             )
             return current_wait_total + step, extension_used_so_far + step
 
@@ -2754,6 +2783,11 @@ class GuestQueryExecutor:
             # ``stable_rounds == 0`` after the resp_ready block means the
             # response was actively growing this round (it gets reset to 0
             # both on length growth and on still_streaming/still_generating).
+            # ``confirmed`` is the submit-was-confirmed flag from the earlier
+            # submit_confirm stage; passing it lets the extension keep
+            # waiting for the answer when the user message did make it onto
+            # the page but Doubao hasn't surfaced an explicit progress
+            # indicator yet (Refs #963 / 184968 retry 17 evidence).
             wait_total, extension_used = _maybe_extend_wait_total(
                 elapsed,
                 wait_total,
@@ -2761,6 +2795,7 @@ class GuestQueryExecutor:
                 resp_ready,
                 resp_ready and stable_rounds == 0,
                 extension_used,
+                confirmed,
             )
 
         # 抓取响应文本 + HTML
