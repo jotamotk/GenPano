@@ -233,6 +233,40 @@ def _contract_metric_blocked(update: dict[str, Any], metric_key: str) -> bool:
     )
 
 
+def _metric_evidence_allows_partial_data(update: dict[str, Any], metric_key: str) -> bool:
+    """Return True when the contract update has `formula_status: partial`
+    backed by real analyzer evidence so chart points/segments/items should
+    survive even though `_contract_metric_blocked` flagged the metric.
+
+    Issue #1002: chart wrappers (`_with_authority_trend_contract`,
+    `_with_citation_composition_contract`, sentiment wrappers) cleared
+    their data the moment `_contract_metric_blocked` returned True.
+    That contradicts the contract-loosening already applied at the
+    KPI / series / frontend layers (`_kpi_has_real_evidence` from #948,
+    `hasUsableMetricEvidence` from #960), where `formula_status: partial`
+    is treated as trustworthy because the value was computed from real
+    analyzer evidence and only auxiliary quality flags remain (e.g.
+    `unresolved_citation_attribution` while `attributed_count > 0`,
+    `missing_sentiment_driver_quote` while `score_count > 0`).
+
+    Excludes the synthetic-partial case that `build_contract_context`
+    emits when admin chain rows exist but no analyzer fact packages do.
+    There the only `reason_code` is `missing_analyzer_fact_packages`
+    and issue #603 specifically requires the chart to clear (no analyzer
+    rollup = no trustworthy data).
+    """
+    evidence = update.get("metric_formula_evidence") or {}
+    evidence_key = _metric_evidence_key(metric_key)
+    value = evidence.get(evidence_key)
+    if not isinstance(value, dict):
+        return False
+    status = str(value.get("formula_status") or "")
+    if status != FORMULA_PARTIAL_STATUS:
+        return False
+    reasons = {str(r) for r in (value.get("reason_codes") or [])}
+    return "missing_analyzer_fact_packages" not in reasons
+
+
 def _metric_evidence_dict(evidence: dict[str, Any], key: str) -> dict[str, Any] | None:
     value = evidence.get(key)
     return value if isinstance(value, dict) else None
