@@ -2824,6 +2824,17 @@ class GuestQueryExecutor:
                             '[class*="send-message"]',
                             '[class*="message-item"]',
                             '[class*="chat-item"]',
+                            // Refs #963: Doubao 2026 Semi Design 偶尔把用户气泡的
+                            // class 改成 user-bubble / my-bubble / semi-message-user 类。
+                            // 加更宽松的兜底，避免因为 class 改名导致 user_msg_present=false
+                            // 进而跳过 JS fallback 抽取，把本来已经渲染出的回答漏掉。
+                            '[class*="user-bubble"]',
+                            '[class*="my-bubble"]',
+                            '[class*="my-message"]',
+                            '[class*="semi-message-user"]',
+                            '[class*="bubble-user"]',
+                            '[data-role="user"]',
+                            '[data-author="user"]',
                         ];
                         for (const sel of sels) {
                             const els = document.querySelectorAll(sel);
@@ -2833,6 +2844,15 @@ class GuestQueryExecutor:
                         }
                         // 进入 /c/{id} 路径也算（chatgpt 等）
                         if (/\/c\/[a-zA-Z0-9-]+/.test(location.pathname)) return true;
+                        // Refs #963: Doubao 提交后 URL 通常会变成
+                        //   /chat/{id}, /chat?conversation=..., /chat/conversation/...
+                        // 都属于"已经进入会话页"的证据，足以解锁 JS fallback 抽取。
+                        if (llmName === 'doubao') {
+                            const path = location.pathname || '';
+                            const search = location.search || '';
+                            if (/\/chat\/[a-zA-Z0-9_-]+/.test(path)) return true;
+                            if (/[?&](conversation|chatId|conv_id|cid)=/.test(search)) return true;
+                        }
                         return false;
                     }
                     """,
