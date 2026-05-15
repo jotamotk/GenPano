@@ -252,7 +252,9 @@ async def _count_brand_topics_total(session: AsyncSession, brand_id: int) -> int
         row = result.mappings().first()
     except Exception:
         return 0
-    return int((row or {}).get("topic_count") or 0)
+    if row is None:
+        return 0
+    return int(row.get("topic_count") or 0)
 
 
 def _topic_aggregates(
