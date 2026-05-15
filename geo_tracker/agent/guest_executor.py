@@ -2555,6 +2555,63 @@ class GuestQueryExecutor:
         stable_rounds = 0       # 文本长度连续不变的轮数
         STABLE_THRESHOLD = 2    # 连续 N 轮不变才认为生成完毕
 
+        # Refs #963: when Doubao is in "深度思考" or "正在搜索" mode the answer
+        # can take significantly longer than ``wait_after_submit`` to start
+        # streaming. The previous loop only RESET the stability counter when
+        # the still-generating indicator was visible — it never extended
+        # ``wait_total``, so the loop bailed at the original budget and the
+        # row landed as ``no_response`` (or, when the answer arrived just
+        # past the cutoff, ``response_too_short``). Allow a bounded extension
+        # in those two situations:
+        #   1. answer hasn't started yet but the still-generating sign is up;
+        #   2. answer is streaming and length is still growing.
+        # Per-call hard cap is ``wait_after_submit_max_extension`` (default:
+        # 2x ``wait_after_submit``) so a permanently-stuck UI cannot burn
+        # the entire outer execution budget here.
+        extension_max = cfg.get("wait_after_submit_max_extension")
+        if extension_max is None:
+            extension_max = int(wait_total) * 2
+        extension_used = 0
+        extension_step = wait_interval
+
+        def _maybe_extend_wait_total(
+            current_elapsed: int,
+            current_wait_total: int,
+            still_generating_flag: bool,
+            resp_ready_flag: bool,
+            resp_growing: bool,
+            extension_used_so_far: int,
+        ) -> tuple[int, int]:
+            """Extend wait_total when there is concrete evidence the model is
+            still working. Returns ``(new_wait_total, new_extension_used)``."""
+            if extension_max <= 0:
+                return current_wait_total, extension_used_so_far
+            if extension_used_so_far >= extension_max:
+                return current_wait_total, extension_used_so_far
+            # Only extend when we are about to exit the loop AND we have a
+            # real reason to wait longer (still-generating indicator visible
+            # or the response is actively growing).
+            if current_elapsed + wait_interval < current_wait_total:
+                return current_wait_total, extension_used_so_far
+            should_extend = still_generating_flag or (resp_ready_flag and resp_growing)
+            if not should_extend:
+                return current_wait_total, extension_used_so_far
+            step = min(extension_step, extension_max - extension_used_so_far)
+            if step <= 0:
+                return current_wait_total, extension_used_so_far
+            logger.info(
+                "[%s] response_wait extended (+%dms, total +%dms / max +%dms): "
+                "still_generating=%s, resp_growing=%s, resp_ready=%s",
+                llm_name,
+                step,
+                extension_used_so_far + step,
+                extension_max,
+                still_generating_flag,
+                resp_growing,
+                resp_ready_flag,
+            )
+            return current_wait_total + step, extension_used_so_far + step
+
         self._set_execution_stage("response_wait")
         while elapsed < wait_total:
             await page.wait_for_timeout(min(wait_interval, wait_total - elapsed))
@@ -2646,6 +2703,18 @@ class GuestQueryExecutor:
                         f"连续 {stable_rounds} 轮稳定）"
                     )
                     break
+
+            # ``stable_rounds == 0`` after the resp_ready block means the
+            # response was actively growing this round (it gets reset to 0
+            # both on length growth and on still_streaming/still_generating).
+            wait_total, extension_used = _maybe_extend_wait_total(
+                elapsed,
+                wait_total,
+                still_generating,
+                resp_ready,
+                resp_ready and stable_rounds == 0,
+                extension_used,
+            )
 
         # 抓取响应文本 + HTML
         resp_text = ""

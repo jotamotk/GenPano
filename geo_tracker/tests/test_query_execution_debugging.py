@@ -2982,6 +2982,176 @@ async def test_preserve_active_page_evidence_is_bounded_when_page_hangs(
     ), f"hung screenshot save should surface a warning, got: {save_warnings}"
 
 
+@pytest.mark.asyncio
+async def test_doubao_response_wait_extends_while_still_generating(monkeypatch, caplog):
+    """Refs #963: when Doubao deep-thinking ("深度思考"/"正在搜索") is still
+    active at the end of ``wait_after_submit``, the response_wait loop must
+    extend its budget (bounded by ``wait_after_submit_max_extension``) so a
+    slow-but-real answer is captured instead of being silently cut off and
+    landing as ``no_response``."""
+    _install_fake_playwright(monkeypatch)
+
+    from geo_tracker.agent.guest_executor import GuestQueryExecutor
+
+    response_text_by_call: list[str] = [
+        "",        # round 1: empty answer, still generating
+        "",        # round 2: still empty, still generating
+        "doubao streaming partial answer about bestCoffer 1 1 1",  # round 3: shows partial answer while still generating
+        "doubao streaming partial answer about bestCoffer 22 22 22 22 22 22 22 22",  # round 4: grew while still generating
+        "doubao streaming partial answer about bestCoffer 333 333 333 333 333 333 333 333 333 333 333",  # round 5: grew, no longer generating
+        "doubao streaming partial answer about bestCoffer 333 333 333 333 333 333 333 333 333 333 333",  # round 6: stable
+        "doubao streaming partial answer about bestCoffer 333 333 333 333 333 333 333 333 333 333 333",  # round 7: stable -> break
+    ]
+
+    class FakeElement:
+        def __init__(self, text: str):
+            self._text = text
+
+        async def inner_text(self):
+            return self._text
+
+        async def inner_html(self):
+            return f"<div>{self._text}</div>"
+
+        async def is_visible(self):
+            return False
+
+    class FakePage:
+        url = "https://www.doubao.com/chat/?cid=slow"
+
+        def __init__(self):
+            self._round = 0
+            self.body_text_by_round: list[str] = [
+                "深度思考",
+                "深度思考",
+                "深度思考",
+                "正在搜索",  # still generating
+                "答案",        # no longer generating
+                "答案",
+                "答案",
+            ]
+
+        async def wait_for_timeout(self, _ms):
+            return None
+
+        async def evaluate(self, script, *args):
+            self._round += 1
+            idx = min(self._round - 1, len(self.body_text_by_round) - 1)
+            if "innerText" in script:
+                return self.body_text_by_round[idx]
+            return False
+
+        async def query_selector(self, _selector):
+            idx = min(self._round - 1, len(response_text_by_call) - 1)
+            txt = response_text_by_call[idx] if self._round > 0 else ""
+            return FakeElement(txt) if txt else None
+
+        async def query_selector_all(self, _selector):
+            idx = min(self._round - 1, len(response_text_by_call) - 1)
+            txt = response_text_by_call[idx] if self._round > 0 else ""
+            return [FakeElement(txt)] if txt else []
+
+    cfg = {
+        "url": "https://www.doubao.com/chat",
+        "input_selector": "textarea",
+        "submit_button": "button",
+        "submit_key": "Enter",
+        "response_selector": ".flow-markdown-body",
+        # 30s base + 60s allowed extension = 90s effective budget; with 5s
+        # check interval this lets the loop run up to 18 iterations.
+        "wait_after_submit": 30000,
+        "wait_after_submit_max_extension": 60000,
+        "load_wait": 1000,
+        "requires_login": False,
+        "login_redirect_domains": [],
+    }
+
+    executor = GuestQueryExecutor()
+
+    fake_input = FakeElement("")
+    fake_page = FakePage()
+
+    # Stub out the submit + helpers so only the response_wait loop runs.
+    async def fake_save_html(*_args, **_kwargs):
+        return None
+
+    async def fake_save_screenshot(*_args, **_kwargs):
+        return None
+
+    async def fake_save_runtime_snapshot(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "geo_tracker.agent.guest_executor._save_html", fake_save_html
+    )
+    monkeypatch.setattr(
+        "geo_tracker.agent.guest_executor._save_screenshot", fake_save_screenshot
+    )
+    monkeypatch.setattr(
+        "geo_tracker.agent.guest_executor._save_runtime_snapshot",
+        fake_save_runtime_snapshot,
+    )
+
+    # Bypass actual prompt fill / submit so the test focuses on response_wait.
+    async def fake_fill_plain_text_input(*_args, **_kwargs):
+        return True
+
+    async def fake_doubao_response_auth_reason(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(executor, "_fill_plain_text_input", fake_fill_plain_text_input)
+    monkeypatch.setattr(
+        "geo_tracker.agent.guest_executor._doubao_response_auth_reason_from_page",
+        fake_doubao_response_auth_reason,
+    )
+
+    # Skip the JS-handle send-button path: keyboard.press is enough for this
+    # synthetic page, and the page's evaluate_handle is not implemented.
+    class FakeKeyboard:
+        async def press(self, _key):
+            return None
+
+        async def type(self, _text, **_kwargs):
+            return None
+
+    fake_page.keyboard = FakeKeyboard()
+
+    async def fake_bbox(*_args, **_kwargs):
+        return None
+
+    fake_input.bounding_box = fake_bbox
+    fake_input.click = (lambda **_kwargs: asyncio.sleep(0))  # type: ignore[assignment]
+
+    # Patch evaluate_handle on the fake page to return a sentinel so the
+    # submit code falls back to keyboard.press("Enter") without crashing.
+    class FakeJSHandle:
+        def as_element(self):
+            return None
+
+    async def fake_evaluate_handle(*_args, **_kwargs):
+        return FakeJSHandle()
+
+    fake_page.evaluate_handle = fake_evaluate_handle  # type: ignore[assignment]
+
+    with caplog.at_level("INFO", logger="geo_tracker.agent.guest_executor"):
+        resp_text, _resp_html, _citations = await executor._browser_query(
+            fake_page,
+            cfg,
+            "bestCoffer advantages?",
+            "doubao",
+            fake_input,
+            query_id=184968,
+        )
+
+    assert "333" in resp_text, f"slow but real answer must be captured: got {resp_text!r}"
+    extension_logs = [
+        rec.getMessage()
+        for rec in caplog.records
+        if "response_wait extended" in rec.getMessage()
+    ]
+    assert extension_logs, "response_wait should extend when still_generating is true"
+
+
 def test_doubao_inner_playwright_timeout_upgrades_reason_to_stage_tagged(
     monkeypatch,
     tmp_path,
