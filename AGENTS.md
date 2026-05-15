@@ -191,6 +191,10 @@ passed" by itself is not enough.
 - Any Playwright test that mutates a live object, such as retrying a production
   query or submitting analyzer work, must run with Playwright retries disabled.
   A workflow must not repeat a live mutation because the first assertion failed.
+- The poll window for a live mutation gate must cover the full expected
+  recovery loop, including account reauth and the post-reauth query attempt.
+  If the window expires while the object is still running, report the evidence
+  as inconclusive instead of treating the workflow status as acceptance.
 - Do not make tests green by deleting assertions, skipping cases, weakening
   expectations, swallowing exceptions, or moving checks away from the user path.
   If a test is wrong or obsolete, stop with `BLOCKER` or `PRD-CHANGE` and get

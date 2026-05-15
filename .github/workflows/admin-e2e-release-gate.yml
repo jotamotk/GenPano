@@ -25,7 +25,7 @@ on:
         required: false
         type: string
       tracker_retry_poll_seconds:
-        description: "Optional controlled Tracker retry poll window in seconds, clamped by the spec to 15..180; use 180 for slow live DeepSeek retries."
+        description: "Optional controlled Tracker retry poll window in seconds, clamped by the spec to 15..600; use 600 for slow live Doubao reauth/retry loops."
         required: false
         default: "180"
         type: string
@@ -230,7 +230,7 @@ jobs:
             echo "| E2E run id | \`${E2E_RUN_ID}\` |"
             echo "| Tracker retry query id | \`${tracker_retry_query_id:-none}\` |"
             echo "| Tracker retry expected engine | \`${tracker_retry_expected_engine:-not enforced}\` |"
-            echo "| Tracker retry poll seconds | \`${tracker_retry_poll_seconds:-180}\` (spec clamps to 15..180) |"
+            echo "| Tracker retry poll seconds | \`${tracker_retry_poll_seconds:-180}\` (spec clamps to 15..600) |"
             echo "| Tracker retry success required | \`${tracker_retry_success_required}\` |"
             echo "| Analyzer attempts | \`${ADMIN_E2E_ANALYZER_ATTEMPTS}\` |"
             echo "| Analyzer single response id | \`${analyzer_single_response_id:-none}\` |"
@@ -269,7 +269,7 @@ jobs:
             specs+=("${ADMIN_E2E_TRACKER_SPEC}")
           fi
           if [[ "${ADMIN_E2E_TRACKER_CONTROLLED_RETRY_INCLUDED:-0}" == "1" ]]; then
-            echo "MUTATION ENABLED: controlled Tracker retry will target query id ${ADMIN_E2E_TRACKER_RETRY_QUERY_ID} through the operator UI; poll seconds=${ADMIN_E2E_TRACKER_RETRY_POLL_SECONDS:-180} (spec clamps to 15..180); require_success=${ADMIN_E2E_TRACKER_RETRY_REQUIRE_SUCCESS:-0}; no batch retry, cleanup, or manual dispatch will run."
+            echo "MUTATION ENABLED: controlled Tracker retry will target query id ${ADMIN_E2E_TRACKER_RETRY_QUERY_ID} through the operator UI; poll seconds=${ADMIN_E2E_TRACKER_RETRY_POLL_SECONDS:-180} (spec clamps to 15..600); require_success=${ADMIN_E2E_TRACKER_RETRY_REQUIRE_SUCCESS:-0}; no batch retry, cleanup, or manual dispatch will run."
             specs+=("${ADMIN_E2E_TRACKER_CONTROLLED_RETRY_SPEC}")
           fi
           if [[ "${ADMIN_E2E_ANALYZER_ATTEMPTS_INCLUDED:-0}" == "1" ]]; then
@@ -326,7 +326,7 @@ jobs:
               echo "- Business-flow state: \`ADMIN_E2E_REAL_BUSINESS_FLOW=1\`; controlled mutation was requested."
             fi
             if [[ "${ADMIN_E2E_TRACKER_CONTROLLED_RETRY_INCLUDED:-0}" == "1" ]]; then
-              echo "- Controlled Tracker retry state: \`tracker_retry_query_id=${ADMIN_E2E_TRACKER_RETRY_QUERY_ID}\`; poll seconds=\`${ADMIN_E2E_TRACKER_RETRY_POLL_SECONDS:-180}\` (spec clamps to 15..180); require success=\`${ADMIN_E2E_TRACKER_RETRY_REQUIRE_SUCCESS:-0}\`; this run mutates exactly one query through the Tracker row retry UI with Playwright \`--retries=0\`, and asserts \`dispatched=true\`, retry-count increase, and no quota exhaustion. When success is required, final readback must be done/success with response evidence. No batch retry, cleanup, or manual dispatch is invoked."
+              echo "- Controlled Tracker retry state: \`tracker_retry_query_id=${ADMIN_E2E_TRACKER_RETRY_QUERY_ID}\`; poll seconds=\`${ADMIN_E2E_TRACKER_RETRY_POLL_SECONDS:-180}\` (spec clamps to 15..600); require success=\`${ADMIN_E2E_TRACKER_RETRY_REQUIRE_SUCCESS:-0}\`; this run mutates exactly one query through the Tracker row retry UI with Playwright \`--retries=0\`, and asserts \`dispatched=true\`, retry-count increase, and no quota exhaustion. When success is required, final readback must be done/success with response evidence. No batch retry, cleanup, or manual dispatch is invoked."
             else
               echo "- Controlled Tracker retry state: skipped; no \`tracker_retry_query_id\` input was provided."
             fi

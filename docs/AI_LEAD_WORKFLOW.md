@@ -255,6 +255,10 @@ Rules:
   outcome on an existing object. Name the exact object, required final state,
   and readback source. Example: `query 184968 -> done + response evidence from
   Server Diagnostics`, not merely `retry workflow passed`.
+- For live mutation gates, size the poll window for the full recovery path
+  being tested. If a scraper retry can trigger account reauth and then one
+  post-reauth query attempt, the gate must wait long enough for that chain or
+  explicitly report an inconclusive timeout.
 - For docs-only or tooling-only work, state `none - no product behavior change`
   and define the documentation or tooling acceptance evidence instead.
 - If translation is ambiguous, ask one `QUESTION` that lists all known choices,

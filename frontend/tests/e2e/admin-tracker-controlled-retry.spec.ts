@@ -14,7 +14,7 @@ const expectedEngineInput = (process.env.ADMIN_E2E_TRACKER_RETRY_EXPECTED_ENGINE
 const retryRequiresSuccess = process.env.ADMIN_E2E_TRACKER_RETRY_REQUIRE_SUCCESS === '1';
 const pollSeconds = Math.max(
   15,
-  Math.min(180, Number(process.env.ADMIN_E2E_TRACKER_RETRY_POLL_SECONDS || 180) || 180),
+  Math.min(600, Number(process.env.ADMIN_E2E_TRACKER_RETRY_POLL_SECONDS || 180) || 180),
 );
 
 const mutationMode = 'controlled live Tracker retry mutation';
