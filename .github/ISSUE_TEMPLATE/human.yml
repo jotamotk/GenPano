@@ -1,153 +1,30 @@
-name: Human Input Channel
-description: Capture user-owned intake and final acceptance state
-title: "[Human Input] "
+name: Human Input
+description: Capture a human problem, goal, bug, or request for AI Lead triage
+title: "[Human] "
 labels:
-  - type:human-input
+  - type:human
 body:
   - type: markdown
     attributes:
       value: |
-        Use this for user-owned intake and final acceptance. It is not an executable task, PRD, branch, or PR.
+        Use this for raw human intake. State the problem, goal, bug, or request and choose a priority. The AI Lead owns triage, decomposition, child issues, PRD mapping, verification planning, and acceptance handoff after submission.
+  - type: textarea
+    id: raw-input
+    attributes:
+      label: Problem / Goal / Bug
+      description: Describe what you need or what is wrong. Include exact URLs, issue ids, screenshots, row ids, error text, or expected outcomes when available.
+      placeholder: "I need... / The bug is... / The goal is..."
+    validations:
+      required: true
   - type: dropdown
     id: priority
     attributes:
       label: Priority
-      description: Select the shared Genpano issue priority. Apply the matching priority:p* label during triage.
+      description: Choose the urgency. The AI Lead will confirm or adjust routing during triage.
       options:
         - "P0 - Critical: live test-environment outage, data loss, security risk, or release blocker"
         - "P1 - High: user-visible regression, committed delivery blocker, or urgent operator workflow"
         - "P2 - Medium: planned deliverable or important improvement that does not block the current release"
         - "P3 - Low: polish, cleanup, docs, or backlog work with no immediate delivery pressure"
-    validations:
-      required: true
-  - type: textarea
-    id: priority-rationale
-    attributes:
-      label: Priority Rationale
-      description: Explain the impact, deadline, blocked work, or why this can safely wait.
-      placeholder: "This is P1 because..."
-    validations:
-      required: true
-  - type: textarea
-    id: purpose
-    attributes:
-      label: Purpose
-      description: State the channel purpose so future agents do not treat it as a task.
-      value: |
-        This issue captures a raw user observation, idea, bug, feature change, or new requirement. The Lead must triage it, split actionable work into executable child issues or PRD decisions, coordinate delivery, and return live evidence here for user acceptance. The user closes this issue after accepting the online result unless closure is explicitly delegated.
-    validations:
-      required: true
-  - type: textarea
-    id: business-goal
-    attributes:
-      label: Business Goal
-      description: State the user-visible business outcome. If unclear, stop triage and raise HUMAN DECISION NEEDED.
-      value: |
-        - Business outcome:
-        - Exact user-visible object/path:
-        - Why this matters:
-    validations:
-      required: true
-  - type: textarea
-    id: final-success-evidence
-    attributes:
-      label: Final Success Evidence
-      description: Name the evidence that proves the business goal, not just deployment or a changed error code.
-      value: |
-        - Required final state:
-        - Required artifact/readback:
-        - Evidence source:
-    validations:
-      required: true
-  - type: textarea
-    id: not-done
-    attributes:
-      label: What Does NOT Count As Done
-      description: List states that must not be mistaken for completion.
-      value: |
-        - CI/CD green alone is not done.
-        - Deploy green alone is not done.
-        - A different error code alone is not done.
-    validations:
-      required: true
-  - type: textarea
-    id: current-state
-    attributes:
-      label: Current State
-      description: Keep a compact ledger of raw inputs, child work, and acceptance state.
-      value: |
-        | Item | Raw Input | Classification | Disposition | Target Issue/PRD Decision | Delivery State | Last Updated |
-        | --- | --- | --- | --- | --- | --- | --- |
-        |  |  |  |  |  | triage |  |
-    validations:
-      required: true
-  - type: textarea
-    id: triage-rules
-    attributes:
-      label: Triage Rules
-      description: Rules Codex must follow when reading this channel.
-      value: |
-        - Do not implement directly from a vague raw note.
-        - Do not split child work until Business Goal and Final Success Evidence are explicit.
-        - If the Business Goal is unclear, post HUMAN DECISION NEEDED before routing work.
-        - Classify each item as bug, feature change, new requirement, question/idea, or needs clarification.
-        - Convert actionable work into a scoped Fast Path issue, Full Path Coordination issue, deliverable issue, or PRD-change request.
-        - Use PRD-CHANGE when the item changes product behavior or contract.
-        - Link every child issue or PRD decision back with Refs #<this issue>.
-        - Coordinate child work until it is merged, deployed, and live-verifiable when live-facing.
-        - Leave a triage receipt for every item.
-        - Post Ready for User Acceptance with live URL, expected visible result, child issues/PRs, deploy SHA, and evidence.
-        - Keep this issue open until the user accepts the online result and closes it, unless closure is explicitly delegated.
-    validations:
-      required: true
-  - type: textarea
-    id: triage-receipt-template
-    attributes:
-      label: Triage Receipt Template
-      description: Copy this shape into comments or the ledger for each raw input item.
-      value: |
-        TRIAGE: <item id or short quote> classified as <bug | feature change | new requirement | question/idea | needs clarification>.
-
-        Disposition:
-        - Converted to:
-        - PRD decision requested in:
-        - Waiting for clarification from:
-        - No action because:
-
-        Receipt:
-        - Original note:
-        - Business goal understood? yes/no:
-        - Final success evidence:
-        - What does not count as done:
-        - HUMAN DECISION NEEDED? yes/no:
-        - Last updated:
-    validations:
-      required: true
-  - type: textarea
-    id: acceptance-handoff-template
-    attributes:
-      label: Ready For User Acceptance Template
-      description: Fill this before asking the user to verify and close the issue.
-      value: |
-        READY FOR USER ACCEPTANCE:
-
-        Live result:
-        - URL/route:
-        - Expected visible result:
-
-        Completed work:
-        - Child issues:
-        - PRs:
-        - Deploy SHA/run:
-
-        Evidence:
-        - Playwright/screenshot/API/server diagnostic:
-        - Final success evidence matches Business Goal? yes/no:
-
-        Caveats:
-        - Remaining risk or none:
-
-        Closure:
-        - Waiting for user acceptance and user closure.
     validations:
       required: true

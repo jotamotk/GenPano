@@ -944,7 +944,7 @@ Recommended issue labels:
 - `type:bugfix`
 - `type:e2e`
 - `type:prd`
-- `type:human-input`
+- `type:human`
 - `type:workflow`
 - `status:briefing`
 - `status:ready`
