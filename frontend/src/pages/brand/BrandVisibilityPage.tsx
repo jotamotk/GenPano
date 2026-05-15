@@ -88,15 +88,18 @@ export default function BrandVisibilityPage() {
   const mockMentionRatePct = (mockMentionRateDec * 100).toFixed(1);
   const mockSovPct = sovEntry ? sovEntry.value : 0;
 
-  // Live KPIs from /metrics: take latest point of each series.
+  // Window average across the /metrics series — matches /overview KPI cards,
+  // which expose `func.avg(GeoScoreDaily.mention_rate)` over the same window.
   const liveSparklines = metricsQ.data ? adaptMetricsToSparklines(metricsQ.data) : null;
-  const lastMention =
-    liveSparklines?.mention.length ? liveSparklines.mention[liveSparklines.mention.length - 1] : null;
-  const lastSov =
-    liveSparklines?.sov.length ? liveSparklines.sov[liveSparklines.sov.length - 1] : null;
+  const windowAverage = (points: number[] | undefined): number | null => {
+    if (!points || points.length === 0) return null;
+    return points.reduce((sum, value) => sum + value, 0) / points.length;
+  };
+  const avgMention = windowAverage(liveSparklines?.mention);
+  const avgSov = windowAverage(liveSparklines?.sov);
 
-  const mentionRateText = isLive ? (lastMention != null ? `${lastMention.toFixed(1)}%` : '—') : `${mockMentionRatePct}%`;
-  const sovText = isLive ? (lastSov != null ? `${lastSov.toFixed(1)}%` : '—') : `${mockSovPct}%`;
+  const mentionRateText = isLive ? (avgMention != null ? `${avgMention.toFixed(1)}%` : '—') : `${mockMentionRatePct}%`;
+  const sovText = isLive ? (avgSov != null ? `${avgSov.toFixed(1)}%` : '—') : `${mockSovPct}%`;
   const mentionDelta = isLive ? undefined : 2.3;
   const sovDelta = isLive ? undefined : -1.1;
 
