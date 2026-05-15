@@ -206,7 +206,7 @@ export default function BrandCitationsPage() {
               lines={[
                 { key: 'official_domain_pct', label: t('brand_citations.official_domain'), color: 'var(--color-accent)', area: true },
                 { key: 'co_occurrence_pct', label: t('brand_citations.co_occurrence'), color: 'var(--color-chart-3)', area: false },
-                { key: 'text_match_pct', label: t('brand_citations.text_match'), color: 'var(--color-chart-line-grid)', area: false, dashed: true },
+                { key: 'text_match_pct', label: t('brand_citations.text_match'), color: 'var(--color-chart-axis-text)', area: false, dashed: true },
               ]}
               height={260}
             />
