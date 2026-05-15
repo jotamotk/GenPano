@@ -832,19 +832,92 @@ def test_doubao_runtime_logged_out_state_rejects_false_success():
     assert doubao_auth_state_reason(text, html) == "doubao_not_logged_in"
 
 
-def test_doubao_persistence_gate_rejects_answer_html_with_login_chrome():
+def test_doubao_persistence_gate_allows_answer_html_with_generic_toolbar_login():
     from geo_tracker.agent.response_validation import doubao_persistence_auth_reason
 
-    raw_text = "bestCoffer 的核心优势包括便携、电池续航和户外咖啡场景。"
+    raw_text = "bestCoffer answers with concrete portable coffee strengths."
     response_html = """
     <header>
       <div class="avatar-placeholder"></div>
-      <div class="toolbar-action">登录</div>
+      <div class="toolbar-action">\u767b\u5f55</div>
     </header>
     <main>
-      <div class="flow-markdown-body">bestCoffer 的核心优势包括便携、电池续航和户外咖啡场景。</div>
+      <div class="flow-markdown-body">
+        bestCoffer has portable coffee strengths for driving and camping.
+      </div>
     </main>
     """
+
+    assert doubao_persistence_auth_reason("doubao", raw_text, response_html) is None
+
+
+def test_doubao_persistence_gate_rejects_answer_html_with_strong_logout_state():
+    from geo_tracker.agent.response_validation import doubao_persistence_auth_reason
+
+    raw_text = "bestCoffer answer text"
+    response_html = """
+    <script>
+    window.__doubao_state__ = {
+      accountInfo: {data: {description: "\u4f1a\u8bdd\u8fc7\u671f\uff0c\u8bf7\u91cd\u65b0\u767b\u5f55", error_code: 13, user_id: 0}},
+      userSetting: {data: {is_login: false}}
+    };
+    </script>
+    <button id="login-btn-header">\u767b\u5f55</button>
+    <main><div class="flow-markdown-body">bestCoffer answer text</div></main>
+    """
+
+    assert (
+        doubao_persistence_auth_reason("doubao", raw_text, response_html)
+        == "doubao_not_logged_in"
+    )
+
+
+def test_doubao_persistence_gate_rejects_answer_html_with_qr_login_dialog():
+    from geo_tracker.agent.response_validation import doubao_persistence_auth_reason
+
+    raw_text = "bestCoffer answer text"
+    response_html = """
+    <main><div class="flow-markdown-body">bestCoffer answer text</div></main>
+    <div role="dialog">
+      <h2>\u626b\u7801\u767b\u5f55</h2>
+      <button class="login-button">\u767b\u5f55</button>
+    </div>
+    """
+
+    assert (
+        doubao_persistence_auth_reason("doubao", raw_text, response_html)
+        == "doubao_not_logged_in"
+    )
+
+
+def test_doubao_persistence_gate_rejects_answer_html_with_login_dialog():
+    from geo_tracker.agent.response_validation import doubao_persistence_auth_reason
+
+    raw_text = "bestCoffer answer text"
+    response_html = """
+    <main><div class="flow-markdown-body">bestCoffer answer text</div></main>
+    <div role="dialog">
+      <input placeholder="\u624b\u673a\u53f7" />
+      <button class="login-button">\u767b\u5f55</button>
+    </div>
+    """
+
+    assert (
+        doubao_persistence_auth_reason("doubao", raw_text, response_html)
+        == "doubao_not_logged_in"
+    )
+
+
+def test_doubao_persistence_gate_strong_logout_overrides_auth_ok_marker():
+    from geo_tracker.agent.response_validation import doubao_persistence_auth_reason
+
+    raw_text = "bestCoffer answer-like content"
+    response_html = (
+        "<div class='flow-markdown-body'>bestCoffer answer-like content</div>"
+        "\n<button id='login-btn-header'>\u767b\u5f55</button>"
+        "\n<script>window.__state__={is_login:false,user_id:0}</script>"
+        "\n<!-- doubao-auth-state:ok -->"
+    )
 
     assert (
         doubao_persistence_auth_reason("doubao", raw_text, response_html)
@@ -1335,6 +1408,131 @@ async def test_doubao_no_response_extraction_path_prefers_auth_over_visual_chall
 
     assert response == ("", "", [])
     assert executor.last_error_reason == "doubao_not_logged_in"
+
+
+@pytest.mark.asyncio
+async def test_doubao_browser_query_keeps_extracted_answer_with_toolbar_login(
+    monkeypatch,
+):
+    _install_fake_playwright(monkeypatch)
+
+    from geo_tracker.agent import guest_executor
+    from geo_tracker.agent.guest_executor import GuestQueryExecutor
+
+    async def _noop_artifact(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(guest_executor, "_save_html", _noop_artifact)
+    monkeypatch.setattr(guest_executor, "_save_screenshot", _noop_artifact)
+    monkeypatch.setattr(guest_executor, "_save_runtime_snapshot", _noop_artifact)
+
+    query_text = "bestCoffer portable coffee maker advantages"
+    answer_text = (
+        "bestCoffer has portable coffee strengths for driving, camping, "
+        "and compact outdoor brewing."
+    )
+
+    class FakeInput:
+        async def bounding_box(self):
+            return None
+
+        async def click(self, *args, **kwargs):
+            return None
+
+        async def fill(self, *args, **kwargs):
+            return None
+
+        async def evaluate(self, *args, **kwargs):
+            return query_text
+
+    class FakeKeyboard:
+        async def press(self, *args, **kwargs):
+            return None
+
+        async def type(self, *args, **kwargs):
+            return None
+
+    class FakeMouse:
+        async def move(self, *args, **kwargs):
+            return None
+
+    class FakeSubmitHandle:
+        def as_element(self):
+            return None
+
+    class FakeResponseElement:
+        async def inner_text(self):
+            return answer_text
+
+        async def inner_html(self):
+            return "bestCoffer has portable coffee strengths for outdoor brewing."
+
+    class FakePage:
+        url = "https://www.doubao.com/chat/"
+
+        def __init__(self):
+            self.keyboard = FakeKeyboard()
+            self.mouse = FakeMouse()
+
+        async def wait_for_timeout(self, *args, **kwargs):
+            return None
+
+        async def wait_for_selector(self, *args, **kwargs):
+            raise RuntimeError("not found")
+
+        async def evaluate_handle(self, *args, **kwargs):
+            return FakeSubmitHandle()
+
+        async def query_selector(self, selector, *args, **kwargs):
+            return None
+
+        async def query_selector_all(self, selector, *args, **kwargs):
+            if selector == ".flow-markdown-body":
+                return [FakeResponseElement()]
+            return []
+
+        async def evaluate(self, script, *args):
+            script_text = str(script)
+            if "document.body?.innerText" in script_text:
+                return f"{query_text}\n{answer_text}\n\u767b\u5f55"
+            if "queryText" in script_text:
+                return True
+            if "return citations" in script_text:
+                return []
+            return ""
+
+        async def content(self):
+            return f"""
+            <header>
+              <div class="avatar-placeholder"></div>
+              <div class="toolbar-action">\u767b\u5f55</div>
+            </header>
+            <main>
+              <div class="send-msg-bubble-bg">{query_text}</div>
+              <div class="flow-markdown-body">{answer_text}</div>
+            </main>
+            """
+
+    executor = GuestQueryExecutor()
+    response = await executor._browser_query(
+        FakePage(),
+        {
+            "input_selector": "textarea",
+            "response_selector": ".flow-markdown-body",
+            "submit_button": "",
+            "wait_after_submit": 0,
+            "login_redirect_domains": [],
+            "url": "https://www.doubao.com/chat/",
+        },
+        query_text,
+        "doubao",
+        input_el=FakeInput(),
+        query_id=184968,
+        runtime_events=[],
+    )
+
+    assert response[0] == answer_text
+    assert executor.last_error_reason is None
 
 
 @pytest.mark.asyncio
@@ -2096,7 +2294,9 @@ def test_auto_login_chatgpt_manual_challenge_does_not_create_account(
     assert asyncio.run(count_accounts()) == 0
 
 
-def test_execute_query_persists_doubao_auth_failure_before_done(monkeypatch, tmp_path):
+def test_execute_query_persists_doubao_answer_with_generic_toolbar_login(
+    monkeypatch, tmp_path
+):
     _install_fake_playwright(monkeypatch)
 
     from geo_tracker.tasks import celery_tasks
@@ -2208,20 +2408,20 @@ def test_execute_query_persists_doubao_auth_failure_before_done(monkeypatch, tmp
 
     assert result == {
         "query_id": query_id,
-        "status": "failed",
-        "reason": "doubao_not_logged_in",
+        "status": "done",
+        "mode": "guest",
+        "analysis_enqueued": False,
     }
-    assert state["status"] == QueryStatus.FAILED.value
-    assert state["retry_reason"] == "doubao_not_logged_in"
-    assert state["response"] is None
-    assert state["account_status"] == AccountStatus.EXPIRED.value
+    assert state["status"] == QueryStatus.DONE.value
+    assert state["retry_reason"] is None
+    assert state["response"] is not None
+    assert (
+        state["response"].raw_text
+        == "bestCoffer has portable coffee advantages in outdoor travel."
+    )
+    assert state["account_status"] == AccountStatus.ACTIVE.value
     assert state["account_cooldown_until"] is None
-    assert relogin_calls == [
-        {
-            "kwargs": {"account_id": account_id, "query_id": query_id},
-            "queue": "account_login",
-        }
-    ]
+    assert relogin_calls == []
 
 
 def test_execute_query_converts_doubao_browser_hang_to_stage_timeout_reason(

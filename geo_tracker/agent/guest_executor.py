@@ -45,6 +45,7 @@ from geo_tracker.agent.response_validation import (
     chatgpt_auth_state_reason,
     DOUBAO_AUTH_OK_MARKER,
     doubao_auth_state_reason,
+    doubao_persistence_auth_reason,
     invalid_response_reason,
 )
 from geo_tracker.db.models import LLMResponse, Query
@@ -2629,8 +2630,11 @@ class GuestQueryExecutor:
                     resp_text = js_text[:5000]
 
             if llm_name == "doubao" and resp_text:
-                auth_reason = await self._prefer_doubao_auth_failure_reason(llm_name, page)
+                auth_reason = await _doubao_response_auth_reason_from_page(
+                    page, resp_text, resp_html
+                )
                 if auth_reason:
+                    self.last_error_reason = auth_reason
                     await _save_html(page, debug_query_id, auth_reason)
                     await _save_screenshot(page, debug_query_id, auth_reason)
                     await _save_runtime_snapshot(
@@ -2751,7 +2755,9 @@ class GuestQueryExecutor:
                 return "", "", []
 
             if llm_name == "doubao":
-                auth_reason = await _doubao_auth_state_reason_from_page(page)
+                auth_reason = await _doubao_response_auth_reason_from_page(
+                    page, resp_text, resp_html
+                )
                 if auth_reason:
                     logger.warning(
                         "[doubao] rejecting response because auth state is not proven (%s)",
@@ -2932,6 +2938,27 @@ async def _doubao_auth_state_reason_from_page(page: Page) -> str | None:
     except Exception:
         pass
     return doubao_auth_state_reason(body_text, html)
+
+
+async def _doubao_response_auth_reason_from_page(
+    page: Page,
+    raw_text: str | None,
+    response_html: str | None,
+) -> str | None:
+    """Inspect full Doubao page chrome after a candidate answer was extracted."""
+    body_text = ""
+    html = ""
+    try:
+        body_text = await page.evaluate("document.body?.innerText || ''")
+    except Exception:
+        pass
+    try:
+        html = await page.content()
+    except Exception:
+        pass
+    combined_text = "\n".join(part for part in (raw_text or "", body_text) if part)
+    combined_html = "\n".join(part for part in (response_html or "", html) if part)
+    return doubao_persistence_auth_reason("doubao", combined_text, combined_html)
 
 
 async def _save_html(page: Page, query_id: int, suffix: str = "") -> Optional[Path]:

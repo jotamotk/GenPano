@@ -91,6 +91,29 @@ _DOUBAO_AUTHENTICATED_RE = re.compile(
     re.IGNORECASE,
 )
 
+_DOUBAO_FLOW_MARKDOWN_BODY_RE = re.compile(
+    r"<div\b[^>]*class\s*=\s*['\"][^'\"]*\bflow-markdown-body\b[^'\"]*['\"][^>]*>"
+    r"(?P<body>.*?)</div>",
+    re.IGNORECASE | re.DOTALL,
+)
+
+_DOUBAO_PERSISTENCE_STRONG_UNAUTH_MARKERS = (
+    "\u0037\u5929\u514d\u767b\u5f55",  # 7天免登录
+    "\u767b\u5f55\u4ee5\u89e3\u9501\u66f4\u591a\u529f\u80fd",
+    "\u4f1a\u8bdd\u8fc7\u671f\uff0c\u8bf7\u91cd\u65b0\u767b\u5f55",
+    "from_logout=1",
+    "login-btn-header",
+)
+
+_DOUBAO_PERSISTENCE_STATE_LOGOUT_RE = re.compile(
+    r"(?:[\"']?error_code[\"']?\s*[:=]\s*13|"
+    r"[\"']?is_login[\"']?\s*[:=]\s*false|"
+    r"[\"']?user_id[\"']?\s*[:=]\s*0)",
+    re.IGNORECASE,
+)
+
+_DOUBAO_SUBSTANTIVE_ANSWER_MIN_LEN = 20
+
 DOUBAO_AUTH_OK_MARKER = "doubao-auth-state:ok"
 
 
@@ -196,9 +219,85 @@ def doubao_persistence_auth_reason(
     """Return a Doubao auth failure that must block DONE persistence."""
     if (llm_name or "").lower() != "doubao":
         return None
+    strong_auth_reason = _doubao_strong_persistence_auth_reason(
+        raw_text, response_html
+    )
+    if strong_auth_reason:
+        return strong_auth_reason
     if response_html and DOUBAO_AUTH_OK_MARKER in response_html:
         return None
+    if _doubao_has_substantive_answer(raw_text, response_html):
+        return None
     return doubao_auth_state_reason(raw_text, response_html)
+
+
+def _doubao_has_substantive_answer(
+    raw_text: str | None,
+    html: str | None,
+) -> bool:
+    if raw_text and len(raw_text.strip()) >= _DOUBAO_SUBSTANTIVE_ANSWER_MIN_LEN:
+        return True
+    return _doubao_has_substantive_answer_html(html)
+
+
+def _doubao_has_substantive_answer_html(html: str | None) -> bool:
+    visible_html = _strip_hidden_doubao_auth_chrome(html)
+    for match in _DOUBAO_FLOW_MARKDOWN_BODY_RE.finditer(visible_html):
+        body = re.sub(r"<[^>]+>", " ", match.group("body"))
+        if len(body.strip()) >= _DOUBAO_SUBSTANTIVE_ANSWER_MIN_LEN:
+            return True
+    return False
+
+
+def _doubao_strong_persistence_auth_reason(
+    text: str | None,
+    html: str | None = None,
+) -> str | None:
+    visible_html = _strip_hidden_doubao_auth_chrome(html)
+    combined = "\n".join(part for part in (text or "", visible_html) if part)
+    if not combined.strip():
+        return "doubao_auth_state_missing"
+
+    if any(marker in combined for marker in _DOUBAO_PERSISTENCE_STRONG_UNAUTH_MARKERS):
+        return "doubao_not_logged_in"
+    if _DOUBAO_PERSISTENCE_STATE_LOGOUT_RE.search(combined):
+        return "doubao_not_logged_in"
+    if (
+        "\u767b\u5f55\u4ee5\u89e3\u9501\u66f4\u591a\u529f\u80fd" in combined
+        or _doubao_has_visible_login_dialog(combined)
+    ):
+        return "doubao_not_logged_in"
+    return None
+
+
+def _doubao_has_visible_login_dialog(combined: str) -> bool:
+    has_dialog = any(
+        marker in combined
+        for marker in (
+            "role=\"dialog\"",
+            "role='dialog'",
+            "login-dialog",
+            "passport",
+        )
+    )
+    has_login_action = any(
+        marker in combined
+        for marker in (
+            "login-button",
+            "\u626b\u7801\u767b\u5f55",
+            "\u624b\u673a\u53f7",
+        )
+    )
+    if has_dialog and has_login_action:
+        return True
+    return any(
+        marker in combined
+        for marker in (
+            "\u624b\u673a\u53f7\u767b\u5f55",
+            "\u77ed\u4fe1\u9a8c\u8bc1\u7801",
+            "\u8bf7\u8f93\u5165\u624b\u673a\u53f7",
+        )
+    )
 
 
 def invalid_response_reason(llm_name: str, text: str | None) -> str | None:
