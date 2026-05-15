@@ -479,6 +479,14 @@ class GuestQueryExecutor:
         self.last_page_title: str | None = None
         self.last_page_body_snippet: str | None = None
         self.last_snapshot_path: str | None = None
+        # Refs #963 follow-up to PR #1005: ``execution_stage`` is clobbered to
+        # ``"cleanup"`` by the inner _execute_once finally before the outer
+        # ``asyncio.wait_for`` in ``celery_tasks._execute_with_timeout`` reads
+        # it on TimeoutError, so failures classify as
+        # ``doubao_browser_timeout:cleanup`` regardless of where execution was
+        # actually stuck. Latch the real stage at cancellation / exception
+        # time so callers can read past the finally-block overwrite.
+        self.stage_at_failure: str | None = None
 
     def _set_execution_stage(self, stage: str) -> None:
         self.execution_stage = stage
@@ -1364,6 +1372,8 @@ class GuestQueryExecutor:
             # `doubao_browser_timeout:<stage>` failures land with operator-
             # readable context instead of a bare reason code.
             stage_at_cancel = self.execution_stage or "unknown"
+            # Latch the real stage BEFORE the finally block sets stage="cleanup".
+            self.stage_at_failure = stage_at_cancel
             self.last_error_reason = self.last_error_reason or "browser_timeout"
             if page_obj is not None:
                 try:
@@ -1389,6 +1399,8 @@ class GuestQueryExecutor:
             raise
         except Exception as e:
             stage_at_exc = self.execution_stage or "unknown"
+            # Latch the real stage BEFORE the finally block sets stage="cleanup".
+            self.stage_at_failure = stage_at_exc
             logger.exception(f"[{llm}] 执行异常: {e}")
             reason = resolve_execution_failure_reason(e, self.last_error_reason)
             # Refs #963 follow-up: a Playwright TimeoutError bubbling out of an
