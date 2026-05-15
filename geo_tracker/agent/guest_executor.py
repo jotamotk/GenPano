@@ -2991,8 +2991,26 @@ class GuestQueryExecutor:
             )
 
         # 抓取响应文本 + HTML
+        # Refs #963 follow-up to PR #1014 live evidence (run 25930179463):
+        # the response_wait stage label covers BOTH the wait loop AND this
+        # extraction block. PR #1014's wall-clock check inside the loop
+        # only catches loop-internal hangs; the extraction phase has its
+        # own per-call bounds but no aggregate cap, so a busy page where
+        # each inner_html / inner_text trips the 10s bound can still burn
+        # 100s+ at this stage. Check the same wall-clock budget here so
+        # the whole stage is hard-capped regardless of where time is being
+        # spent.
         resp_text = ""
         resp_html = ""
+        wall_elapsed_at_extract = asyncio.get_event_loop().time() - response_wait_started_at
+        if wall_elapsed_at_extract >= RESPONSE_WAIT_STAGE_BUDGET_S:
+            logger.error(
+                f"[{llm_name}] response_wait wall-clock budget exhausted "
+                f"({wall_elapsed_at_extract:.1f}s >= {RESPONSE_WAIT_STAGE_BUDGET_S}s) "
+                f"before extraction; skipping extraction"
+            )
+            self.last_error_reason = self.last_error_reason or "no_response"
+            return "", "", []
         try:
             # 保存完整页面 HTML 用于调试 selector
             await _save_html(page, debug_query_id, f"{llm_name}_response_page")
@@ -3001,7 +3019,20 @@ class GuestQueryExecutor:
             # Refs #963 follow-up to PR #1010: bound each extraction call
             # so a single hung selector / inner_text() / inner_html() cannot
             # turn the response_wait stage into a full-budget timeout.
+            # Refs PR #1014 follow-up: wall-clock check at each selector
+            # iteration too — if 5 selectors each spend N seconds, the
+            # aggregate could still exceed the stage budget.
             for sel in response_selectors:
+                wall_elapsed_inner = (
+                    asyncio.get_event_loop().time() - response_wait_started_at
+                )
+                if wall_elapsed_inner >= RESPONSE_WAIT_STAGE_BUDGET_S:
+                    logger.warning(
+                        f"[{llm_name}] response_wait wall-clock budget exhausted "
+                        f"({wall_elapsed_inner:.1f}s) inside extraction loop; bailing "
+                        f"with partial result"
+                    )
+                    break
                 try:
                     elements = await asyncio.wait_for(
                         page.query_selector_all(sel),
