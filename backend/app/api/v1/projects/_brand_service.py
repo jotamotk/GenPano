@@ -733,6 +733,13 @@ async def get_competitor_metrics(
             ProjectCompetitor.project_id == project.id
         )
         competitor_ids = [r[0] for r in (await session.execute(competitor_stmt)).all()]
+        # Issue #975: drop pinned competitors that fall outside the primary
+        # brand's industry. Cross-industry pins (manual or auto-seeded by
+        # an older worker) were leaking into the competitor panel even
+        # after #978 scoped the auto-discovery path.
+        industry_brand_ids = await _industry_brand_ids(session, primary_industry)
+        if industry_brand_ids and competitor_ids:
+            competitor_ids = [bid for bid in competitor_ids if bid in industry_brand_ids]
         if not competitor_ids:
             competitor_ids = await discover_related_brand_ids(
                 session, primary_id, from_d, to_d, industry_name=primary_industry
@@ -1133,6 +1140,11 @@ async def get_competitor_trends(
             ProjectCompetitor.project_id == project.id
         )
         competitor_ids = [r[0] for r in (await session.execute(competitor_stmt)).all()]
+        # Issue #975: scope pinned competitors to the primary brand's
+        # industry (see get_competitor_metrics for rationale).
+        industry_brand_ids = await _industry_brand_ids(session, primary_industry)
+        if industry_brand_ids and competitor_ids:
+            competitor_ids = [bid for bid in competitor_ids if bid in industry_brand_ids]
         if primary_id is not None and not competitor_ids:
             competitor_ids = await discover_related_brand_ids(
                 session, primary_id, from_d, to_d, industry_name=primary_industry
