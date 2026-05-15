@@ -3042,6 +3042,27 @@ class GuestQueryExecutor:
                         texts = []
                         htmls = []
                         for el in elements:
+                            # Codex PR #1015 review (P2): a single broad
+                            # selector (e.g. ``[data-testid='receive_
+                            # message']``) can match every prior assistant
+                            # message in a chat. Without a per-element
+                            # budget check, each element can cost up to
+                            # 20s (10s inner_text + 10s inner_html), so
+                            # N elements can still exceed the stage budget
+                            # despite the per-call bounds. Re-check the
+                            # wall clock at every element.
+                            wall_elapsed_elem = (
+                                asyncio.get_event_loop().time()
+                                - response_wait_started_at
+                            )
+                            if wall_elapsed_elem >= RESPONSE_WAIT_STAGE_BUDGET_S:
+                                logger.warning(
+                                    f"[{llm_name}] response_wait wall-clock budget "
+                                    f"exhausted ({wall_elapsed_elem:.1f}s) inside "
+                                    f"per-element extraction loop; bailing with "
+                                    f"partial result ({len(texts)} elements collected)"
+                                )
+                                break
                             try:
                                 txt = await asyncio.wait_for(
                                     el.inner_text(),
