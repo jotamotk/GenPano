@@ -16,7 +16,6 @@ from datetime import datetime, timedelta
 import pytest
 import pytest_asyncio
 from genpano_models import (
-    BrandMention,
     GeoScoreDaily,
     Project,
     ProjectCompetitor,
