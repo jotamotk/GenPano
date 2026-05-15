@@ -50,7 +50,10 @@ from geo_tracker.agent.response_validation import (
     invalid_response_reason,
 )
 from geo_tracker.db.models import LLMResponse, Query
-from geo_tracker.tasks.query_failure import resolve_execution_failure_reason
+from geo_tracker.tasks.query_failure import (
+    browser_execution_timeout_reason,
+    resolve_execution_failure_reason,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1329,7 +1332,7 @@ class GuestQueryExecutor:
             if page_obj is not None:
                 try:
                     await asyncio.shield(
-                        self._preserve_cancellation_evidence(
+                        self._preserve_active_page_evidence(
                             page_obj,
                             query.id,
                             llm,
@@ -1337,6 +1340,7 @@ class GuestQueryExecutor:
                             runtime_events=runtime_events,
                             proxy_diagnostic=proxy_diagnostic,
                             stage=stage_at_cancel,
+                            suffix_prefix="browser_timeout",
                         )
                     )
                 except BaseException as snap_err:
@@ -1348,15 +1352,51 @@ class GuestQueryExecutor:
                     )
             raise
         except Exception as e:
+            stage_at_exc = self.execution_stage or "unknown"
             logger.exception(f"[{llm}] 执行异常: {e}")
-            self.last_error_reason = resolve_execution_failure_reason(
-                e, self.last_error_reason
-            )
+            reason = resolve_execution_failure_reason(e, self.last_error_reason)
+            # Refs #963 follow-up: a Playwright TimeoutError bubbling out of an
+            # inner await previously landed as generic ``browser_timeout``, with
+            # no stage info and only a bare screenshot. The latest live
+            # diagnostics for #963 (query 184968) show this is the actual
+            # current failure mode — latency ~157s on a 480s outer budget — so
+            # operators were left guessing which inner stage hung. For Doubao,
+            # upgrade ``browser_timeout`` to ``doubao_browser_timeout:<stage>``
+            # so the retry_reason carries the same stage info as the outer
+            # cancellation path and routes through the same infrastructure
+            # bucket in INFRASTRUCTURE_FAILURE_REASONS.
+            if (
+                (llm or "").lower() == "doubao"
+                and (
+                    reason == "browser_timeout"
+                    or (reason or "").lower() == "browser_timeout"
+                )
+            ):
+                reason = browser_execution_timeout_reason(llm, stage=stage_at_exc)
+            self.last_error_reason = reason
             if page_obj:
+                # Save full evidence (URL/title/body/snapshot + screenshot) so
+                # the next inner-timeout failure leaves on-disk artifacts the
+                # operator can read, instead of relying on a bare screenshot
+                # whose failure used to be silently swallowed.
                 try:
-                    await _save_screenshot(page_obj, query.id, f"{llm}_exception")
-                except Exception:
-                    pass
+                    await self._preserve_active_page_evidence(
+                        page_obj,
+                        query.id,
+                        llm,
+                        config=config,
+                        runtime_events=runtime_events,
+                        proxy_diagnostic=proxy_diagnostic,
+                        stage=stage_at_exc,
+                        suffix_prefix="exception",
+                    )
+                except Exception as snap_err:
+                    logger.warning(
+                        "[%s] exception evidence save failed (stage=%s): %s",
+                        llm,
+                        stage_at_exc,
+                        _redact_sensitive_text(str(snap_err))[:200],
+                    )
             return None
         finally:
             self._set_execution_stage("cleanup")
@@ -1373,7 +1413,7 @@ class GuestQueryExecutor:
             )
             self.current_page = None
 
-    async def _preserve_cancellation_evidence(
+    async def _preserve_active_page_evidence(
         self,
         page_obj: "Page",
         query_id: int,
@@ -1383,51 +1423,79 @@ class GuestQueryExecutor:
         runtime_events: list[dict],
         proxy_diagnostic: dict,
         stage: str,
+        suffix_prefix: str,
     ) -> None:
-        """Capture page URL/title/body + runtime snapshot when an outer
-        timeout cancels execute().
+        """Capture page URL/title/body + runtime snapshot + screenshot when
+        the executor leaves ``_execute_once`` without a successful response.
 
-        Refs #963 handoff: each step is best-effort so a flaky page_obj
-        cannot block cancellation propagation. Callers should always wrap
-        this in ``asyncio.shield`` so the shielded awaits are not torn
-        down by a second cancellation while evidence is still being
-        written.
+        Refs #963 handoff: each step is best-effort and individually bounded
+        by ``asyncio.wait_for`` so a half-broken page (CF challenge, login
+        redirect, SPA stuck mid-render) cannot block cancellation propagation
+        or hide other failures behind a hanging snapshot. Callers in the
+        cancellation path should additionally wrap this in ``asyncio.shield``
+        so its awaits are not torn down by a second cancellation while
+        evidence is still being written.
+
+        ``suffix_prefix`` is "browser_timeout" for the outer-cancellation
+        path and "exception" for the inner-exception path; the resulting
+        artifact suffix is ``{llm}_{suffix_prefix}_{stage}`` so artifacts
+        from the two paths stay distinguishable on disk.
         """
         try:
             self.last_page_url = page_obj.url
         except Exception:
             pass
         try:
-            self.last_page_title = await page_obj.title()
+            self.last_page_title = await asyncio.wait_for(
+                page_obj.title(), timeout=5
+            )
         except Exception:
             pass
         try:
-            body = await page_obj.evaluate("document.body?.innerText || ''")
+            body = await asyncio.wait_for(
+                page_obj.evaluate("document.body?.innerText || ''"),
+                timeout=5,
+            )
             if isinstance(body, str):
                 self.last_page_body_snippet = _redact_sensitive_text(body)[:1000]
         except Exception:
             pass
+        suffix = f"{llm}_{suffix_prefix}_{stage}"
         try:
-            snapshot_path = await _save_runtime_snapshot(
-                page_obj,
-                query_id,
-                f"{llm}_browser_timeout_{stage}",
-                config=config,
-                runtime_events=runtime_events,
-                proxy_diagnostic=proxy_diagnostic,
+            snapshot_path = await asyncio.wait_for(
+                _save_runtime_snapshot(
+                    page_obj,
+                    query_id,
+                    suffix,
+                    config=config,
+                    runtime_events=runtime_events,
+                    proxy_diagnostic=proxy_diagnostic,
+                ),
+                timeout=15,
             )
             if snapshot_path is not None:
                 self.last_snapshot_path = str(snapshot_path)
         except Exception as e:
             logger.warning(
-                "[%s] browser_timeout snapshot save failed: %s",
+                "[%s] %s snapshot save failed (stage=%s): %s",
                 llm,
+                suffix_prefix,
+                stage,
                 _redact_sensitive_text(str(e))[:200],
             )
         try:
-            await _save_screenshot(page_obj, query_id, f"{llm}_browser_timeout_{stage}")
-        except Exception:
-            pass
+            await asyncio.wait_for(
+                _save_screenshot(page_obj, query_id, suffix),
+                timeout=15,
+            )
+        except Exception as e:
+            logger.warning(
+                "[%s] %s screenshot save failed (stage=%s): %s",
+                llm,
+                suffix_prefix,
+                stage,
+                _redact_sensitive_text(str(e))[:200],
+            )
 
     async def _recover_from_doubao_unavailable_page(
         self,
