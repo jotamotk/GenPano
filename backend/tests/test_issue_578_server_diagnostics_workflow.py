@@ -317,3 +317,50 @@ def test_bestcoffer_batch_issue_697_artifacts_do_not_export_raw_payloads() -> No
     assert "payload_logs_redacted.txt" in run_script
     assert "-name '*.html'" in run_script
     assert "-name '*.png'" in run_script
+
+
+def test_query_evidence_mode_collects_exact_readonly_citation_artifacts() -> None:
+    workflow_text = WORKFLOW.read_text(encoding="utf-8")
+    workflow = yaml.safe_load(workflow_text)
+    inputs = workflow["on" if "on" in workflow else True]["workflow_dispatch"]["inputs"]
+
+    assert "query_evidence" in inputs["scraper_mode"]["description"]
+    assert inputs["diagnostic_query_id"]["default"] == "185003"
+    assert inputs["diagnostic_log_since_utc"]["default"] == "2026-05-14 05:32:00 UTC"
+    assert inputs["diagnostic_log_until_utc"]["default"] == "2026-05-14 05:34:30 UTC"
+
+    steps = workflow["jobs"]["diagnostics"]["steps"]
+    query_step = next(
+        step for step in steps if step.get("name") == "Run exact query evidence diagnostics"
+    )
+    upload_step = next(
+        step for step in steps if step.get("name") == "Upload exact query evidence artifacts"
+    )
+    run_script = query_step["run"]
+
+    assert query_step["if"] == "${{ inputs.scraper_mode == 'query_evidence' }}"
+    assert upload_step["if"] == "${{ always() && inputs.scraper_mode == 'query_evidence' }}"
+    assert "read_only=true" in run_script
+    assert "mutations_attempted=false" in run_script
+    assert "QUERY_ID" in run_script
+    assert '[ "${QUERY_ID}" -ge 1 ] || fail' in run_script
+    assert "SELECT" in run_script
+    assert "UPDATE " not in run_script
+    assert "DELETE " not in run_script
+    assert "INSERT " not in run_script
+    assert "redis-cli" not in run_script
+    assert "execute_query" not in run_script
+    assert "citation_sources" in run_script
+    assert "response_html_marker_summary.json" in run_script
+    assert "artifact-file-summary.jsonl" in run_script
+    assert "query_${QUERY_ID}_*" in run_script
+    assert "screenshot-paths.txt" in run_script
+    assert "docker compose cp" in run_script
+    assert "entry-btn-v3" in run_script
+    assert "container-outer" in run_script
+    assert "search-item-" in run_script
+    assert "search-reference-ui-v3" in run_script
+    assert "data-href" in run_script
+    assert "python3 -c" in run_script
+    assert "sys.stdin.read()" in run_script
+    assert "docker compose logs --since" in run_script
