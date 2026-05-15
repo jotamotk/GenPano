@@ -2207,15 +2207,41 @@ class GuestQueryExecutor:
         query_text: str,
         llm_name: str,
     ) -> bool:
-        """Fill a textarea/input, using JS first for Doubao's controlled input."""
+        """Fill a textarea/input, using JS first for Doubao's controlled input.
+
+        Refs #963 follow-up to PR #1008 live evidence (E2E run 25924635842 +
+        Server Diagnostics run 25925187531): query 184968 retry 20 on a
+        fresh active account 44 hung at ``stage=prompt_fill`` for the full
+        480s soft-time-limit. The prior implementation called
+        ``input_el.fill("")``, ``self._inject_controlled_textarea_value(...)``,
+        ``input_el.evaluate(...)``, and ``page.keyboard.type(...)`` with no
+        timeout — if the page sits in a degenerate state where the input
+        node is attached but does not accept events (overlay covering the
+        input, focus stolen, browser context dead-but-not-yet-collected),
+        any of these awaits hangs indefinitely. Bound each step
+        individually so a hung input cannot burn the outer execute_query
+        budget. Each bound is generous compared to the expected work
+        (~3s for a typical 30-char query) so legitimate slow renders still
+        succeed; the bounds exist to fail fast on a stuck page.
+        """
         try:
-            await input_el.fill("")
+            await asyncio.wait_for(input_el.fill(""), timeout=10)
         except Exception:
             pass
         await page.wait_for_timeout(random.randint(200, 500))
 
         if llm_name == "doubao":
-            actual = await self._inject_controlled_textarea_value(input_el, query_text)
+            try:
+                actual = await asyncio.wait_for(
+                    self._inject_controlled_textarea_value(input_el, query_text),
+                    timeout=15,
+                )
+            except (asyncio.TimeoutError, Exception) as inject_err:
+                logger.warning(
+                    f"[{llm_name}] JS 注入受控 textarea 超时/异常: "
+                    f"{_redact_sensitive_text(str(inject_err))[:200]}"
+                )
+                actual = ""
             if actual.strip() == query_text.strip():
                 logger.info(f"[{llm_name}] 通过 JS 注入受控 textarea")
                 return True
@@ -2224,10 +2250,33 @@ class GuestQueryExecutor:
                 f"（len={len(actual or '')} vs {len(query_text)}），回退到键盘输入"
             )
 
-        await page.keyboard.type(query_text, delay=random.randint(50, 120))
+        try:
+            await asyncio.wait_for(
+                page.keyboard.type(query_text, delay=random.randint(50, 120)),
+                timeout=60,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                f"[{llm_name}] keyboard.type 超时 (60s)，回退到 JS 注入"
+            )
+            try:
+                actual = await asyncio.wait_for(
+                    self._inject_controlled_textarea_value(input_el, query_text),
+                    timeout=15,
+                )
+                return actual.strip() == query_text.strip()
+            except (asyncio.TimeoutError, Exception) as fallback_err:
+                logger.warning(
+                    f"[{llm_name}] 键盘超时后 JS 注入兜底失败: "
+                    f"{_redact_sensitive_text(str(fallback_err))[:200]}"
+                )
+                return False
 
         try:
-            actual = await input_el.evaluate("el => el.value ?? el.textContent ?? ''")
+            actual = await asyncio.wait_for(
+                input_el.evaluate("el => el.value ?? el.textContent ?? ''"),
+                timeout=10,
+            )
         except Exception:
             actual = None
         if actual is not None and actual.strip() != query_text.strip():
@@ -2235,8 +2284,14 @@ class GuestQueryExecutor:
                 f"[{llm_name}] 输入值与期望不一致（len={len(actual or '')} vs {len(query_text)}），"
                 "改用 JS 注入并触发 React input 事件"
             )
-            actual = await self._inject_controlled_textarea_value(input_el, query_text)
-            return actual.strip() == query_text.strip()
+            try:
+                actual = await asyncio.wait_for(
+                    self._inject_controlled_textarea_value(input_el, query_text),
+                    timeout=15,
+                )
+                return actual.strip() == query_text.strip()
+            except (asyncio.TimeoutError, Exception):
+                return False
         return True
 
     async def _browser_query(

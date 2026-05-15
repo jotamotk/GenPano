@@ -2076,6 +2076,87 @@ async def test_doubao_controlled_textarea_prefers_js_injection(monkeypatch):
     assert any("compositionend" in script for script in input_el.scripts)
 
 
+@pytest.mark.asyncio
+async def test_doubao_fill_plain_text_input_bails_when_keyboard_type_hangs(
+    monkeypatch,
+):
+    """Refs #963 follow-up to PR #1008 live evidence (Admin E2E run
+    25924635842 + Server Diagnostics readback run 25925187531, query
+    184968 retry 20): the executor hung at ``stage=prompt_fill`` for the
+    full 480s soft-time-limit on a fresh active account (44). The prior
+    implementation called ``page.keyboard.type(...)`` without any
+    timeout, so a page in a degenerate state (overlay covering input,
+    focus stolen, browser context dead-but-not-yet-collected) would
+    cause an indefinite hang on the typing call. This test simulates a
+    forever-hanging keyboard.type and asserts the bounded fill bails
+    out fast instead of waiting forever — both via TimeoutError-driven
+    fallback to JS injection and, if that also fails, by returning
+    False so the caller can surface the failure cleanly.
+    """
+    import asyncio as _asyncio
+
+    _install_fake_playwright(monkeypatch)
+
+    from geo_tracker.agent.guest_executor import GuestQueryExecutor
+
+    class HangingKeyboard:
+        def __init__(self):
+            self.type_calls = 0
+
+        async def type(self, _text, delay=0):
+            self.type_calls += 1
+            # Simulate the production hang: keyboard.type never returns.
+            await _asyncio.sleep(3600)
+
+    class FakePage:
+        def __init__(self):
+            self.keyboard = HangingKeyboard()
+
+        async def wait_for_timeout(self, ms):
+            return None
+
+    class StuckInput:
+        """The JS injection and fill paths both come back empty so the code
+        falls through to keyboard.type — that is where the production hang
+        was observed.
+        """
+
+        def __init__(self):
+            self.value = ""
+
+        async def fill(self, _text):
+            return None
+
+        async def evaluate(self, _script, _arg=None):
+            return ""
+
+    page = FakePage()
+    input_el = StuckInput()
+    executor = GuestQueryExecutor()
+
+    async def _run():
+        # The bounded fill should give up well under 120s even though
+        # the keyboard.type would hang forever; 120s is a comfortable
+        # ceiling above the 60s keyboard bound + 15s JS-inject fallback
+        # and exists only to fail the test cleanly if the bound regresses.
+        return await _asyncio.wait_for(
+            executor._fill_plain_text_input(
+                page, input_el, "hello doubao", "doubao"
+            ),
+            timeout=120,
+        )
+
+    result = await _run()
+
+    # The function bailed (returned False) rather than hanging forever.
+    assert result is False, (
+        "Bounded _fill_plain_text_input must return False instead of "
+        "hanging when keyboard.type stalls"
+    )
+    # The hang happened inside keyboard.type — we must have entered it.
+    assert page.keyboard.type_calls == 1
+
+
 def test_doubao_response_selector_accepts_receive_message_container(monkeypatch):
     _install_fake_playwright(monkeypatch)
 
