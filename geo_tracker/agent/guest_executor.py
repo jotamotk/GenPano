@@ -398,6 +398,12 @@ GUEST_LLM_CONFIG = {
         # receive_message testid 已移除；用 .flow-markdown-body 作为 AI 响应容器的主 selector
         "response_selector": ".flow-markdown-body, [data-testid='receive_message'], [data-testid='receive_message'] [data-testid='message_text_content'], [data-testid='receive_message'] .flow-markdown-body, [class*='message-content'], [class*='chat-message-content']",
         "wait_after_submit": 60000,
+        # Refs #963: when "深度思考" / "正在搜索" is still visible at 60s, or
+        # the response is actively streaming/growing, allow response_wait to
+        # extend up to this many additional milliseconds. 120s gives a 3-min
+        # effective ceiling for slow Doubao responses while still leaving
+        # the worker's 480s outer budget room for page_load + cleanup.
+        "wait_after_submit_max_extension": 120000,
         "load_wait":        10000,
         # 动态判断：有 DOUBAO_COOKIES_JSON 则可免登录，否则需要登录
         "requires_login":   not bool(os.getenv("DOUBAO_COOKIES_JSON", "").strip()),
