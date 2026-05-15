@@ -879,6 +879,75 @@ async def test_doubao_verify_success_accepts_strict_logged_in_state(
     assert result is True
 
 
+@pytest.mark.asyncio
+async def test_doubao_already_logged_in_accepts_stable_selector_chat_input_without_placeholder(
+    monkeypatch,
+) -> None:
+    """Refs #963 / PR #1005 review (Codex P2): the chat-input detector
+    must accept Doubao's 2026 stable id/class selectors (``#input-engine-
+    container textarea.semi-input-textarea`` / ``textarea.semi-input-
+    textarea``) even when the textarea ``placeholder`` is empty after
+    login. Without this, a real post-SMS logged-in page where Doubao left
+    the placeholder blank would fail ``_already_logged_in`` and the
+    stricter ``verify_success`` (PR #1005) would over-reject the real
+    login."""
+    from geo_tracker.agent.sms_login import get_handler
+
+    handler = get_handler("doubao")
+    assert handler is not None
+
+    class _StableSelectorLoggedInPage(_FakePage):
+        def __init__(self) -> None:
+            super().__init__(
+                url="https://www.doubao.com/chat",
+                body_text="user-avatar 我的账号",
+            )
+
+        async def query_selector(self, selector: str):
+            if "login_content" in selector:
+                return None
+            if "textarea" in selector:
+                return _VisibleElement()
+            return None
+
+        async def content(self) -> str:
+            return """
+            <body>
+              <header><div class="user-avatar"></div></header>
+              <main>
+                <div id="input-engine-container">
+                  <textarea class="semi-input-textarea"></textarea>
+                </div>
+              </main>
+            </body>
+            """
+
+        async def evaluate(self, script: str):
+            if "innerText" in script:
+                return self._body_text
+            # The new _already_logged_in JS finds the chat input via the
+            # stable id/class selector even though placeholder is blank.
+            if "isVisibleTextarea" in script or "stableSelectors" in script:
+                return {"chat": True, "loginBtn": False}
+            # Backwards compat: pre-fix JS only matched placeholder, so
+            # it would return {chat: false} — proves we are not relying
+            # on the old path.
+            if "placeholder" in script and "loginBtn" in script:
+                return {"chat": False, "loginBtn": False}
+            return {}
+
+    async def _noop(_page):
+        return None
+
+    monkeypatch.setattr(handler, "_handle_captcha", _noop)
+
+    result = await handler._already_logged_in(_StableSelectorLoggedInPage())
+    assert result is True, (
+        "_already_logged_in must accept the stable id/class chat input "
+        "even when textarea.placeholder is blank"
+    )
+
+
 def test_doubao_sms_login_uses_configured_proxy(monkeypatch) -> None:
     from geo_tracker.agent.sms_login.base import _sms_login_proxy_url
     from geo_tracker.agent.sms_login.base import _should_use_proxy_for_sms_login
