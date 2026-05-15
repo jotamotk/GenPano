@@ -104,6 +104,17 @@ PROMPT_FILL_INJECT_TIMEOUT_S = 15
 PROMPT_FILL_KEYBOARD_TYPE_TIMEOUT_S = 60
 PROMPT_FILL_VALUE_READ_TIMEOUT_S = 10
 
+# Refs #963 follow-up to PR #1010 live evidence (Admin E2E run 25927727628
+# query 184968 retry 22, stage=response_wait, latency=480972ms): after
+# PR #1010 unblocked prompt_fill, the next bottleneck surfaced as
+# response_wait at the full 480s budget. The wait_total counter inside
+# the loop is bounded to wait_after_submit (60s) + extension_max (120s)
+# = 180s, so additional time is being burned by unbounded calls inside
+# the wait loop and the post-loop response extraction. Each individual
+# call is bounded so a single hung page op cannot eat the budget.
+RESPONSE_WAIT_GENERATING_EVAL_TIMEOUT_S = 10
+RESPONSE_EXTRACT_SELECTOR_TIMEOUT_S = 10
+
 
 _SENSITIVE_TEXT_PATTERNS = [
     (
@@ -2827,10 +2838,15 @@ class GuestQueryExecutor:
                 return "", "", []
 
             # 检查是否仍在生成中（豆包"深度思考"等状态）
+            # Refs #963 follow-up to PR #1010 live evidence (run 25927727628):
+            # this evaluate runs every 5s inside the response_wait loop with
+            # no per-call timeout. On a degenerate page it can hang for the
+            # full outer budget. Bound it so a single hung evaluate cannot
+            # eat the response_wait stage.
             still_generating = False
             if llm_name == "doubao":
                 try:
-                    generating = await page.evaluate("""
+                    generating = await asyncio.wait_for(page.evaluate("""
                         () => {
                             const body = document.body.innerText || '';
                             // 豆包生成中的标志
@@ -2841,19 +2857,28 @@ class GuestQueryExecutor:
                             // 有生成标志且无完整回复 → 仍在生成
                             return has_sign && !has_resp;
                         }
-                    """)
+                    """), timeout=RESPONSE_WAIT_GENERATING_EVAL_TIMEOUT_S)
                     still_generating = bool(generating)
                 except Exception:
                     pass
 
             # 提前检查是否已有响应内容（避免浪费剩余等待时间）
+            # Refs #963 follow-up to PR #1010: bound each per-selector
+            # check inside the response_wait loop so a single hung selector
+            # or inner_text() cannot burn the budget.
             resp_ready = False
             current_resp_len = 0
             for sel in response_selectors:
                 try:
-                    el = await page.query_selector(sel)
+                    el = await asyncio.wait_for(
+                        page.query_selector(sel),
+                        timeout=RESPONSE_EXTRACT_SELECTOR_TIMEOUT_S,
+                    )
                     if el:
-                        txt = await el.inner_text()
+                        txt = await asyncio.wait_for(
+                            el.inner_text(),
+                            timeout=RESPONSE_EXTRACT_SELECTOR_TIMEOUT_S,
+                        )
                         if txt and len(txt.strip()) > 20:
                             resp_ready = True
                             current_resp_len = len(txt.strip())
@@ -2921,19 +2946,31 @@ class GuestQueryExecutor:
             await _save_html(page, debug_query_id, f"{llm_name}_response_page")
 
             # 优先尝试配置的 selectors
+            # Refs #963 follow-up to PR #1010: bound each extraction call
+            # so a single hung selector / inner_text() / inner_html() cannot
+            # turn the response_wait stage into a full-budget timeout.
             for sel in response_selectors:
                 try:
-                    elements = await page.query_selector_all(sel)
+                    elements = await asyncio.wait_for(
+                        page.query_selector_all(sel),
+                        timeout=RESPONSE_EXTRACT_SELECTOR_TIMEOUT_S,
+                    )
                     if elements:
                         texts = []
                         htmls = []
                         for el in elements:
                             try:
-                                txt = await el.inner_text()
+                                txt = await asyncio.wait_for(
+                                    el.inner_text(),
+                                    timeout=RESPONSE_EXTRACT_SELECTOR_TIMEOUT_S,
+                                )
                                 if txt and txt.strip():
                                     texts.append(txt.strip())
                                 # 同时保存 innerHTML（保留 <a href> 等标签）
-                                html = await el.inner_html()
+                                html = await asyncio.wait_for(
+                                    el.inner_html(),
+                                    timeout=RESPONSE_EXTRACT_SELECTOR_TIMEOUT_S,
+                                )
                                 if html:
                                     htmls.append(html)
                             except Exception:
@@ -2946,9 +2983,15 @@ class GuestQueryExecutor:
                             # 豆包：同时保存引用面板 HTML 以便后续 backfill
                             if llm_name == "doubao":
                                 try:
-                                    ref_panel = await page.query_selector('[data-testid="search-reference-ui-v3"]')
+                                    ref_panel = await asyncio.wait_for(
+                                        page.query_selector('[data-testid="search-reference-ui-v3"]'),
+                                        timeout=RESPONSE_EXTRACT_SELECTOR_TIMEOUT_S,
+                                    )
                                     if ref_panel:
-                                        ref_html = await ref_panel.inner_html()
+                                        ref_html = await asyncio.wait_for(
+                                            ref_panel.inner_html(),
+                                            timeout=RESPONSE_EXTRACT_SELECTOR_TIMEOUT_S,
+                                        )
                                         if ref_html:
                                             resp_html += "\n<!-- doubao-references -->\n" + ref_html
                                 except Exception:

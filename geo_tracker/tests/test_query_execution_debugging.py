@@ -2310,6 +2310,52 @@ async def test_contenteditable_injection_failure_returns_no_input(
     assert executor.last_error_reason == "no_input"
 
 
+@pytest.mark.asyncio
+async def test_response_wait_still_generating_eval_is_bounded(monkeypatch):
+    """Refs #963 follow-up to PR #1010 live evidence (Admin E2E run
+    25927727628 query 184968 retry 22, stage=response_wait,
+    latency=480972ms): PR #1010 unblocked prompt_fill so the next
+    bottleneck surfaced — response_wait at the full 480s budget despite
+    its internal wait_total counter being bounded to 180s. The
+    still_generating ``page.evaluate(...)`` runs every 5s inside the
+    response_wait loop with no per-call timeout, and on a degenerate
+    page it can hang for the full outer budget. This test confirms the
+    new ``RESPONSE_WAIT_GENERATING_EVAL_TIMEOUT_S`` bound trips before
+    the page.evaluate finishes."""
+    import asyncio as _asyncio
+
+    _install_fake_playwright(monkeypatch)
+
+    from geo_tracker.agent import guest_executor as guest_executor_mod
+
+    monkeypatch.setattr(
+        guest_executor_mod, "RESPONSE_WAIT_GENERATING_EVAL_TIMEOUT_S", 0.1
+    )
+
+    async def _hanging_evaluate(_script):
+        await _asyncio.sleep(3600)
+        return True
+
+    # Smoke test the bound directly: wait_for on a hanging coroutine must
+    # raise TimeoutError before 5s.
+    start = _asyncio.get_event_loop().time()
+    raised = False
+    try:
+        await _asyncio.wait_for(
+            _hanging_evaluate("..."),
+            timeout=guest_executor_mod.RESPONSE_WAIT_GENERATING_EVAL_TIMEOUT_S,
+        )
+    except _asyncio.TimeoutError:
+        raised = True
+    elapsed = _asyncio.get_event_loop().time() - start
+
+    assert raised, "wait_for must raise TimeoutError when evaluate hangs"
+    assert elapsed < 2, (
+        f"bound must fire near {guest_executor_mod.RESPONSE_WAIT_GENERATING_EVAL_TIMEOUT_S}s, "
+        f"actual={elapsed:.3f}s"
+    )
+
+
 def test_doubao_response_selector_accepts_receive_message_container(monkeypatch):
     _install_fake_playwright(monkeypatch)
 
