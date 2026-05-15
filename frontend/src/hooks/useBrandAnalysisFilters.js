@@ -27,6 +27,7 @@ const QK = {
   profileGroup: 'profileGroup',
   dimensions: 'dimensions',
   intents: 'intents',
+  promptScope: 'promptScope',
 };
 
 function readCsv(sp, key) {
@@ -62,6 +63,7 @@ export function useBrandAnalysisFilters() {
     profileGroup: searchParams.get(QK.profileGroup) || 'all',
     dimensions: readCsv(searchParams, QK.dimensions),
     intents: readCsv(searchParams, QK.intents),
+    promptScope: searchParams.get(QK.promptScope) || '',
   };
 
   const isDefault =
@@ -70,10 +72,13 @@ export function useBrandAnalysisFilters() {
     filters.engines.length === 0 &&
     (filters.profileGroup === 'all' || !searchParams.get(QK.profileGroup)) &&
     filters.dimensions.length === 0 &&
-    filters.intents.length === 0;
+    filters.intents.length === 0 &&
+    !filters.promptScope;
 
   const extendedActiveCount =
-    (filters.dimensions.length > 0 ? 1 : 0) + (filters.intents.length > 0 ? 1 : 0);
+    (filters.dimensions.length > 0 ? 1 : 0) +
+    (filters.intents.length > 0 ? 1 : 0) +
+    (filters.promptScope ? 1 : 0);
 
   function setFilter(key, value) {
     const next = new URLSearchParams(searchParams);
@@ -82,6 +87,9 @@ export function useBrandAnalysisFilters() {
     } else if (key === 'profileGroup') {
       if (!value || value === 'all') next.delete(QK.profileGroup);
       else next.set(QK.profileGroup, value);
+    } else if (key === 'promptScope') {
+      if (!value) next.delete(QK.promptScope);
+      else next.set(QK.promptScope, value);
     } else if (key === 'from' || key === 'to') {
       if (!value) next.delete(QK[key]);
       else next.set(QK[key], value);

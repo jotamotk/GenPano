@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 
 class TopicMonitoringSummary(BaseModel):
     topic_count: int = 0
+    topic_count_total: int = 0
     prompt_count: int = 0
     query_count: int = 0
     response_count: int = 0
@@ -83,6 +84,7 @@ class TopicPromptRow(BaseModel):
     intent: str | None = None
     language: str | None = None
     status: str | None = None
+    prompt_scope: str | None = None
     query_count: int = 0
     response_count: int = 0
     success_rate: float | None = None

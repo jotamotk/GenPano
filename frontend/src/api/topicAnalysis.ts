@@ -4,6 +4,7 @@ import type { AnalyticsContractMetadata } from './analyticsContract'
 
 export interface TopicMonitoringSummary {
   topic_count: number
+  topic_count_total: number
   prompt_count: number
   query_count: number
   response_count: number
@@ -60,6 +61,7 @@ export interface TopicPromptRow {
   intent: string | null
   language: string | null
   status: string | null
+  prompt_scope: string | null
   query_count: number
   response_count: number
   success_rate: number | null

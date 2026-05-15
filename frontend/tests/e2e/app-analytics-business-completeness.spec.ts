@@ -702,19 +702,19 @@ async function captureRenderedTopics(page: Page, route: string): Promise<Rendere
 function resolveOpenAttemptsButtonIndex(rowTexts: string[], queryText?: string): OpenAttemptsSelection {
   const query = compactText(queryText)
   if (!rowTexts.length) {
-    return { index: 0, error: 'No visible Open response attempts rows were available' }
+    return { index: 0, error: 'No visible logical query group cards were available' }
   }
   if (!query) {
     return {
       index: 0,
-      fallbackReason: 'No sampled query text was available from the prompt queries API; using first response-attempt row',
+      fallbackReason: 'No sampled query text was available from the prompt queries API; using first logical-query-group card',
     }
   }
   const index = rowTexts.findIndex(row => compactIncludes(row, query))
   if (index >= 0) return { index }
   return {
     index: 0,
-    error: `Sampled query text was not found in visible response-attempt rows: ${query}`,
+    error: `Sampled query text was not found in visible logical query group cards: ${query}`,
   }
 }
 
@@ -752,27 +752,21 @@ async function captureTopicsAnalyzerFactsModal(
   const route = `/brand/topics?brandId=${brandId}&range=30d&profileGroup=all&topicId=${probe.topicId}&promptId=${probe.promptId}`
   await page.goto(`${baseUrl}${route}`, { waitUntil: 'domcontentloaded', timeout: 60_000 })
   await page.waitForLoadState('networkidle', { timeout: 25_000 }).catch(() => {})
-  const openButtons = page.getByRole('button', { name: /Open response attempts/i })
-  const buttonRowTexts = await openButtons.evaluateAll(buttons => {
+  // Per #985 D2.A: query list now renders one clickable Card per logical query
+  // group (no "Open response attempts" button); clicking the card opens the modal.
+  const groupCards = page.locator('div').filter({ hasText: /Logical query group/i })
+  const cardRowTexts = await groupCards.evaluateAll(cards => {
     const clean = (value: unknown) => String(value ?? '').replace(/\s+/g, ' ').trim()
-    return buttons.map(button => {
-      let element: HTMLElement | null = button.parentElement
-      while (element && element !== document.body) {
-        const text = clean(element.innerText || element.textContent)
-        if (/Exact query/i.test(text) && /Latest response/i.test(text)) return text
-        element = element.parentElement
-      }
-      return clean((button.parentElement as HTMLElement | null)?.innerText || button.textContent)
-    })
+    return cards.map(card => clean((card as HTMLElement).innerText || card.textContent))
   })
-  const selection = resolveOpenAttemptsButtonIndex(buttonRowTexts, probe.queryText)
-  assertCondition(!selection.error, `${route} could not select sampled response attempt: ${selection.error}; rows=${JSON.stringify(buttonRowTexts)}`)
+  const selection = resolveOpenAttemptsButtonIndex(cardRowTexts, probe.queryText)
+  assertCondition(!selection.error, `${route} could not select sampled response attempt: ${selection.error}; rows=${JSON.stringify(cardRowTexts)}`)
   if (selection.fallbackReason) {
     console.log(`TOPICS_MODAL_SELECTION_FALLBACK ${selection.fallbackReason}`)
   }
-  const openButton = openButtons.nth(selection.index)
-  await expect(openButton).toBeVisible({ timeout: 25_000 })
-  await openButton.click()
+  const groupCard = groupCards.nth(selection.index)
+  await expect(groupCard).toBeVisible({ timeout: 25_000 })
+  await groupCard.click()
   const modal = page.getByRole('dialog', { name: /Response attempts/i })
   await expect(modal).toBeVisible({ timeout: 15_000 })
   const analyzerPanel = modal.locator('aside').filter({ hasText: 'Analyzer facts' }).last()
@@ -1299,11 +1293,11 @@ test.describe('App analytics business completeness assertion', () => {
     ).toThrow(/0\.0 placeholder wall/)
   })
 
-  test('selects the sampled query row before opening Response attempts', () => {
+  test('selects the sampled query card before opening Response attempts', () => {
     const selection = resolveOpenAttemptsButtonIndex(
       [
-        'Exact query How does BestCoffer compare on uptime? Latest response First answer Open response attempts',
-        'Exact query 测试非结构化数据AI脱敏的准确率，有哪些可用的参考依据? Latest response Cited answer Open response attempts',
+        'Logical query group How does BestCoffer compare on uptime? Days covered 1 Mentioned 0/1 Citations 0',
+        'Logical query group 测试非结构化数据AI脱敏的准确率，有哪些可用的参考依据? Days covered 1 Mentioned 1/1 Citations 3',
       ],
       '测试非结构化数据AI脱敏的准确率，有哪些可用的参考依据?',
     )
@@ -1311,9 +1305,9 @@ test.describe('App analytics business completeness assertion', () => {
     expect(selection).toEqual({ index: 1 })
   })
 
-  test('allows first-row modal fallback only when sampled query text is unavailable', () => {
+  test('allows first-card modal fallback only when sampled query text is unavailable', () => {
     const selection = resolveOpenAttemptsButtonIndex(
-      ['Exact query Fallback row Latest response Cited answer Open response attempts'],
+      ['Logical query group Fallback row Days covered 1 Mentioned 1/1 Citations 2'],
       '',
     )
 
@@ -1321,7 +1315,7 @@ test.describe('App analytics business completeness assertion', () => {
     expect(selection.fallbackReason).toMatch(/No sampled query text/)
     expect(
       resolveOpenAttemptsButtonIndex(
-        ['Exact query Fallback row Latest response Cited answer Open response attempts'],
+        ['Logical query group Fallback row Days covered 1 Mentioned 1/1 Citations 2'],
         'Missing sampled query',
       ).error,
     ).toMatch(/not found/)
