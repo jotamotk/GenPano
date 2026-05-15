@@ -233,9 +233,7 @@ def _contract_metric_blocked(update: dict[str, Any], metric_key: str) -> bool:
     )
 
 
-def _metric_evidence_allows_partial_data(
-    update: dict[str, Any], metric_key: str
-) -> bool:
+def _metric_evidence_allows_partial_data(update: dict[str, Any], metric_key: str) -> bool:
     """Return True when the contract update has `formula_status: partial`
     backed by real analyzer evidence so chart points/segments/items should
     survive even though `_contract_metric_blocked` flagged the metric.

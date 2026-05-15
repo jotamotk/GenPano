@@ -48,9 +48,9 @@ async def _with_authority_trend_contract(
     )
     if not update:
         return out
-    if _contract_metric_blocked(
+    if _contract_metric_blocked(update, "citation") and not _metric_evidence_allows_partial_data(
         update, "citation"
-    ) and not _metric_evidence_allows_partial_data(update, "citation"):
+    ):
         update["points"] = []
     return out.model_copy(update=update)
 

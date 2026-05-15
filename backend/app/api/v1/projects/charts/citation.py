@@ -47,9 +47,9 @@ async def _with_citation_composition_contract(
     )
     if not update:
         return out
-    if _contract_metric_blocked(
+    if _contract_metric_blocked(update, "citation") and not _metric_evidence_allows_partial_data(
         update, "citation"
-    ) and not _metric_evidence_allows_partial_data(update, "citation"):
+    ):
         update["segments"] = []
         update["total"] = 0
     return out.model_copy(update=update)
