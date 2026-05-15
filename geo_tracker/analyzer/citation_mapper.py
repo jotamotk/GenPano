@@ -83,6 +83,24 @@ class CitationMapper:
                 brand_domains[domain] = target_brand.name
                 official_domains.add(domain)
 
+        # Response-level proximity flag (#948 / #570 attribution gap):
+        # if the target brand was detected anywhere in this response,
+        # citations that have no more specific brand match should still
+        # attribute to the target brand. Without this fallback every
+        # third-party reference (review sites, news, wikipedia) in a
+        # response that talks about the target brand stayed unattributed,
+        # so `citation_sources.mention_id` was NULL for all rows and
+        # `attributed_count` rolled up to 0 even when hundreds of
+        # citations existed for the project. Mirrors SoV's "response-level
+        # context owns the orphan signal" semantics.
+        target_lower = (target_brand.name or "").lower()
+        target_brand_detected = any(
+            (b.brand_id is not None and target_brand.id is not None and b.brand_id == target_brand.id)
+            or (b.is_target)
+            or (b.brand_name and target_lower and b.brand_name.lower() == target_lower)
+            for b in detected_brands
+        )
+
         results: list[CitationMapping] = []
 
         for citation in citations_json:
@@ -97,6 +115,8 @@ class CitationMapper:
             source_type = self._classify_source(domain, official_domains)
             brand_name = self._match_brand(
                 domain, title, brand_domains, detected_brands,
+                target_brand_name=target_brand.name,
+                target_brand_detected=target_brand_detected,
             )
 
             results.append(CitationMapping(
@@ -150,8 +170,25 @@ class CitationMapper:
         title: str,
         brand_domains: dict[str, str],
         detected_brands: list[DetectedBrand],
+        target_brand_name: str = "",
+        target_brand_detected: bool = False,
     ) -> str | None:
-        """Try to associate a citation with a brand."""
+        """Try to associate a citation with a brand.
+
+        Match priority:
+          1. Domain match against target brand's website (highest fidelity).
+          2. Title contains a detected brand's name (covers competitor citations
+             whose title explicitly names a non-target brand — keeps the
+             original behaviour and prevents target_brand-only attribution
+             from cannibalising competitor citation share).
+          3. Response-level proximity fallback: when the target brand was
+             detected in the response (BrandMention exists) and no more
+             specific match fired, attribute the orphan citation to the
+             target brand. Without this, every third-party reference in a
+             target-brand-mentioning response stayed unattributed (see #948
+             / #570 attribution gap — 888 citations / 0 attributed for
+             bestCoffer).
+        """
         # Match by domain
         if domain in brand_domains:
             return brand_domains[domain]
@@ -162,5 +199,9 @@ class CitationMapper:
             for brand in detected_brands:
                 if brand.brand_name.lower() in title_lower:
                     return brand.brand_name
+
+        # Response-level proximity fallback for orphan citations.
+        if target_brand_detected and target_brand_name:
+            return target_brand_name
 
         return None
