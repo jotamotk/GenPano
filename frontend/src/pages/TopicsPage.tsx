@@ -62,6 +62,18 @@ const DIMENSION_VARIANTS: Record<string, string> = {
   scenario: 'orange',
 }
 
+const PROMPT_SCOPE_LABELS: Record<string, string> = {
+  non_branded: 'Non-brand',
+  branded: 'Branded',
+  competitive: 'Competitive',
+}
+
+const PROMPT_SCOPE_VARIANTS: Record<string, string> = {
+  non_branded: 'secondary',
+  branded: 'accent',
+  competitive: 'orange',
+}
+
 type LooseRecord = Record<string, any>
 
 function analysisParamsWithBrand(
@@ -793,13 +805,8 @@ function TopicsView({
   const avgVisibility = averageMetric(rows, ['visibility_rate', 'sov', 'mention_rate'])
   const avgCitationCoverage = averageMetric(rows, ['citation_rate'])
   const sentiment = sentimentTotals(rows)
-  const sentimentTotal = sentimentDistributionTotal(sentiment)
   const isEmpty = !monitoringQ.isLoading && rows.length === 0
   const sevenDayEmpty = isEmpty && isSevenDayWindow(filters)
-  const contractSource = monitoringQ.data as (AnalyticsContractMetadata & LooseRecord) | null | undefined
-  const visibilityTrust = topicMetricTrustState(contractSource, 'visibility', null, avgVisibility)
-  const sentimentTrust = topicMetricTrustState(contractSource, 'sentiment', null, sentimentTotal)
-  const citationTrust = topicMetricTrustState(contractSource, 'citation', null, avgCitationCoverage)
 
   return (
     <div className="space-y-5">
@@ -851,7 +858,15 @@ function TopicsView({
       </Card>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-6 gap-3">
-        <MetricCard label="Visible Topics" value={formatEvidenceCount(summary?.topic_count)} />
+        <MetricCard
+          label="Topics with evidence"
+          value={formatEvidenceCount(summary?.topic_count)}
+          detail={
+            summary?.topic_count_total
+              ? `Total topics: ${formatEvidenceCount(summary.topic_count_total)}`
+              : undefined
+          }
+        />
         <MetricCard
           label="Successful responses"
           value={formatEvidenceCount(summary?.response_count)}
@@ -862,7 +877,6 @@ function TopicsView({
           label="Avg Visibility"
           value={formatPercent(avgVisibility)}
           tone="accent"
-          trustState={visibilityTrust}
         />
         <MetricCard
           label="Sentiment Mix"
@@ -870,13 +884,11 @@ function TopicsView({
             sentiment.neutral,
           )} / ${formatEvidenceCount(sentiment.negative)}`}
           detail="Positive / neutral / negative"
-          trustState={sentimentTrust}
         />
         <MetricCard
           label="Citation Coverage"
           value={formatPercent(avgCitationCoverage)}
           detail={`${formatEvidenceCount(summary?.citation_count)} citations`}
-          trustState={citationTrust}
         />
         <MetricCard
           label="Analyzed answers"
@@ -892,9 +904,7 @@ function TopicsView({
             <div className="text-xs text-themed-muted mt-1">
               Visibility, sentiment, and citations are shown from eligible answers.
             </div>
-            <TrustStateBadge trustState={visibilityTrust || citationTrust || sentimentTrust} />
           </div>
-          <StateBadge state={monitoringQ.data?.state} />
         </div>
         <div className="overflow-x-auto">
           <table className="t-table w-full min-w-[980px]">
@@ -914,25 +924,6 @@ function TopicsView({
             </thead>
             <tbody>
               {filtered.map((topic) => {
-                const topicSource = topic as AnalyticsContractMetadata & LooseRecord
-                const rowVisibilityTrust = topicMetricTrustState(
-                  topicSource,
-                  'visibility',
-                  contractSource,
-                  visibilityValue(topic),
-                )
-                const rowSentimentTrust = topicMetricTrustState(
-                  topicSource,
-                  'sentiment',
-                  contractSource,
-                  sentimentDistributionTotal(topic.sentiment_distribution),
-                )
-                const rowCitationTrust = topicMetricTrustState(
-                  topicSource,
-                  'citation',
-                  contractSource,
-                  topic.citation_rate,
-                )
                 return (
                   <tr
                     key={topic.topic_id}
@@ -947,17 +938,13 @@ function TopicsView({
                     </td>
                     <td className="text-themed-muted">{topic.associated_brand || '-'}</td>
                     <td className="text-right tabular-nums font-semibold text-themed-primary">
-                      {trustValue(formatPercent(visibilityValue(topic)), rowVisibilityTrust)}
+                      {formatPercent(visibilityValue(topic))}
                     </td>
                     <td>
-                      {rowSentimentTrust?.canShowValue === false ? (
-                        <LimitedMetricValue trustState={rowSentimentTrust} />
-                      ) : (
-                        <SentimentMix value={topic.sentiment_distribution} />
-                      )}
+                      <SentimentMix value={topic.sentiment_distribution} />
                     </td>
                     <td className="text-right tabular-nums text-themed-primary">
-                      {trustValue(formatPercent(topic.citation_rate), rowCitationTrust)}
+                      {formatPercent(topic.citation_rate)}
                     </td>
                     <td className="text-right tabular-nums text-themed-muted">
                       {formatEvidenceCount((topic as LooseRecord).citation_count)}
@@ -1138,6 +1125,14 @@ function PromptsView({
                     {INTENT_LABELS[prompt.intent || ''] || prompt.intent || '-'}
                   </Badge>
                   <Badge size="sm">{(prompt.language || 'unknown').toUpperCase()}</Badge>
+                  {prompt.prompt_scope && (
+                    <Badge
+                      variant={PROMPT_SCOPE_VARIANTS[prompt.prompt_scope] || 'secondary'}
+                      size="sm"
+                    >
+                      {PROMPT_SCOPE_LABELS[prompt.prompt_scope] || prompt.prompt_scope}
+                    </Badge>
+                  )}
                   {(prompt.engine_coverage || []).slice(0, 3).map((engine: string) => (
                     <span
                       key={engine}
@@ -1328,85 +1323,79 @@ function QueriesView({
       </div>
 
       <div className="space-y-3">
-        {groups.map((group) => (
-          <Card key={group.key} className="p-0 overflow-hidden">
-            <div className="px-4 py-3 border-b border-themed-card flex items-start justify-between gap-4">
-              <div className="min-w-0">
-                <div className="inline-flex items-center gap-2 text-xs text-themed-muted mb-1">
-                  <MessageSquare size={14} aria-hidden />
-                  Logical query group
+        {groups.map((group) => {
+          const latestAttempt = group.dailyRows.reduce<LooseRecord | null>((acc, row) => {
+            if (!acc) return row.attempt
+            return String(latestTimestamp(row.attempt)) > String(latestTimestamp(acc))
+              ? row.attempt
+              : acc
+          }, null)
+          const engines = Array.from(
+            new Set(
+              group.dailyRows
+                .map(({ attempt }) => attempt.target_llm)
+                .filter((engine): engine is string => Boolean(engine)),
+            ),
+          )
+          const mentionedCount = group.dailyRows.reduce(
+            (sum, { attempt }) => sum + (attempt.target_mentioned ? 1 : 0),
+            0,
+          )
+          const totalCitations = group.dailyRows.reduce(
+            (sum, { attempt }) => sum + (asNumber(attempt.citation_count) || 0),
+            0,
+          )
+          return (
+            <Card
+              key={group.key}
+              hover
+              onClick={() => onOpenAttempts(latestAttempt || group.attempts[0], group.attempts)}
+              className="p-4 cursor-pointer"
+            >
+              <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,2fr)_110px_110px_120px] gap-4 items-center">
+                <div className="min-w-0">
+                  <div className="inline-flex items-center gap-2 text-xs text-themed-muted mb-1">
+                    <MessageSquare size={14} aria-hidden />
+                    Logical query group
+                  </div>
+                  <div className="text-sm font-semibold text-themed-primary leading-relaxed line-clamp-2">
+                    {group.queryText}
+                  </div>
+                  <div className="flex items-center gap-2 flex-wrap mt-2">
+                    {engines.slice(0, 3).map((engine) => (
+                      <Badge key={engine} variant="accent" size="sm">
+                        {engine}
+                      </Badge>
+                    ))}
+                    {latestAttempt && (
+                      <span className="text-[11px] text-themed-muted">
+                        Latest {formatDateTime(latestTimestamp(latestAttempt))}
+                      </span>
+                    )}
+                  </div>
                 </div>
-                <div className="text-sm font-semibold text-themed-primary leading-relaxed">
-                  {group.queryText}
+                <div>
+                  <div className="text-[11px] text-themed-muted">Days covered</div>
+                  <div className="text-sm font-semibold text-themed-primary tabular-nums">
+                    {group.dailyRows.length}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[11px] text-themed-muted">Mentioned</div>
+                  <div className="text-sm font-semibold text-themed-primary tabular-nums">
+                    {mentionedCount}/{group.dailyRows.length}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[11px] text-themed-muted">Citations</div>
+                  <div className="text-sm font-semibold text-themed-primary tabular-nums">
+                    {formatEvidenceCount(totalCitations)}
+                  </div>
                 </div>
               </div>
-              <Badge size="sm">{group.dailyRows.length} days</Badge>
-            </div>
-            <div className="divide-y divide-[var(--color-border-subtle)]">
-              {group.dailyRows.map(({ date, attempt }) => {
-                const exactQuery = attempt.query_text || group.queryText
-                return (
-                  <div
-                    key={`${group.key}-${date}-${attempt.query_id}`}
-                    className="grid grid-cols-1 lg:grid-cols-[110px_minmax(150px,0.85fr)_minmax(220px,1.35fr)_105px_105px_150px] gap-3 px-4 py-3 items-center"
-                  >
-                    <div className="text-xs font-semibold text-themed-primary tabular-nums">
-                      {date}
-                    </div>
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <Badge variant="accent" size="sm">
-                          {attempt.target_llm || '-'}
-                        </Badge>
-                        <span className="text-sm text-themed-primary">
-                          {profileLabel(attempt)}
-                        </span>
-                      </div>
-                      <div className="text-[11px] text-themed-muted mt-1">
-                        Finished {formatDateTime(latestTimestamp(attempt))}
-                      </div>
-                    </div>
-                    <div className="min-w-0">
-                      <div className="text-[11px] text-themed-muted">Exact query</div>
-                      <div className="text-xs leading-relaxed mt-1 line-clamp-1 break-words text-themed-primary">
-                        {exactQuery}
-                      </div>
-                      <div className="text-[11px] text-themed-muted mt-2">Latest response</div>
-                      <div
-                        className={`text-xs leading-relaxed mt-1 line-clamp-2 break-words ${
-                          attempt.response_preview ? 'text-themed-primary' : 'text-themed-muted'
-                        }`}
-                      >
-                        {responsePreview(attempt)}
-                      </div>
-                    </div>
-                    <div>
-                      <div className="text-[11px] text-themed-muted">Visibility</div>
-                      <div className="text-sm font-semibold text-themed-primary tabular-nums">
-                        {attempt.target_mentioned ? 'Mentioned' : 'Not mentioned'}
-                      </div>
-                    </div>
-                    <div>
-                      <div className="text-[11px] text-themed-muted">Citations</div>
-                      <div className="text-sm font-semibold text-themed-primary tabular-nums">
-                        {formatEvidenceCount(attempt.citation_count)}
-                      </div>
-                    </div>
-                    <div className="lg:text-right">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => onOpenAttempts(attempt, group.attempts)}
-                      >
-                        Open response attempts
-                      </Button>
-                    </div>
-                  </div>
-                )
-              })}
-            </div>
-          </Card>
-        ))}
+            </Card>
+          )
+        })}
         {!queriesQ.isLoading && groups.length === 0 && (
           <Card>
             {missingDailyLatest ? (
@@ -1637,16 +1626,31 @@ function ResponseAttemptsModal({
   )
   const initialAttempts = attempts.length ? attempts : [query]
   const initialQueryId = query?.query_id || initialAttempts[0]?.query_id
-  const detailQ = useQueryResponse(projectId, initialQueryId, responseParams)
+  const [activeId, setActiveId] = useState(initialQueryId)
+  // Fetch detail for the *active* attempt so switching dates in a multi-day
+  // logical query group surfaces each day's full response/analyzer_facts.
+  const detailQ = useQueryResponse(projectId, activeId, responseParams)
   const detail = detailQ.data
   const detailedAttempts = Array.isArray((detail as LooseRecord | null | undefined)?.attempts)
     ? ((detail as LooseRecord).attempts as LooseRecord[])
     : []
-  const orderedAttempts = detailedAttempts.length ? detailedAttempts : initialAttempts
-  const [activeId, setActiveId] = useState(orderedAttempts[0]?.query_id)
+  // Prefer the caller's multi-attempt list (daily group attempts) so older
+  // days remain reachable from the sidebar; only fall back to API-returned
+  // retry attempts when the caller passed a single-attempt placeholder.
+  const orderedAttempts =
+    initialAttempts.length > 1
+      ? initialAttempts
+      : detailedAttempts.length
+        ? detailedAttempts
+        : initialAttempts
+  // In the legacy single-attempt path, the API may resolve a richer attempt
+  // list after the modal mounts; sync activeId to its first entry once.
   useEffect(() => {
-    setActiveId(orderedAttempts[0]?.query_id)
-  }, [orderedAttempts[0]?.query_id])
+    if (initialAttempts.length <= 1 && detailedAttempts.length > 0) {
+      const first = detailedAttempts[0]?.query_id
+      if (first != null) setActiveId(first)
+    }
+  }, [initialAttempts.length, detailedAttempts[0]?.query_id])
 
   const activeAttempt =
     orderedAttempts.find((attempt) => attempt.query_id === activeId) || orderedAttempts[0]
@@ -1701,8 +1705,6 @@ function ResponseAttemptsModal({
     trustState: analyzerFactsTrust,
   })
   const scopeLabel = selectedScopeLabel(detailContract, selectedBrandLabel)
-  const citationAttributionPending =
-    citations.length > 0 && hasCitationProofLimitation(analyzerFactsTrust)
 
   return (
     <div
@@ -1736,10 +1738,14 @@ function ResponseAttemptsModal({
 
         <div className="grid grid-cols-1 lg:grid-cols-[220px_minmax(0,1fr)_320px] max-h-[calc(88vh-73px)] overflow-hidden">
           <aside className="border-b lg:border-b-0 lg:border-r border-themed-card p-3 overflow-y-auto">
-            <div className="text-xs font-semibold text-themed-muted mb-3">Attempts</div>
+            <div className="inline-flex items-center gap-1.5 text-xs font-semibold text-themed-muted mb-3">
+              <CalendarRange size={14} aria-hidden />
+              Date
+            </div>
             <div className="space-y-2">
               {orderedAttempts.map((attempt, index) => {
                 const active = attempt.query_id === activeAttempt?.query_id
+                const attemptDate = dayKey(latestTimestamp(attempt))
                 return (
                   <button
                     key={attempt.query_id || index}
@@ -1753,11 +1759,11 @@ function ResponseAttemptsModal({
                         : 'var(--color-border-subtle)',
                     }}
                   >
-                    <div className="text-sm font-semibold text-themed-primary">
-                      Attempt {index + 1}
+                    <div className="text-sm font-semibold text-themed-primary tabular-nums">
+                      {attemptDate}
                     </div>
                     <div className="text-[11px] text-themed-muted mt-1">
-                      {attempt.target_llm || '-'} / {formatDateTime(latestTimestamp(attempt))}
+                      {attempt.target_llm || '-'}
                     </div>
                   </button>
                 )
@@ -1806,7 +1812,6 @@ function ResponseAttemptsModal({
             {scopeLabel && (
               <div className="text-[11px] leading-snug text-themed-muted">{scopeLabel}</div>
             )}
-            <TrustStateBadge trustState={analyzerFactsTrust} />
 
             <FactSection title="Analyzer summary">
               <AnalysisSummaryGrid facts={summaryFacts} />
@@ -1814,11 +1819,6 @@ function ResponseAttemptsModal({
 
             <FactSection title={`Citations (${citations.length})`}>
               <div className="space-y-2">
-                {citationAttributionPending && (
-                  <div className="text-xs leading-snug text-themed-muted">
-                    Citation domains extracted; attribution is still being verified.
-                  </div>
-                )}
                 {citations.slice(0, 6).map((cite: LooseRecord, index: number) => (
                   <a
                     key={cite.citation_id || cite.url || index}

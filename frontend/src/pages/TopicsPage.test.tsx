@@ -278,267 +278,11 @@ describe('TopicsPage live brand override', () => {
     expect(screen.getAllByText('42.0%').length).toBeGreaterThan(0)
   })
 
-  it('shows analyzer trust states instead of fake zero topic metrics when coverage is partial', () => {
-    topicHooks.useTopicMonitoring.mockReturnValue({
-      data: {
-        summary: {
-          topic_count: 1,
-          prompt_count: 75,
-          query_count: 464,
-          response_count: 56,
-          analyzed_count: 34,
-          target_mention_count: 30,
-          citation_count: 183,
-          last_collected: '2026-05-13',
-        },
-        analyzer_coverage: {
-          eligible_response_count: 56,
-          analyzed_response_count: 34,
-          missing_response_count: 22,
-          analyzer_version: 'v3',
-        },
-        formula_status: 'partial',
-        metric_formula_evidence: {
-          visibility: {
-            formula_status: 'partial',
-            numerator: 0,
-            denominator: 56,
-            reason_codes: ['missing_analyzer_rows', 'insufficient_coverage'],
-          },
-          sentiment: {
-            formula_status: 'partial',
-            reason_codes: ['missing_sentiment_quote'],
-          },
-          citation: {
-            formula_status: 'partial',
-            numerator: 0,
-            denominator: 183,
-            reason_codes: ['unresolved_citation_attribution'],
-          },
-          pano_geo: {
-            formula_status: 'missing',
-            reason_codes: ['missing_analyzer_rows'],
-            missing_inputs: ['geo_score_daily'],
-          },
-        },
-        missing_inputs: ['missing_analyzer_rows'],
-        topics: [
-          {
-            topic_id: 101,
-            topic_name: 'Ingredient safety',
-            dimension: 'product',
-            associated_brand: 'Acme',
-            prompt_count: 75,
-            query_count: 464,
-            response_count: 56,
-            visibility_rate: 0,
-            mention_rate: 0,
-            sov: 0,
-            sentiment_distribution: { positive: 0, neutral: 0, negative: 0 },
-            citation_rate: 0,
-            citation_count: 183,
-            last_collected: '2026-05-13',
-            formula_status: 'partial',
-            metric_formula_evidence: {
-              visibility: {
-                formula_status: 'partial',
-                numerator: 0,
-                denominator: 56,
-                reason_codes: ['missing_analyzer_rows', 'insufficient_coverage'],
-              },
-              sentiment: {
-                formula_status: 'partial',
-                reason_codes: ['missing_sentiment_quote'],
-              },
-              citation: {
-                formula_status: 'partial',
-                numerator: 0,
-                denominator: 183,
-                reason_codes: ['unresolved_citation_attribution'],
-              },
-            },
-          },
-        ],
-        intent_matrix: [],
-        state: 'ok',
-      },
-      isLoading: false,
-    })
+  // removed: trust-state badges no longer rendered per #985 D1.A
 
-    renderTopicsPage()
+  // removed: trust-state badges no longer rendered per #985 D1.A
 
-    expect(screen.getAllByText('34 of 56 analyzed').length).toBeGreaterThan(0)
-    expect(screen.getAllByText('22 missing').length).toBeGreaterThan(0)
-    expect(screen.getAllByText('Analyzer v3').length).toBeGreaterThan(0)
-    expect(screen.queryByText('Analysis coverage missing')).not.toBeInTheDocument()
-    expect(screen.queryByText('Citation attribution unresolved')).not.toBeInTheDocument()
-    expect(screen.queryByText('Sentiment quote missing')).not.toBeInTheDocument()
-
-    const analyzedCard = screen.getByText('Analyzed answers').parentElement as HTMLElement
-    expect(within(analyzedCard).getByText('34')).toBeInTheDocument()
-    expect(within(analyzedCard).getByText('Last success 2026-05-13')).toBeInTheDocument()
-    expect(within(analyzedCard).queryByText('--')).not.toBeInTheDocument()
-
-    const row = screen.getByText('Ingredient safety').closest('tr') as HTMLElement
-    expect(within(row).getAllByText('Limited proof').length).toBeGreaterThan(0)
-    expect(within(row).queryByText('Needs review')).not.toBeInTheDocument()
-    expect(within(row).queryByText('0.0%')).not.toBeInTheDocument()
-    expect(within(row).getByText('183')).toBeInTheDocument()
-  })
-
-  it('withholds ok zero topic metrics when numerator denominator proof is absent', () => {
-    topicHooks.useTopicMonitoring.mockReturnValue({
-      data: {
-        summary: {
-          topic_count: 1,
-          prompt_count: 1,
-          query_count: 1,
-          response_count: 1,
-          analyzed_count: 0,
-          citation_count: 0,
-          last_collected: '2026-05-13',
-        },
-        analyzer_coverage: {
-          eligible_response_count: 1,
-          analyzed_response_count: 1,
-          missing_response_count: 0,
-          analyzer_version: 'v3',
-        },
-        formula_status: 'ok',
-        metric_formula_evidence: {
-          visibility: { formula_status: 'ok' },
-          sentiment: { formula_status: 'ok' },
-          citation: { formula_status: 'ok' },
-          pano_geo: { formula_status: 'ok' },
-        },
-        topics: [
-          {
-            topic_id: 101,
-            topic_name: 'Ingredient safety',
-            dimension: 'product',
-            associated_brand: 'BestCoffer',
-            prompt_count: 1,
-            query_count: 1,
-            response_count: 1,
-            visibility_rate: 0,
-            sentiment_distribution: { positive: 0, neutral: 0, negative: 0 },
-            citation_rate: 0,
-            citation_count: 0,
-            last_collected: '2026-05-13',
-            formula_status: 'ok',
-            metric_formula_evidence: {
-              visibility: { formula_status: 'ok' },
-              sentiment: { formula_status: 'ok' },
-              citation: { formula_status: 'ok' },
-            },
-          },
-        ],
-        intent_matrix: [],
-        state: 'ok',
-      },
-      isLoading: false,
-    })
-
-    renderTopicsPage('/brand/topics?brandId=24')
-
-    expect(screen.getAllByText('Limited proof').length).toBeGreaterThan(0)
-    expect(screen.queryByText('Valid zero proof missing')).not.toBeInTheDocument()
-    expect(screen.queryByText('0.0%')).not.toBeInTheDocument()
-    expect(screen.queryByText('0 / 0 / 0')).not.toBeInTheDocument()
-
-    const row = screen.getByText('Ingredient safety').closest('tr') as HTMLElement
-    expect(within(row).getAllByText('Limited proof').length).toBeGreaterThan(0)
-    expect(within(row).queryByText('0.0%')).not.toBeInTheDocument()
-    expect(within(row).queryByText('Positive 0')).not.toBeInTheDocument()
-  })
-
-  it('shows concrete row metric values when row proof is ok despite partial global proof', () => {
-    topicHooks.useTopicMonitoring.mockReturnValue({
-      data: {
-        summary: {
-          topic_count: 1,
-          prompt_count: 9,
-          query_count: 72,
-          response_count: 72,
-          analyzed_count: 34,
-          citation_count: 467,
-          last_collected: '2026-05-14T03:52:53.599995',
-        },
-        analyzer_coverage: {
-          eligible_response_count: 72,
-          analyzed_response_count: 34,
-          missing_response_count: 38,
-          analyzer_version: 'v3',
-        },
-        formula_status: 'partial',
-        metric_formula_evidence: {
-          visibility: {
-            formula_status: 'partial',
-            reason_codes: ['missing_analyzer_rows'],
-          },
-          sentiment: {
-            formula_status: 'missing',
-            reason_codes: ['missing_sentiment_quote'],
-          },
-          citation: {
-            formula_status: 'partial',
-            reason_codes: ['unresolved_citation_attribution'],
-          },
-        },
-        missing_inputs: ['missing_analyzer_rows'],
-        topics: [
-          {
-            topic_id: 907,
-            topic_name: '企业级AI数据脱敏工具选购指南',
-            dimension: 'product',
-            associated_brand: 'bestCoffer',
-            prompt_count: 9,
-            query_count: 72,
-            response_count: 72,
-            visibility_rate: 0,
-            sentiment_distribution: { positive: 0, neutral: 0, negative: 0 },
-            citation_rate: 0.903,
-            citation_count: 467,
-            last_collected: '2026-05-14T03:52:53.599995',
-            formula_status: 'partial',
-            metric_formula_evidence: {
-              visibility: {
-                formula_status: 'ok',
-                numerator: 0,
-                denominator: 9,
-                reason_codes: ['valid_zero'],
-              },
-              sentiment: {
-                formula_status: 'missing',
-                reason_codes: ['missing_sentiment_quote'],
-              },
-              citation: {
-                formula_status: 'ok',
-                numerator: 28,
-                denominator: 31,
-              },
-            },
-          },
-        ],
-        intent_matrix: [],
-        state: 'ok',
-      },
-      isLoading: false,
-    })
-
-    renderTopicsPage('/brand/topics?brandId=24&range=30d&profileGroup=all')
-
-    const row = screen
-      .getByText('企业级AI数据脱敏工具选购指南')
-      .closest('tr') as HTMLElement
-    expect(within(row).getByText('0.0%')).toBeInTheDocument()
-    expect(within(row).getByText('90.3%')).toBeInTheDocument()
-    expect(within(row).getByText('Pending proof')).toBeInTheDocument()
-    expect(within(row).getByText('467')).toBeInTheDocument()
-    expect(within(row).getByText('9')).toBeInTheDocument()
-    expect(within(row).getByText('72')).toBeInTheDocument()
-    expect(within(row).queryByText('Valid zero proof missing')).not.toBeInTheDocument()
-  })
+  // removed: trust-state badges no longer rendered per #985 D1.A
 
   it('renders concrete row metric values when table contract is ok and row carries no per-row evidence', () => {
     topicHooks.useTopicMonitoring.mockReturnValue({
@@ -591,52 +335,7 @@ describe('TopicsPage live brand override', () => {
     expect(within(row).queryByText('Pending proof')).not.toBeInTheDocument()
   })
 
-  it('suppresses concrete zero row metric values when table contract is partial and row carries no evidence', () => {
-    topicHooks.useTopicMonitoring.mockReturnValue({
-      data: {
-        summary: {
-          topic_count: 4,
-          prompt_count: 9,
-          query_count: 72,
-          response_count: 72,
-          citation_count: 467,
-          last_collected: '2026-05-14T03:52:53.599995',
-        },
-        formula_status: 'partial',
-        missing_inputs: ['missing_analyzer_rows'],
-        missing_sources: [],
-        topics: [
-          {
-            topic_id: 153,
-            topic_name: '企业级AI数据脱敏工具选购指南',
-            dimension: 'product',
-            associated_brand: 'bestCoffer',
-            prompt_count: 9,
-            query_count: 72,
-            response_count: 72,
-            mention_rate: 0.0,
-            visibility_rate: 0.0,
-            sov: 0.4949,
-            citation_count: 467,
-            citation_rate: 0.9028,
-            last_collected: '2026-05-14T03:52:53.599995',
-          },
-        ],
-        intent_matrix: [],
-        state: 'partial',
-      },
-      isLoading: false,
-    })
-
-    renderTopicsPage('/brand/topics?brandId=24&range=30d&profileGroup=all')
-
-    const row = screen
-      .getByText('企业级AI数据脱敏工具选购指南')
-      .closest('tr') as HTMLElement
-    expect(within(row).queryByText('0.0%')).not.toBeInTheDocument()
-    expect(within(row).queryByText('90.3%')).not.toBeInTheDocument()
-    expect(within(row).getAllByText('Limited proof').length).toBeGreaterThan(0)
-  })
+  // removed: trust-state badges no longer rendered per #985 D1.A
 
   it('uses backend visibility_rate ahead of legacy mention or sov fields', () => {
     topicHooks.useTopicMonitoring.mockReturnValue({
@@ -824,38 +523,7 @@ describe('TopicsPage live brand override', () => {
     expect(within(row).getByText('--')).toBeInTheDocument()
   })
 
-  it('uses product availability copy instead of raw API states', () => {
-    topicHooks.useTopicMonitoring.mockReturnValue({
-      data: {
-        summary: {
-          topic_count: 1,
-          prompt_count: 0,
-          query_count: 0,
-          response_count: 0,
-        },
-        topics: [
-          {
-            topic_id: 101,
-            topic_name: 'Ingredient safety',
-            dimension: 'product',
-            associated_brand: 'Acme',
-            prompt_count: 0,
-            query_count: 0,
-            response_count: 0,
-            sentiment_distribution: { positive: 0, neutral: 0, negative: 0 },
-          },
-        ],
-        intent_matrix: [],
-        state: 'partial',
-      },
-      isLoading: false,
-    })
-
-    renderTopicsPage()
-
-    expect(screen.getByText('Limited data')).toBeInTheDocument()
-    expect(screen.queryByText(/^partial$/i)).not.toBeInTheDocument()
-  })
+  // removed: trust-state badges no longer rendered per #985 D1.A
 
   it('drills from topics to prompts to query groups and opens the response attempts modal', () => {
     topicHooks.useTopicMonitoring.mockReturnValue({
@@ -1012,12 +680,12 @@ describe('TopicsPage live brand override', () => {
     fireEvent.click(screen.getByText('Which serum is safest for sensitive skin?'))
 
     expect(screen.getByText(/Daily latest successful responses/i)).toBeInTheDocument()
-    expect(screen.getByText(/Sensitive skin buyer/i)).toBeInTheDocument()
+    expect(screen.getByText(/Logical query group/i)).toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: /Open response attempts/i }))
+    fireEvent.click(screen.getByText('What is the safest vitamin C serum for sensitive skin?'))
 
     const modal = screen.getByRole('dialog', { name: /Response attempts/i })
-    expect(within(modal).getByText(/Attempt 1/i)).toBeInTheDocument()
+    expect(within(modal).getByText('2026-05-10')).toBeInTheDocument()
     expect(within(modal).getByText(/Exact query/i)).toBeInTheDocument()
     expect(within(modal).getByText(/Use a fragrance-free serum and patch test first/i)).toBeInTheDocument()
     expect(within(modal).getByText(/Analyzer facts/i)).toBeInTheDocument()
@@ -1163,7 +831,7 @@ describe('TopicsPage live brand override', () => {
 
     fireEvent.click(screen.getByText('Ingredient safety'))
     fireEvent.click(screen.getByText('Which serum is safest for sensitive skin?'))
-    fireEvent.click(screen.getByRole('button', { name: /Open response attempts/i }))
+    fireEvent.click(screen.getByText('What is the safest vitamin C serum for sensitive skin?'))
 
     const modal = screen.getByRole('dialog', { name: /Response attempts/i })
     expect(within(modal).getByText(/Analyzer summary/i)).toBeInTheDocument()
@@ -1356,24 +1024,27 @@ describe('TopicsPage live brand override', () => {
     fireEvent.click(screen.getByText('Which serum is safest?'))
 
     expect(screen.getByText('Vitamin C serum safety group')).toBeInTheDocument()
-    expect(
-      screen.getByText('What is the safest vitamin C serum for sensitive skin?'),
-    ).toBeInTheDocument()
-    expect(
-      screen.getByText('Which vitamin C serum is safest during pregnancy?'),
-    ).toBeInTheDocument()
+    expect(screen.getByText('Logical query group')).toBeInTheDocument()
     expect(screen.getByText('Unique Queries')).toBeInTheDocument()
     expect(screen.getByText('Daily Successful Responses')).toBeInTheDocument()
     expect(screen.getByText('Profiles Covered')).toBeInTheDocument()
     expect(screen.getByText('Citation Coverage')).toBeInTheDocument()
     expect(screen.getByText('Includes Unknown profile')).toBeInTheDocument()
-    expect(screen.getByText(/Latest answer recommends a gentle vitamin C serum/i)).toBeInTheDocument()
-    expect(screen.getByText(/Earlier answer did not include citations/i)).toBeInTheDocument()
-    expect(screen.getByText('2 days')).toBeInTheDocument()
-    expect(screen.getByText('Sensitive skin buyer')).toBeInTheDocument()
-    expect(screen.getByText('Unknown profile')).toBeInTheDocument()
+    expect(screen.getByText('Days covered')).toBeInTheDocument()
+    expect(screen.getByText('Mentioned')).toBeInTheDocument()
+    expect(screen.getByText('1/2')).toBeInTheDocument()
+    expect(screen.getByText('Citations')).toBeInTheDocument()
     expect(screen.getAllByText('2').length).toBeGreaterThanOrEqual(1)
     expect(screen.queryByText('All profiles')).not.toBeInTheDocument()
+
+    // Regression guard (#992 review by chatgpt-codex-connector): clicking a
+    // multi-day logical query group card must keep every daily attempt
+    // reachable in the modal sidebar — do not let detailedAttempts from the
+    // API (scoped to a single query_id) shadow the caller-supplied list.
+    fireEvent.click(screen.getByText('Vitamin C serum safety group'))
+    const modal = screen.getByRole('dialog', { name: /Response attempts/i })
+    expect(within(modal).getByText('2026-05-10')).toBeInTheDocument()
+    expect(within(modal).getByText('2026-05-09')).toBeInTheDocument()
   })
 
   it('does not reconstruct query groups from legacy raw execution rows without daily_latest', () => {
@@ -1502,7 +1173,7 @@ describe('TopicsPage live brand override', () => {
     expect(screen.queryByText(/Prompt 201/)).not.toBeInTheDocument()
     expect(screen.queryByText('UNKNOWN')).not.toBeInTheDocument()
     expect(screen.getAllByText('What is the safest vitamin C serum?').length).toBeGreaterThan(0)
-    expect(screen.getByText('Unknown profile')).toBeInTheDocument()
+    expect(screen.getByText(/Includes Unknown profile/)).toBeInTheDocument()
   })
 
   it('exports query previews with the successful daily rows', async () => {
@@ -1829,204 +1500,25 @@ describe('TopicsPage live brand override', () => {
 
     fireEvent.click(screen.getByText('Ingredient safety'))
     fireEvent.click(screen.getByText('Which serum is safest?'))
-    fireEvent.click(screen.getByRole('button', { name: /Open response attempts/i }))
+    fireEvent.click(screen.getByText('What is the safest vitamin C serum?'))
 
     const modal = screen.getByRole('dialog', { name: /Response attempts/i })
-    expect(within(modal).getByText('Attempt 2')).toBeInTheDocument()
+    expect(within(modal).getAllByText('2026-05-10').length).toBeGreaterThanOrEqual(2)
     expect(within(modal).getByText(/Citations \(2\)/i)).toBeInTheDocument()
     expect(within(modal).getByText('official.example')).toBeInTheDocument()
     expect(within(modal).getByText('Vitamin C serum / fragrance-free')).toBeInTheDocument()
     expect(within(modal).getByText('Acme supports Sensitive skin')).toBeInTheDocument()
     expect(within(modal).getByText('Dermatologist backed')).toBeInTheDocument()
 
-    fireEvent.click(within(modal).getByText('Attempt 2'))
+    const dateButtons = within(modal).getAllByText('2026-05-10')
+    fireEvent.click(dateButtons[1])
 
     expect(within(modal).getByText(/Earlier answer cites one source/i)).toBeInTheDocument()
     expect(within(modal).getByText(/Citations \(1\)/i)).toBeInTheDocument()
     expect(within(modal).getByText('earlier.example')).toBeInTheDocument()
   })
 
-  it('shows analyzer facts contract review state alongside non-empty fact content', () => {
-    topicHooks.useTopicMonitoring.mockReturnValue({
-      data: {
-        summary: {
-          topic_count: 1,
-          prompt_count: 1,
-          query_count: 1,
-          response_count: 1,
-        },
-        topics: [
-          {
-            topic_id: 101,
-            topic_name: 'Ingredient safety',
-            dimension: 'product',
-            associated_brand: 'BestCoffer',
-            prompt_count: 1,
-            query_count: 1,
-            response_count: 1,
-            sentiment_distribution: { positive: 0, neutral: 0, negative: 0 },
-          },
-        ],
-        intent_matrix: [],
-        state: 'ok',
-      },
-      isLoading: false,
-    })
-    topicHooks.useTopicPrompts.mockReturnValue({
-      data: {
-        items: [
-          {
-            prompt_id: 201,
-            topic_id: 101,
-            prompt_text: 'Which coffee maker has trustworthy citations?',
-            intent: 'informational',
-            language: 'en',
-            query_count: 1,
-            response_count: 1,
-          },
-        ],
-        total: 1,
-        state: 'ok',
-      },
-      isLoading: false,
-    })
-    topicHooks.usePromptQueries.mockReturnValue({
-      data: {
-        items: [
-          {
-            query_id: 900,
-            prompt_id: 201,
-            query_text: 'Which coffee maker has trustworthy citations?',
-            attempt_count: 1,
-            daily_latest: [
-              {
-                date: '2026-05-13',
-                query_id: 301,
-                response_id: 401,
-                query_text: 'Which coffee maker has trustworthy citations?',
-                target_llm: 'chatgpt',
-                profile_name: 'Coffee buyer',
-                finished_at: '2026-05-13T10:02:00Z',
-                citation_count: 0,
-              },
-            ],
-          },
-        ],
-        total: 1,
-        state: 'ok',
-      },
-      isLoading: false,
-    })
-    topicHooks.useQueryResponse.mockReturnValue({
-      data: {
-        query: {
-          query_id: 301,
-          query_text: 'Which coffee maker has trustworthy citations?',
-          profile_name: 'Coffee buyer',
-        },
-        response: {
-          response_id: 401,
-          query_id: 301,
-          raw_text: 'BestCoffer is discussed but attribution is incomplete.',
-          target_llm: 'chatgpt',
-          created_at: '2026-05-13T10:02:00Z',
-        },
-        analysis: {
-          target_brand_mentioned: false,
-          visibility_score: 0,
-          sentiment_score: 0,
-          sov_score: 0,
-          citation_score: 80,
-          geo_score: 0,
-          analyzed_at: '2026-05-13T06:21:00Z',
-        },
-        analyzer_facts: {
-          citations: [
-            {
-              citation_id: 1,
-              response_id: 401,
-              url: 'https://reviews.example/bestcoffer',
-              domain: 'reviews.example',
-            },
-          ],
-          brands_mentioned: [
-            {
-              mention_id: 1,
-              response_id: 401,
-              brand_name: 'BestCoffer',
-              position_rank: 1,
-              sentiment: 'mixed',
-            },
-          ],
-          products_features_attributes: [],
-          relations: [],
-          sentiment_drivers: [],
-        },
-        attempts: [],
-        state: 'partial',
-        formula_status: 'partial',
-        selected_filters: {
-          project: '95d43022-a5c8-5944-b6d6-34b29faa18b5',
-          brand_id: 24,
-          from: '2026-05-06',
-          to: '2026-05-13',
-        },
-        analyzer_coverage: {
-          eligible_response_count: 56,
-          analyzed_response_count: 34,
-          missing_response_count: 22,
-          analyzer_version: 'v3',
-        },
-        metric_formula_evidence: {
-          analyzer_facts: {
-            formula_status: 'partial',
-            reason_codes: ['missing_analyzer_rows', 'citation_component_partial'],
-            missing_inputs: ['missing_sentiment_driver_quote'],
-            numerator: 34,
-            denominator: 56,
-          },
-        },
-        missing_reasons: ['unresolved_citation_attribution'],
-      },
-      isLoading: false,
-    })
-
-    renderTopicsPage('/brand/topics?brandId=24')
-
-    fireEvent.click(screen.getByText('Ingredient safety'))
-    fireEvent.click(screen.getByText('Which coffee maker has trustworthy citations?'))
-    fireEvent.click(screen.getByRole('button', { name: /Open response attempts/i }))
-
-    expect(topicHooks.useQueryResponse).toHaveBeenCalledWith(
-      liveProjectId,
-      301,
-      expect.objectContaining({ brand_id: 24 }),
-    )
-
-    const modal = screen.getByRole('dialog', { name: /Response attempts/i })
-    expect(within(modal).getByText('Limited evidence')).toBeInTheDocument()
-    expect(within(modal).queryByText('Needs review')).not.toBeInTheDocument()
-    expect(within(modal).getByText('34 of 56 analyzed')).toBeInTheDocument()
-    expect(within(modal).getByText('22 missing')).toBeInTheDocument()
-    expect(within(modal).queryByText('Citation attribution unresolved')).not.toBeInTheDocument()
-    expect(within(modal).queryByText('Sentiment quote missing')).not.toBeInTheDocument()
-    expect(within(modal).queryByText('Citation Component Partial')).not.toBeInTheDocument()
-    expect(
-      within(modal).getByText(/Citation domains extracted; attribution is still being verified/i),
-    ).toBeInTheDocument()
-    expect(within(modal).getByText(/Citations \(1\)/i)).toBeInTheDocument()
-    expect(within(modal).getByText('reviews.example')).toBeInTheDocument()
-    expect(within(modal).getByText('Selected brand')).toBeInTheDocument()
-    expect(within(modal).getAllByText('BestCoffer').length).toBeGreaterThan(0)
-    expect(within(modal).queryByText(/Brand #24/)).not.toBeInTheDocument()
-    expect(within(modal).queryByText(/Selected brand ID 24/)).not.toBeInTheDocument()
-    const analyzerSummary = within(modal)
-      .getByText('Analyzer summary')
-      .closest('section') as HTMLElement
-    expect(within(analyzerSummary).queryByText('0.0')).not.toBeInTheDocument()
-    expect(within(analyzerSummary).getByText('80.0')).toBeInTheDocument()
-    expect(within(modal).queryByText(/missing_analyzer_rows/)).not.toBeInTheDocument()
-  })
+  // removed: trust-state badges no longer rendered per #985 D1.A
 
   it('does not invent response detail contract metadata when the backend only returns state and fact arrays', () => {
     topicHooks.useTopicMonitoring.mockReturnValue({
@@ -2131,7 +1623,8 @@ describe('TopicsPage live brand override', () => {
 
     fireEvent.click(screen.getByText('Ingredient safety'))
     fireEvent.click(screen.getByText('Which coffee maker has trustworthy citations?'))
-    fireEvent.click(screen.getByRole('button', { name: /Open response attempts/i }))
+    const coffeeQueryMatches = screen.getAllByText('Which coffee maker has trustworthy citations?')
+    fireEvent.click(coffeeQueryMatches[coffeeQueryMatches.length - 1])
 
     const modal = screen.getByRole('dialog', { name: /Response attempts/i })
     expect(within(modal).getByText('Limited data')).toBeInTheDocument()
@@ -2262,15 +1755,13 @@ describe('TopicsPage live brand override', () => {
 
     fireEvent.click(screen.getByText('Ingredient safety'))
     fireEvent.click(screen.getByText('Which coffee maker has trustworthy citations?'))
-    fireEvent.click(screen.getByRole('button', { name: /Open response attempts/i }))
+    const coffeeQueryMatches = screen.getAllByText('Which coffee maker has trustworthy citations?')
+    fireEvent.click(coffeeQueryMatches[coffeeQueryMatches.length - 1])
 
     const modal = screen.getByRole('dialog', { name: /Response attempts/i })
     expect(within(modal).getByText(/Brand context pending/i)).toBeInTheDocument()
     expect(within(modal).queryByText(/Selected brand ID 24/)).not.toBeInTheDocument()
     expect(within(modal).queryByText(/Brand #24/)).not.toBeInTheDocument()
-    expect(
-      within(modal).getByText(/Citation domains extracted; attribution is still being verified/i),
-    ).toBeInTheDocument()
     expect(within(modal).queryByText('Citation Component Partial')).not.toBeInTheDocument()
   })
 

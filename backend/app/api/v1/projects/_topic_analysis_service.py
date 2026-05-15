@@ -233,6 +233,26 @@ def _empty_monitoring(
     )
 
 
+async def _count_brand_topics_total(session: AsyncSession, brand_id: int) -> int:
+    """Raw topic count for a brand (admin-surface contract).
+
+    Mirrors `backend/app/admin/brand_management/db.py:632` exactly — no status
+    filter — so the app-surface "Total topics" subline equals the number
+    operators see in the admin Brand Management page (#985 D4.A, Refs #983).
+    """
+    try:
+        result = await session.execute(
+            text("SELECT COUNT(*) AS topic_count FROM topics WHERE brand_id = :brand_id"),
+            {"brand_id": brand_id},
+        )
+        row = result.mappings().first()
+    except Exception:
+        return 0
+    if row is None:
+        return 0
+    return int(row.get("topic_count") or 0)
+
+
 def _topic_aggregates(
     rows: list[dict[str, Any]],
     *,
@@ -456,6 +476,7 @@ async def get_topic_monitoring(
         filters=filters,
         associated_brand=brand_names.get(brand_id),
     )
+    summary.topic_count_total = await _count_brand_topics_total(session, brand_id)
     state = "ok" if summary.query_count or (topics and not filters.explicit) else "empty"
     out = TopicMonitoringOut(
         project_id=project.id,
@@ -557,6 +578,7 @@ async def get_topic_prompts(
                 "intent": row.get("prompt_intent"),
                 "language": row.get("prompt_language"),
                 "status": row.get("prompt_status"),
+                "prompt_scope": _prompt_scope_from_row(row),
                 "query_ids": set(),
                 "responses": set(),
                 "success_count": 0,
@@ -621,6 +643,7 @@ async def get_topic_prompts(
             intent=b["intent"],
             language=b["language"],
             status=b["status"],
+            prompt_scope=b["prompt_scope"],
             query_count=len(b["query_ids"]),
             response_count=len(b["responses"]),
             success_rate=_pct(b["success_count"], len(b["query_ids"])),

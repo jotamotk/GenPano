@@ -3926,17 +3926,18 @@ Brand Mode 7 个分析 sub-view (overview / visibility / topics / sentiment / ci
 
 所有 Brand Mode 分析 sub-view 顶部 (仅 Overview 下方紧跟 KPI 卡后, 其他页首屏顶部) 渲染统一的 `<BrandAnalysisFilterBar>` 组件:
 
-- **筛选项 (URL-driven)**: `?from=YYYY-MM-DD&to=YYYY-MM-DD&engines=chatgpt,doubao,deepseek-CN&profileGroup=xxx&dimensions=品类,品牌&intents=informational,commercial` (engines 枚举锁 MVP 3 家, Decision #28.C1)
-- **6 字段 semantics**:
+- **筛选项 (URL-driven)**: `?from=YYYY-MM-DD&to=YYYY-MM-DD&engines=chatgpt,doubao,deepseek-CN&profileGroup=xxx&dimensions=品类,品牌&intents=informational,commercial&promptScope=non_branded` (engines 枚举锁 MVP 3 家, Decision #28.C1; promptScope 新增于 Decision #985 D3.A)
+- **7 字段 semantics**:
   - `from` / `to`: 时间段, 默认近 7 天 (空值表示默认)
   - `engines`: 引擎多选, 空值表示全部 (ChatGPT + 豆包 + DeepSeek)
   - `profileGroup`: 用户画像组 ID (见 §4.2.3a ProfileGroup), 空值表示全部
   - `dimensions`: Topic 维度多选 (品类/品牌/产品/关系), 空值表示全部
   - `intents`: Intent 多选 (informational / commercial / transactional / navigational), 空值表示全部
-- **持久化**: URL 参数为唯一真相源, **不**落 localStorage。用户在 Brand Mode 切 sub-view 时, router 保留 query string (保留 `brandId` + 6 个 filter 字段, 去除 sub-view 私有参数如 `sub=content-gap`)
+  - `promptScope`: Prompt 归类单选 (non_branded / branded / competitive), 空值表示全部。后端经 `?prompt_scope=...` 查询参数透传, 与 `tags.prompt_scope` 字段对齐 (#985 D3.A, Refs #983)
+- **持久化**: URL 参数为唯一真相源, **不**落 localStorage。用户在 Brand Mode 切 sub-view 时, router 保留 query string (保留 `brandId` + 7 个 filter 字段, 去除 sub-view 私有参数如 `sub=content-gap`)
 - **主/扩展分层**:
   - 主筛选 (始终可见): 时间 + 引擎 + profileGroup
-  - 扩展筛选 (折叠): dimensions + intents, "更多筛选" 按钮 + 活跃角标
+  - 扩展筛选 (折叠): dimensions + intents + promptScope, "更多筛选" 按钮 + 活跃角标
 - **跨 sub-view 同步**: Hook `useBrandAnalysisFilters()` 封装读/写, 所有 7 个分析页在顶部 mount 同一 `<BrandAnalysisFilterBar />`, 数据 fetch 以 hook 返回的 filters 为输入
 
 **K.3 视觉统一契约**

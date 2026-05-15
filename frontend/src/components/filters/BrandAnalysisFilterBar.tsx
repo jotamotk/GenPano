@@ -45,6 +45,12 @@ const INTENT_OPTIONS = [
   { id: 'navigational',   label: 'Nav' },
 ];
 
+const PROMPT_SCOPE_OPTIONS = [
+  { id: 'non_branded', label: 'Non-brand' },
+  { id: 'branded',     label: 'Branded' },
+  { id: 'competitive', label: 'Competitive' },
+];
+
 function Chip({ active, onClick, children, ariaPressed }) {
   return (
     <button
@@ -165,6 +171,24 @@ function IntentGroup() {
   );
 }
 
+function PromptScopeGroup() {
+  const { filters, setFilter } = useBrandAnalysisFilters();
+  const active = filters.promptScope || '';
+  const toggle = (id) => {
+    setFilter('promptScope', active === id ? '' : id);
+  };
+  return (
+    <div className="inline-flex items-center gap-1.5">
+      <span className="text-xs text-themed-muted shrink-0">归类</span>
+      {PROMPT_SCOPE_OPTIONS.map((opt) => (
+        <Chip key={opt.id} active={active === opt.id} onClick={() => toggle(opt.id)}>
+          {opt.label}
+        </Chip>
+      ))}
+    </div>
+  );
+}
+
 export default function BrandAnalysisFilterBar({ sticky = true, className = '' }) {
   const [expanded, setExpanded] = useState(false);
   const { extendedActiveCount, isDefault, resetFilters } = useBrandAnalysisFilters();
@@ -251,6 +275,8 @@ export default function BrandAnalysisFilterBar({ sticky = true, className = '' }
           <DimensionGroup />
           <span className="w-px h-5" style={{ background: 'var(--color-border-subtle)' }} />
           <IntentGroup />
+          <span className="w-px h-5" style={{ background: 'var(--color-border-subtle)' }} />
+          <PromptScopeGroup />
         </div>
       )}
     </div>
