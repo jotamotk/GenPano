@@ -18,7 +18,19 @@ from app.api.v1.projects._metrics_service import _fact_metric_value
 from app.api.v1.projects._topic_analysis_service import AnalysisFilters
 
 
-def test_admin_fact_citation_rate_uses_cited_target_response_set() -> None:
+def test_admin_fact_citation_rate_target_attributed_over_eligible_project() -> None:
+    """Issue #948 follow-up: the per-day citation metric must compute
+    ``target_attributed_citations / eligible_project_citations``, NOT
+    ``(any target-mentioning response has any citation) /
+    (target-mentioning responses)``. The old set-identity formula
+    collapsed to 1.0 the moment the LLM emitted citations on a
+    target-mentioning response (see live bestCoffer evidence: 引用份额
+    rendered 100% post-PR #980 deploy while project-level attributed
+    was 70/895 ≈ 7.8%).
+
+    This test pins the corrected formula: 5 target-attributed citations
+    out of 10 total → 0.5.
+    """
     bucket = {
         "response_ids": {101, 102},
         "mention_denominator_response_ids": set(),
@@ -33,15 +45,37 @@ def test_admin_fact_citation_rate_uses_cited_target_response_set() -> None:
         "ranks": [],
         "sentiment_scores": [],
         "sentiment_label_count": 0,
+        # Issue #948 follow-up: per-day attributed + total sums replace
+        # the previous set-identity ratio.
+        "citation_count_sum": 10,
+        "target_citation_count_sum": 5,
     }
 
     assert _fact_metric_value("citation", bucket) == 0.5
 
 
 @pytest.mark.asyncio
-async def test_admin_fact_metric_series_uses_cited_target_response_set(
+async def test_admin_fact_metric_series_target_attributed_over_eligible_project(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """End-to-end pin of the per-day citation metric series produced by
+    ``_metrics_from_admin_facts``. Fixture seeds three responses on one
+    day:
+
+    - 101: target_mentioned, 5 citations of which 5 are attributed to target.
+    - 102: target_mentioned, 0 citations.
+    - 103: not target-mentioned, 5 citations (zero attributed to target by
+      construction).
+
+    Old (incorrect) formula: ``(1 with target citation) / (2 target-mentioned)``
+    = 0.5 — collapsed when the LLM emitted any citations on a target row.
+
+    Corrected formula: ``5 target-attributed / 10 total = 0.5``. Equal in
+    THIS fixture because the numbers were chosen to produce the same
+    headline value, but with different semantics. The companion live
+    case (bestCoffer 70 attributed / 895 total ≈ 7.8%) now reflects the
+    project share correctly instead of the previous 100% artifact.
+    """
     day = date(2026, 5, 13)
 
     async def fact_rows(*args: object, **kwargs: object) -> list[dict[str, object]]:
@@ -52,6 +86,7 @@ async def test_admin_fact_metric_series_uses_cited_target_response_set(
                 "target_mention_count": 1,
                 "all_mention_count": 1,
                 "citation_count": 5,
+                "target_citation_count": 5,
             },
             {
                 "response_id": 102,
@@ -59,13 +94,15 @@ async def test_admin_fact_metric_series_uses_cited_target_response_set(
                 "target_mention_count": 1,
                 "all_mention_count": 1,
                 "citation_count": 0,
+                "target_citation_count": 0,
             },
             {
                 "response_id": 103,
                 "response_created_at": day,
                 "target_mention_count": 0,
                 "all_mention_count": 1,
-                "citation_count": 9,
+                "citation_count": 5,
+                "target_citation_count": 0,
             },
         ]
 
@@ -100,6 +137,7 @@ async def test_admin_fact_metric_series_uses_cited_target_response_set(
 
     citation_series = out.series[0]
     assert citation_series.metric == "citation"
+    # 5 target-attributed / (5 + 0 + 5) total = 0.5
     assert citation_series.points[0].value == 0.5
 
 
