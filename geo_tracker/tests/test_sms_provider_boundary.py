@@ -208,6 +208,26 @@ class _FakeProvider:
         self.closed = True
 
 
+class _ReloginFallbackProvider(_FakeProvider):
+    def __init__(self, *, new_phone: str, code: str = "123" + "456") -> None:
+        super().__init__(code=code)
+        self.new_phone = new_phone
+
+    async def reserve_number(self, *, phone=None):
+        from geo_tracker.agent.sms_login.providers import SMSNumberLease
+
+        if phone:
+            self.reserved.append(phone)
+            raise RuntimeError("existing number is offline")
+
+        self.reserved.append(self.new_phone)
+        return SMSNumberLease(
+            phone=self.new_phone,
+            provider_name=self.provider_name,
+            price_bucket="existing-luban",
+        )
+
+
 class _FakeHeroSMSProvider(_FakeProvider):
     provider_name = "herosms"
 
@@ -351,6 +371,69 @@ async def test_existing_cookie_relogin_success_skips_sms_phone_form(monkeypatch)
     assert provider.reserved == [FAKE_CN_PHONE]
     assert provider.polled == []
     assert provider.released == [FAKE_CN_PHONE]
+    assert provider.closed is True
+
+
+@pytest.mark.asyncio
+async def test_doubao_relogin_fallback_continues_sms_when_inline_form_is_ready(
+    monkeypatch,
+) -> None:
+    from geo_tracker.agent.sms_login import base, get_handler
+
+    handler = get_handler("doubao")
+    assert handler is not None
+    new_phone = "139" + "1234" + "5678"
+    provider = _ReloginFallbackProvider(new_phone=new_phone)
+    page = _FakePage(url="https://www.doubao.com/chat", body_text="登录")
+    entered_phones: list[str] = []
+
+    monkeypatch.setattr(handler, "sms_provider_factory", lambda: provider)
+
+    async def _launch_browser():
+        return object(), None, object(), _FakeContext(page)
+
+    async def _none(*_args, **_kwargs):
+        return None
+
+    async def _true(*_args, **_kwargs):
+        return True
+
+    async def _inline_form_ready(_page):
+        return True
+
+    verify_results = iter(["doubao_not_logged_in", True])
+
+    async def _verify(_page):
+        return next(verify_results)
+
+    async def _input_phone(_page, phone):
+        entered_phones.append(phone)
+        return True
+
+    monkeypatch.setattr(base, "install_resource_blocker", _none)
+    monkeypatch.setattr(base, "cleanup_browser_resources", _none)
+    monkeypatch.setattr(handler, "_launch_browser", _launch_browser)
+    monkeypatch.setattr(handler, "_add_stealth_script", _none)
+    monkeypatch.setattr(handler, "_handle_captcha", _none)
+    monkeypatch.setattr(handler, "_detect_error_toast", _none)
+    monkeypatch.setattr(handler, "navigate_to_login", _true)
+    monkeypatch.setattr(handler, "_login_form_ready", _inline_form_ready)
+    monkeypatch.setattr(handler, "verify_success", _verify)
+    monkeypatch.setattr(handler, "input_phone", _input_phone)
+    monkeypatch.setattr(handler, "click_send_sms", _true)
+    monkeypatch.setattr(handler, "input_code", _true)
+    monkeypatch.setattr(handler, "submit_login", _true)
+
+    result = await handler.login_or_register(
+        existing_cookies=f'[{{"name":"session","value":"{FAKE_COOKIE_VALUE}"}}]',
+        phone=FAKE_CN_PHONE,
+    )
+
+    assert result["phone"] == new_phone
+    assert entered_phones == [new_phone]
+    assert provider.reserved == [FAKE_CN_PHONE, new_phone]
+    assert provider.polled == [(new_phone, "豆包", 120)]
+    assert provider.released == [new_phone]
     assert provider.closed is True
 
 

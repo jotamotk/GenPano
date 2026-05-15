@@ -380,6 +380,11 @@ class DoubaoLoginHandler(BaseSMSLoginHandler):
         except Exception:
             return False
 
+    async def _login_form_is_available(self, page: Page) -> bool:
+        if await self._login_form_ready(page):
+            return True
+        return await super()._login_form_is_available(page)
+
     async def _check_modal(self, page: Page) -> bool:
         """
         检查登录 UI 是否就绪 —— 兼容两种形态：
