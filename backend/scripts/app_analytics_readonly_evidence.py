@@ -635,12 +635,20 @@ def _summarize_json(payload: object) -> dict[str, object]:
         summary["rows_count"] = len(payload["rows"])
     if "points" in payload and isinstance(payload["points"], list):
         summary["points_count"] = len(payload["points"])
+        summary["points_preview"] = payload["points"][:5]
+    if "segments" in payload and isinstance(payload["segments"], list):
+        summary["segments_count"] = len(payload["segments"])
+        summary["segments_preview"] = payload["segments"][:10]
+    if "total" in payload and isinstance(payload["total"], (int, float)):
+        summary["total"] = payload["total"]
+    if "by_domain_top" in payload and isinstance(payload["by_domain_top"], list):
+        summary["by_domain_top_count"] = len(payload["by_domain_top"])
     return summary
 
 
 def _body_snippet(body: bytes) -> str:
     text = body.decode("utf-8", errors="replace")
-    return " ".join(text.split())[:600]
+    return " ".join(text.split())[:2400]
 
 
 def run_api_probes(config: EvidenceConfig, bearer_token: str, *, token_source: str = "") -> int:
