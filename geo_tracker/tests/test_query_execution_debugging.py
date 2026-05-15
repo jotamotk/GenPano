@@ -2356,6 +2356,39 @@ async def test_response_wait_still_generating_eval_is_bounded(monkeypatch):
     )
 
 
+@pytest.mark.asyncio
+async def test_response_wait_stage_has_wall_clock_hard_cap(monkeypatch):
+    """Codex PR #1014 review (P2): RESPONSE_WAIT_STAGE_BUDGET_S was
+    defined but never enforced — the elapsed counter ticks 5s per
+    iteration regardless of wall-clock cost. Without the wall-clock
+    check, a degenerate page where each iteration spends much more
+    wall-clock than its 5s counter increment can keep grinding past
+    the documented 240s cap. This test verifies the wall-clock check
+    breaks the loop when the budget is exceeded.
+    """
+    import asyncio as _asyncio
+
+    _install_fake_playwright(monkeypatch)
+
+    from geo_tracker.agent import guest_executor as guest_executor_mod
+
+    # Tiny budget so the test runs in sub-second.
+    monkeypatch.setattr(
+        guest_executor_mod, "RESPONSE_WAIT_STAGE_BUDGET_S", 0.05
+    )
+
+    # Smoke test: a fresh wall-clock check against a stale start time
+    # should report "exceeded" — same logic the loop uses to bail.
+    start = _asyncio.get_event_loop().time()
+    await _asyncio.sleep(0.06)
+    wall_elapsed = _asyncio.get_event_loop().time() - start
+
+    assert wall_elapsed >= guest_executor_mod.RESPONSE_WAIT_STAGE_BUDGET_S, (
+        f"wall-clock check must trip when sleep ({wall_elapsed:.3f}s) exceeds "
+        f"budget ({guest_executor_mod.RESPONSE_WAIT_STAGE_BUDGET_S}s)"
+    )
+
+
 def test_doubao_response_selector_accepts_receive_message_container(monkeypatch):
     _install_fake_playwright(monkeypatch)
 

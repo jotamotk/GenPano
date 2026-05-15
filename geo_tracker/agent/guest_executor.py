@@ -2834,7 +2834,25 @@ class GuestQueryExecutor:
         # path persist evidence.
         dead_page_eval_streak = 0
         DEAD_PAGE_EVAL_THRESHOLD = 3
+        # Codex PR #1014 review (P2): RESPONSE_WAIT_STAGE_BUDGET_S was
+        # defined but never enforced — the elapsed counter ticks 5s per
+        # iteration regardless of wall-clock cost, so a degenerate page
+        # where each loop iteration spends e.g. 15s wall (3s eval timeout
+        # + 5s sleep + selectors hitting their 10s timeouts) can still
+        # exceed the 180s nominal cap. Track wall-clock since stage
+        # entry and bail out if it exceeds the documented stage budget,
+        # giving the stage a hard outer cap regardless of what each
+        # inner call costs.
+        response_wait_started_at = asyncio.get_event_loop().time()
         while elapsed < wait_total:
+            wall_elapsed = asyncio.get_event_loop().time() - response_wait_started_at
+            if wall_elapsed >= RESPONSE_WAIT_STAGE_BUDGET_S:
+                logger.error(
+                    f"[{llm_name}] response_wait wall-clock budget exceeded "
+                    f"({wall_elapsed:.1f}s >= {RESPONSE_WAIT_STAGE_BUDGET_S}s); bailing"
+                )
+                self.last_error_reason = self.last_error_reason or "no_response"
+                break
             await page.wait_for_timeout(min(wait_interval, wait_total - elapsed))
             elapsed += wait_interval
 
