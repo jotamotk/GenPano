@@ -2512,7 +2512,18 @@ class GuestQueryExecutor:
         self._set_execution_stage("submit_confirm")
         if llm_name in ("doubao", "chatgpt", "deepseek"):
             confirmed = False
-            for _ in range(10):  # 最多 ~5s 轮询
+            # Refs #963: the original ~5s window (10 iterations × 500ms) was
+            # too short for Doubao's 2026 SPA on a slow render: the click
+            # could land successfully and the request fire upstream, but the
+            # user-message bubble was not yet in the DOM when we polled, so
+            # the code "retried" the submit by clicking again, occasionally
+            # producing a duplicate request and confusing the upstream
+            # response routing. Widen the wait for Doubao specifically
+            # (~15s, 30 × 500ms) so a slow-but-correct first submit is
+            # detected before we kick off the retry path. Other engines
+            # keep the original budget.
+            confirm_iters = 30 if llm_name == "doubao" else 10
+            for _ in range(confirm_iters):
                 if await _submit_confirmed():
                     confirmed = True
                     break
