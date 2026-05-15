@@ -646,7 +646,7 @@ jobs:
               echo "- Deployed SHA: \`${GITHUB_SHA}\`"
               echo "- Latest deploy-eligible main SHA: \`${latest_sha}\`"
               echo "- A newer queued run should deploy the latest deploy-eligible SHA."
-              echo "- Production URL: http://116.62.36.173/"
+              echo "- Test environment URL: http://116.62.36.173/"
             } >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
@@ -657,5 +657,5 @@ jobs:
             echo "- Result: deployed SHA still contains the latest deploy-eligible product state after deployment."
             echo "- Deployed SHA: \`${GITHUB_SHA}\`"
             echo "- Latest deploy-eligible main SHA: \`${latest_sha}\`"
-            echo "- Production URL: http://116.62.36.173/"
+            echo "- Test environment URL: http://116.62.36.173/"
           } >> "$GITHUB_STEP_SUMMARY"

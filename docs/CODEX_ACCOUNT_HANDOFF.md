@@ -95,7 +95,7 @@ You are taking over Genpano work after a Codex account switch. Do not assume any
 chat/thread context has carried over.
 
 Workspace: C:\Users\frank.wang\genpano
-Production URL: http://116.62.36.173/
+Test environment URL: http://116.62.36.173/
 
 First, read these files:
 - AGENTS.md

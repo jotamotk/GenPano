@@ -147,7 +147,7 @@ body:
       label: Live Verification
       description: Required live-facing validation after merge.
       value: |
-        - Target: http://116.62.36.173/
+        - Target (test environment): http://116.62.36.173/
         - E2E tier: Tier 0 | Tier 1 | Tier 2 | Tier 3
         - User-Symptom Replay scenario:
         - Playwright scenario:
