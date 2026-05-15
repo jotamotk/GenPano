@@ -41,6 +41,8 @@ from app.api.v1.projects._mention_rollups import (
 from app.api.v1.projects._topic_analysis_service import legacy_table_exists
 from app.api.v1.projects.contracts.constants import (
     _BLOCKING_REASON_CODES,
+    _COMMON_METRIC_BLOCKING_REASONS,
+    _METRIC_BLOCKING_REASONS,
     ANALYSIS_MISSING_REASON,
     ANALYZER_FACT_PACKAGE_SOURCE,
     ANALYZER_FACT_PACKAGE_V3_SOURCE,
@@ -340,7 +342,30 @@ async def _first_class_analyzer_fact_rollup(
         sentiment_reasons.append("missing_sentiment_label")
     if driver_count > 0 and quote_count <= 0:
         sentiment_reasons.append("missing_sentiment_driver_quote")
-    sentiment_status = FORMULA_OK_STATUS if not sentiment_reasons else FORMULA_MISSING_INPUTS_STATUS
+    # Issue #948 follow-up: the sentiment METRIC formula is
+    # `brand_scoped_sentiment_score_sum / target_mentions_with_sentiment_score_and_label`,
+    # whose inputs are `score_count` and `label_count`. Sentiment-driver
+    # rows (and the `malformed_sentiment_driver_dropped` /
+    # `unsupported_sentiment_driver_type_dropped` flags emitted by
+    # `geo_tracker/analyzer/v4_contract.py`) are AUXILIARY evidence for the
+    # driver-type "why" breakdown; they do NOT invalidate the metric value.
+    # When the numerator + denominator inputs are present, downgrade to
+    # `partial` so the frontend gate (`canUseContractMetricValue` after
+    # PR #960) keeps rendering the sentiment KPI value. Mirrors the SoV /
+    # GeoScore / MentionRate pattern in PR #953 / PR #960.
+    sentiment_has_formula_inputs = score_count > 0 and label_count > 0
+    sentiment_critical_reasons = {
+        reason
+        for reason in sentiment_reasons
+        if reason in _METRIC_BLOCKING_REASONS["sentiment"]
+        or reason in _COMMON_METRIC_BLOCKING_REASONS
+    }
+    if not sentiment_reasons:
+        sentiment_status = FORMULA_OK_STATUS
+    elif sentiment_has_formula_inputs and not sentiment_critical_reasons:
+        sentiment_status = FORMULA_PARTIAL_STATUS
+    else:
+        sentiment_status = FORMULA_MISSING_INPUTS_STATUS
 
     citation_reasons = list(flag_reasons["citation"])
     if citation_total <= 0:

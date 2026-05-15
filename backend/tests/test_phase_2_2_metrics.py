@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import os
 import uuid
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 import pytest
 import pytest_asyncio
 from genpano_models import (
+    AnalyzerQualityFlag,
+    AnalyzerRun,
     BrandMention,
     CitationSource,
     GeoScoreDaily,
@@ -19,6 +21,7 @@ from genpano_models import (
 )
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.v1.projects.contracts.builder import _first_class_analyzer_fact_rollup
 from app.user_auth.jwt import sign_user_access_token
 
 os.environ.setdefault("USER_JWT_SECRET", "x" * 64)
@@ -287,6 +290,118 @@ async def test_metric_series_with_evidence_survives_peripheral_missing_inputs(
             f"{metric} formula_status should not be missing_required_inputs "
             f"when value is real (got {by_metric[metric]['formula_status']})"
         )
+
+
+@pytest.mark.asyncio
+async def test_sentiment_formula_status_partial_when_score_label_complete_with_aux_flags(
+    db_session: AsyncSession,
+):
+    """Issue #948 follow-up: sentiment KPI rendered ``—`` on
+    ``/v1/projects/:id/overview`` for BestCoffer because
+    ``_first_class_analyzer_fact_rollup`` reported
+    ``formula_status: missing_required_inputs`` whenever the analyzer
+    emitted auxiliary driver-related flags (e.g.
+    ``malformed_sentiment_driver_dropped`` from analyzer v4 enum
+    rejections in ``geo_tracker/analyzer/v4_contract.py``), even though
+    the sentiment formula's required inputs (``score_count`` +
+    ``label_count``) were both present (200 / 200 / 172 drivers in the
+    live response).
+
+    The fix: when ``score_count > 0`` AND ``label_count > 0`` AND no
+    critical reason is present in
+    ``_METRIC_BLOCKING_REASONS["sentiment"]`` /
+    ``_COMMON_METRIC_BLOCKING_REASONS``, downgrade the sentiment
+    evidence to ``formula_partial`` instead of
+    ``missing_required_inputs``. Reason codes are preserved so the UI
+    can hover "Coverage partial". This mirrors the SoV /
+    MentionRate / GeoScore pattern from PR #953 / PR #960 so the
+    frontend gate ``canUseContractMetricValue('partial', { formula_status:
+    'partial' })`` keeps surfacing the 0.21 value.
+    """
+    today = datetime(2026, 5, 14, 12, 0, 0)
+    target_response_ids: set[int] = set()
+    for i in range(8):
+        response_id = 9700 + i
+        target_response_ids.add(response_id)
+        run = AnalyzerRun(
+            response_id=response_id,
+            schema_version="analyzer_v4",
+            status="done",
+            trigger_source="test",
+            validator_summary_json={"schema_version": "analyzer_v4"},
+            started_at=today,
+            completed_at=today,
+        )
+        db_session.add(run)
+        await db_session.flush()
+
+        mention = BrandMention(
+            response_id=response_id,
+            brand_id=4242,
+            brand_name="BestCoffer",
+            sentiment="positive",
+            sentiment_score=0.21,
+            mention_count=1,
+            position_rank=2,
+            created_at=today - timedelta(days=i % 5),
+        )
+        db_session.add(mention)
+        await db_session.flush()
+
+        db_session.add(
+            SentimentDriver(
+                mention_id=mention.id,
+                response_id=response_id,
+                brand_name="BestCoffer",
+                driver_text=f"driver-{i}",
+                polarity="positive",
+                category="value",
+                strength=0.7,
+                source_quote=f"quote-{i}",
+                created_at=today - timedelta(days=i % 5),
+            )
+        )
+        # Auxiliary analyzer-v4 flags: driver-type enum failures (see
+        # geo_tracker/analyzer/v4_contract.py:60-71). These DO NOT
+        # invalidate the sentiment formula, only the driver-type
+        # breakdown.
+        db_session.add(
+            AnalyzerQualityFlag(
+                run_id=run.id,
+                response_id=response_id,
+                flag_key=f"flag_malformed_driver_{i}",
+                severity="warning",
+                code="malformed_sentiment_driver_dropped",
+                message="Driver dropped due to malformed shape.",
+                target_type="driver",
+                target_key=f"driver_{i}",
+                blocks_metric_readiness=True,
+            )
+        )
+    await db_session.commit()
+
+    evidence, _counts, _reasons = await _first_class_analyzer_fact_rollup(
+        db_session,
+        brand_id=4242,
+        from_date=date(2026, 5, 1),
+        to_date=date(2026, 5, 31),
+        target_response_ids=target_response_ids,
+    )
+
+    sentiment = evidence["sentiment"]
+    # Required formula inputs are fully present (score + label per mention).
+    assert sentiment["score_count"] == 8
+    assert sentiment["label_count"] == 8
+    # Driver evidence exists (auxiliary).
+    assert sentiment["driver_count"] == 8
+    # Auxiliary flag reason codes are preserved so the UI can render the
+    # "Coverage partial" hover info.
+    assert "malformed_sentiment_driver_dropped" in sentiment["reason_codes"]
+    # Issue #948 follow-up: the value is computable from real evidence,
+    # so the producer must emit ``formula_partial`` (not
+    # ``missing_required_inputs``) — the frontend gate accepts ``partial``
+    # since PR #960 and renders the value instead of ``—``.
+    assert sentiment["formula_status"] == "partial"
 
 
 @pytest.mark.asyncio
