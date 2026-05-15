@@ -1527,23 +1527,45 @@ async def get_industry_topic_detail(
 async def _resolve_industry_name(session: AsyncSession, industry_id: int) -> str | None:
     """Map numeric industry_id → industry_name (the table key).
 
-    Currently leverages the same lookup used by industry_overview/ranking:
-    pick the most-represented industry name in industry_benchmark_daily
-    matching industry_id. (industry table has 1:1 id↔name; this is a
-    deliberate fallback in case the upstream `industries` mirror is empty.)
+    `industry_id` is a synthetic position-based ID assigned by
+    `list_industries`: rows are sorted by mention count desc, and the
+    1-indexed position is exposed as `industry_id`. Resolution here must
+    mirror that exact ordering, otherwise downstream endpoints
+    (avg-geo-score, overview, ranking, …) load the wrong industry and
+    return empty results — see issue #975.
+
+    Falls back to `brands.industry` distinct values when the benchmark
+    table is empty (live deployments may have industries with brands but
+    no aggregated benchmarks yet).
     """
-    stmt = (
-        select(IndustryBenchmarkDaily.industry, func.count())
+    bench_stmt = (
+        select(IndustryBenchmarkDaily.industry, func.count().label("cnt"))
         .where(IndustryBenchmarkDaily.industry.isnot(None))
         .group_by(IndustryBenchmarkDaily.industry)
-        .order_by(func.count().desc())
+        .order_by(desc("cnt"))
     )
-    rows = list((await session.execute(stmt)).all())
-    if not rows:
-        return None
-    # Pick the row whose industry slug ends in the numeric id, or the
-    # most-frequent if no match.
-    for name, _ in rows:
-        if name and (str(industry_id) in name or name == str(industry_id)):
-            return str(name)
-    return str(rows[0][0]) if rows[0][0] is not None else None
+    rows = list((await session.execute(bench_stmt)).all())
+    names: list[str] = []
+    for r in rows:
+        if r[0]:
+            names.append(str(r[0]))
+
+    if not names:
+        try:
+            brand_rows = await session.execute(
+                text(
+                    "SELECT industry, COUNT(*) AS cnt FROM brands "
+                    "WHERE industry IS NOT NULL AND industry <> '' "
+                    "GROUP BY industry ORDER BY cnt DESC"
+                )
+            )
+            for r in brand_rows.all():
+                if r[0]:
+                    names.append(str(r[0]))
+        except Exception:
+            return None
+
+    idx = industry_id - 1
+    if 0 <= idx < len(names):
+        return names[idx]
+    return None

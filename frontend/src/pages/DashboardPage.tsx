@@ -185,10 +185,19 @@ export default function DashboardPage() {
     limit: 5,
   });
 
-  // Industry avg GEO depends on the project's industry_id (from overview)
+  // Industry avg GEO depends on the project's industry_id (from overview).
+  // We also pass the resolved industry name so the backend can short-circuit
+  // its position-based `industry_id`→name lookup — see issue #975.
+  const liveIndustriesQ = useIndustries();
   const liveIndustryId = overviewQ.data?.industry_id ?? null;
+  const liveIndustryName = useMemo(() => {
+    if (!isLive || liveIndustryId == null) return undefined;
+    const row = liveIndustriesQ.data?.find((ind) => ind.industry_id === liveIndustryId);
+    return row?.name || undefined;
+  }, [isLive, liveIndustryId, liveIndustriesQ.data]);
   const industryAvgQ = useIndustryAvgGeo(
     isLive && liveIndustryId ? liveIndustryId : null,
+    liveIndustryName ? { name: liveIndustryName } : undefined,
   );
   const analyticsError =
     overviewQ.error ||
@@ -332,8 +341,8 @@ export default function DashboardPage() {
     INDUSTRIES.find((ind) => ind.id === project?.industryId) || null;
   // Live mode: backend industry_id is numeric; mock INDUSTRIES uses string keys
   // (e.g. 'beauty'), so the lookup above always returns null for real projects
-  // and the hero shows "行业: —". Resolve against the live /industries list.
-  const liveIndustriesQ = useIndustries();
+  // and the hero shows "行业: —". Resolve against the live /industries list
+  // (`liveIndustriesQ` is fetched above for the avg-geo-score call).
   const liveIndustry = useMemo(() => {
     if (!isLive) return null;
     const industryId = overviewQ.data?.industry_id;
