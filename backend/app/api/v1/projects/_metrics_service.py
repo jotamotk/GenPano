@@ -96,6 +96,11 @@ class _FactMetricBucket(TypedDict):
     sentiment_scores: list[float]
     sentiment_label_count: int
     cited_target_response_ids: set[int]
+    # Issue #948 follow-up: per-day sums of attributed-citation count
+    # (numerator) and total-citation count (denominator) for the proper
+    # citation_share = target_attributed / eligible_project semantic.
+    target_citation_count_sum: int
+    citation_count_sum: int
 
 
 def _period(from_d: date, to_d: date) -> dict[str, str]:
@@ -427,13 +432,24 @@ def _fact_metric_value(metric: str, bucket: _FactMetricBucket) -> float | None:
             return None
         return round(sum(scores) / len(scores), 4)
     if metric == "citation":
-        target_response_count = len(bucket["citation_target_response_ids"])
-        if target_response_count <= 0 or not bucket["has_citation_input"]:
+        # Issue #948 follow-up: citation_share = target_attributed /
+        # eligible_project citations. Previous implementation used
+        # `(any target-mentioning response has any citation) /
+        # (target-mentioning responses)`, which collapsed to 100% the moment
+        # the LLM emitted any citations because the COUNT(*) denominator
+        # subquery in admin_facts (queries.py:407-410) was unfiltered by
+        # `mention_id`. Switch to the proper attributed/total ratio that
+        # matches `metric_formula_evidence.citation.numerator_name /
+        # denominator_name` (target_attributed_citations /
+        # eligible_project_citations).
+        if not bucket["has_citation_input"]:
             return None
-        return round(
-            len(bucket["cited_target_response_ids"]) / target_response_count,
-            4,
-        )
+        total_citations = int(bucket["citation_count_sum"])
+        if total_citations <= 0:
+            # Nothing to divide by — guard the no-fallback contract.
+            return None
+        target_citations = int(bucket["target_citation_count_sum"])
+        return round(target_citations / total_citations, 4)
     return None
 
 
@@ -485,6 +501,8 @@ async def _metrics_from_admin_facts(
                 "sentiment_scores": [],
                 "sentiment_label_count": 0,
                 "cited_target_response_ids": set[int](),
+                "target_citation_count_sum": 0,
+                "citation_count_sum": 0,
             },
         )
         bucket["response_ids"].add(response_id)
@@ -521,6 +539,15 @@ async def _metrics_from_admin_facts(
         )
         if target_mentions > 0 and int(row.get("citation_count") or 0) > 0:
             bucket["cited_target_response_ids"].add(response_id)
+        # Issue #948 follow-up: track per-day attributed and total citation
+        # sums so citation_share = target_attributed / eligible_project,
+        # not the previous "any target-mentioning response has any citation"
+        # ratio which was 100% whenever the LLM emitted citations on a
+        # target-mentioning response. Total per response is bounded by
+        # COUNT(*) from citation_sources; target is the subset whose
+        # `mention_id` links to a brand_mention for the target brand.
+        bucket["citation_count_sum"] += int(row.get("citation_count") or 0)
+        bucket["target_citation_count_sum"] += int(row.get("target_citation_count") or 0)
 
     out_series: list[MetricSeries] = []
     for metric in requested:
