@@ -1310,14 +1310,44 @@ class GuestQueryExecutor:
                 self.last_error_reason = self.last_error_reason or "no_response"
                 if page_obj:
                     self._set_execution_stage("artifact_save")
-                    await _save_screenshot(page_obj, query.id, f"{llm}_no_response")
-                    await _save_runtime_snapshot(
-                        page_obj,
-                        query.id,
-                        f"{llm}_no_response",
-                        config=config,
-                        runtime_events=runtime_events,
-                    )
+                    # Refs #963: unbounded artifact saves on a half-broken
+                    # page (CF challenge, login redirect, SPA stuck mid-
+                    # render) used to be able to burn the rest of the outer
+                    # execute_query budget — including pushing the worker
+                    # over its Celery soft_time_limit when other Doubao
+                    # rows had already used most of the 480s. Bound each
+                    # save call so a hung page cannot prevent the rest of
+                    # the worker (cleanup, DB writeback) from running.
+                    try:
+                        await asyncio.wait_for(
+                            _save_screenshot(
+                                page_obj, query.id, f"{llm}_no_response"
+                            ),
+                            timeout=15,
+                        )
+                    except Exception as save_err:
+                        logger.warning(
+                            "[%s] no_response screenshot save failed: %s",
+                            llm,
+                            _redact_sensitive_text(str(save_err))[:200],
+                        )
+                    try:
+                        await asyncio.wait_for(
+                            _save_runtime_snapshot(
+                                page_obj,
+                                query.id,
+                                f"{llm}_no_response",
+                                config=config,
+                                runtime_events=runtime_events,
+                            ),
+                            timeout=15,
+                        )
+                    except Exception as save_err:
+                        logger.warning(
+                            "[%s] no_response runtime snapshot save failed: %s",
+                            llm,
+                            _redact_sensitive_text(str(save_err))[:200],
+                        )
                 return None
 
         except asyncio.CancelledError:
