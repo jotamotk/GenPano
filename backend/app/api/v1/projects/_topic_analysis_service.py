@@ -236,17 +236,13 @@ def _empty_monitoring(
 async def _count_brand_topics_total(session: AsyncSession, brand_id: int) -> int:
     """Raw topic count for a brand (admin-surface contract).
 
-    Mirrors `backend/app/admin/brand_management/db.py:632` semantics so the
-    app-surface MetricCard can display a "Total" subline that matches what
-    operators see in the admin Brand Management page.
+    Mirrors `backend/app/admin/brand_management/db.py:632` exactly — no status
+    filter — so the app-surface "Total topics" subline equals the number
+    operators see in the admin Brand Management page (#985 D4.A, Refs #983).
     """
     try:
         result = await session.execute(
-            text(
-                "SELECT COUNT(*) AS topic_count FROM topics "
-                "WHERE brand_id = :brand_id "
-                "AND COALESCE(status, 'active') <> 'archived'"
-            ),
+            text("SELECT COUNT(*) AS topic_count FROM topics WHERE brand_id = :brand_id"),
             {"brand_id": brand_id},
         )
         row = result.mappings().first()
