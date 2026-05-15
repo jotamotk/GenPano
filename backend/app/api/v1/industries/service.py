@@ -145,6 +145,7 @@ async def get_industry_overview(
     to_date: date | None = None,
 ) -> IndustryOverviewOut:
     from_d, to_d = _resolve_window(from_date, to_date)
+    industry_name = industry_name or await _resolve_industry_name(session, industry_id)
 
     if industry_name:
         bench_filter = and_(
@@ -326,6 +327,7 @@ async def get_industry_ranking(
     primary_brand_id: int | None = None,
 ) -> IndustryRankingOut:
     from_d, to_d = _resolve_window(from_date, to_date)
+    industry_name = industry_name or await _resolve_industry_name(session, industry_id)
 
     base_filter = and_(
         GeoScoreDaily.date >= datetime.combine(from_d, datetime.min.time()),
@@ -432,6 +434,7 @@ async def get_industry_topics(
     limit: int = 50,
 ) -> IndustryTopicsOut:
     from_d, to_d = _resolve_window(from_date, to_date)
+    industry_name = industry_name or await _resolve_industry_name(session, industry_id)
     f = datetime.combine(from_d, datetime.min.time())
     t = datetime.combine(to_d, datetime.max.time())
 
@@ -541,6 +544,7 @@ async def get_industry_kg(
                        product ↔ product (kg_product_relations) — depth >= 2
     """
     today = date.today()
+    industry_name = industry_name or await _resolve_industry_name(session, industry_id)
 
     # Discover brands via 30d geo_score_daily (existing behavior — keeps
     # the graph populated even when kg_brands has no rows yet).
@@ -833,6 +837,7 @@ async def get_industry_distribution(
     to_date: date | None = None,
 ) -> IndustryDistributionOut:
     from_d, to_d = _resolve_window(from_date, to_date)
+    industry_name = industry_name or await _resolve_industry_name(session, industry_id)
     f = datetime.combine(from_d, datetime.min.time())
     t = datetime.combine(to_d, datetime.max.time())
 
@@ -902,6 +907,7 @@ async def get_industry_movers(
     limit: int = 5,
 ) -> IndustryMoversOut:
     from_d, to_d = _resolve_window(from_date, to_date)
+    industry_name = industry_name or await _resolve_industry_name(session, industry_id)
     half = max(7, (to_d - from_d).days // 2)
     mid = to_d - timedelta(days=half)
 
@@ -988,6 +994,7 @@ async def get_industry_groups(
     limit: int = 8,
 ) -> IndustryGroupsOut:
     today = date.today()
+    industry_name = industry_name or await _resolve_industry_name(session, industry_id)
     f = datetime.combine(today - timedelta(days=29), datetime.min.time())
     base_filter = GeoScoreDaily.date >= f
     if industry_name:
@@ -1075,6 +1082,7 @@ async def get_industry_top_domains(
     limit: int = 10,
 ) -> IndustryTopDomainsOut:
     from_d, to_d = _resolve_window(from_date, to_date)
+    industry_name = industry_name or await _resolve_industry_name(session, industry_id)
     f = datetime.combine(from_d, datetime.min.time())
     t = datetime.combine(to_d, datetime.max.time())
 
@@ -1166,6 +1174,7 @@ async def get_industry_segments(
     limit: int = 5,
 ) -> IndustrySegmentsOut:
     today = date.today()
+    industry_name = industry_name or await _resolve_industry_name(session, industry_id)
     f = datetime.combine(today - timedelta(days=29), datetime.min.time())
     base_filter = GeoScoreDaily.date >= f
     if industry_name:
@@ -1245,6 +1254,7 @@ async def get_industry_ranking_by_engine(
     limit: int = 10,
 ) -> IndustryRankingByEngineOut:
     from_d, to_d = _resolve_window(from_date, to_date)
+    industry_name = industry_name or await _resolve_industry_name(session, industry_id)
     f = datetime.combine(from_d, datetime.min.time())
     t = datetime.combine(to_d, datetime.max.time())
     base_filter = and_(GeoScoreDaily.date >= f, GeoScoreDaily.date <= t)
@@ -1345,6 +1355,7 @@ async def get_industry_topic_intent_matrix(
     to_date: date | None = None,
 ) -> TopicIntentMatrixOut:
     from_d, to_d = _resolve_window(from_date, to_date)
+    industry_name = industry_name or await _resolve_industry_name(session, industry_id)
     f = datetime.combine(from_d, datetime.min.time())
     t = datetime.combine(to_d, datetime.max.time())
 
@@ -1440,6 +1451,7 @@ async def get_industry_topic_detail(
     to_date: date | None = None,
 ) -> IndustryTopicDetailOut:
     from_d, to_d = _resolve_window(from_date, to_date)
+    industry_name = industry_name or await _resolve_industry_name(session, industry_id)
     f = datetime.combine(from_d, datetime.min.time())
     t = datetime.combine(to_d, datetime.max.time())
 
