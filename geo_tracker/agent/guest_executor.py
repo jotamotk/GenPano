@@ -112,8 +112,19 @@ PROMPT_FILL_VALUE_READ_TIMEOUT_S = 10
 # = 180s, so additional time is being burned by unbounded calls inside
 # the wait loop and the post-loop response extraction. Each individual
 # call is bounded so a single hung page op cannot eat the budget.
-RESPONSE_WAIT_GENERATING_EVAL_TIMEOUT_S = 10
+RESPONSE_WAIT_GENERATING_EVAL_TIMEOUT_S = 3
 RESPONSE_EXTRACT_SELECTOR_TIMEOUT_S = 10
+
+# Refs #963 follow-up to PR #1013 live evidence (Admin E2E run 25928885380
+# query 184968 retry 23, stage=response_wait, latency=480897ms): the
+# per-call 10s bound on still_generating evaluate was too loose — a
+# degenerate page tripping the bound every iteration burned ~15s per
+# iteration × ~24 extensions = ~360s in the loop alone, plus earlier
+# stages = full 480s budget. Tighter eval bound (3s) AND a hard outer
+# stage budget guarantee response_wait cannot exceed this regardless
+# of how many wait_total extensions happen or how each inner call
+# behaves.
+RESPONSE_WAIT_STAGE_BUDGET_S = 240
 
 
 _SENSITIVE_TEXT_PATTERNS = [
@@ -2815,6 +2826,14 @@ class GuestQueryExecutor:
             return current_wait_total + step, extension_used_so_far + step
 
         self._set_execution_stage("response_wait")
+        # Refs #963 follow-up to PR #1013 live evidence (run 25928885380):
+        # track consecutive timeouts on the still_generating evaluate so a
+        # dead page bails out of the loop fast instead of grinding through
+        # all extensions. A page that cannot respond to a 3s evaluate is
+        # not going to render a response — break out and let the no_response
+        # path persist evidence.
+        dead_page_eval_streak = 0
+        DEAD_PAGE_EVAL_THRESHOLD = 3
         while elapsed < wait_total:
             await page.wait_for_timeout(min(wait_interval, wait_total - elapsed))
             elapsed += wait_interval
@@ -2859,6 +2878,21 @@ class GuestQueryExecutor:
                         }
                     """), timeout=RESPONSE_WAIT_GENERATING_EVAL_TIMEOUT_S)
                     still_generating = bool(generating)
+                    dead_page_eval_streak = 0
+                except asyncio.TimeoutError:
+                    dead_page_eval_streak += 1
+                    logger.warning(
+                        f"[{llm_name}] still_generating evaluate timed out "
+                        f"(streak={dead_page_eval_streak}/{DEAD_PAGE_EVAL_THRESHOLD})"
+                    )
+                    if dead_page_eval_streak >= DEAD_PAGE_EVAL_THRESHOLD:
+                        logger.error(
+                            f"[{llm_name}] response_wait bailing out — page evaluate "
+                            f"has timed out {dead_page_eval_streak} times in a row; "
+                            f"page is unresponsive"
+                        )
+                        self.last_error_reason = "no_response"
+                        break
                 except Exception:
                     pass
 
