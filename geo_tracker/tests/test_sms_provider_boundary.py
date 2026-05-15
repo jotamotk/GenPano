@@ -100,6 +100,34 @@ class _VisibleElement:
         return True
 
 
+class _DetachedAfterClickElement:
+    def __init__(self) -> None:
+        self.clicks = 0
+
+    async def click(self, *_args, **_kwargs) -> None:
+        self.clicks += 1
+        raise RuntimeError("ElementHandle.click: Element is not attached to the DOM")
+
+
+class _DoubaoDetachedAfterSubmitPage(_FakePage):
+    def __init__(self) -> None:
+        super().__init__(
+            url="https://www.doubao.com/chat",
+            body_text="",
+        )
+        self.submit = _DetachedAfterClickElement()
+
+    async def query_selector(self, selector: str):
+        if "[data-testid='login_next_button']" in selector:
+            return self.submit
+        if "textarea" in selector:
+            return _VisibleElement()
+        return None
+
+    async def content(self) -> str:
+        return "<html><body><div class='user-avatar'></div><textarea></textarea></body></html>"
+
+
 class _FakeDoubaoVerifyPage(_FakePage):
     def __init__(self, *, body_text: str, html: str) -> None:
         super().__init__(
@@ -435,6 +463,18 @@ async def test_doubao_relogin_fallback_continues_sms_when_inline_form_is_ready(
     assert provider.polled == [(new_phone, "豆包", 120)]
     assert provider.released == [new_phone]
     assert provider.closed is True
+
+
+@pytest.mark.asyncio
+async def test_doubao_submit_treats_detached_button_after_success_as_recoverable() -> None:
+    from geo_tracker.agent.sms_login import get_handler
+
+    handler = get_handler("doubao")
+    assert handler is not None
+    page = _DoubaoDetachedAfterSubmitPage()
+
+    assert await handler.submit_login(page) is True
+    assert page.submit.clicks == 1
 
 
 @pytest.mark.asyncio
