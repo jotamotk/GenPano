@@ -126,6 +126,22 @@ RESPONSE_EXTRACT_SELECTOR_TIMEOUT_S = 10
 # behaves.
 RESPONSE_WAIT_STAGE_BUDGET_S = 240
 
+# Refs #963 follow-up to PR #1015 live evidence (Admin E2E run 25931878272
+# query 184968 retry 25, stage=response_wait, latency=480898ms): response_wait
+# wall-clock budget (240s) bails the wait loop and extraction phase, but the
+# post-failure cleanup chain in ``_query_one_llm`` ("未能获取响应" branch)
+# still invokes ``_prefer_doubao_visual_challenge_reason`` →
+# ``_doubao_visual_challenge_state_from_page`` (unbounded ``page.evaluate`` +
+# ``page.content``) and ``_prefer_doubao_auth_failure_reason`` →
+# ``_doubao_auth_state_reason_from_page`` (same), plus ``_save_screenshot``
+# (unbounded ``page.screenshot``) and ``_save_runtime_snapshot`` (unbounded
+# ``page.evaluate``). On a dead page each of these can hang indefinitely,
+# letting cleanup eat the remaining ~240s of the Celery 480s soft cap.
+# Bound every page-read in the post-failure path so the whole stage is
+# hard-capped regardless of which call goes degenerate.
+POST_FAILURE_PAGE_READ_TIMEOUT_S = 5
+POST_FAILURE_SCREENSHOT_TIMEOUT_S = 10
+
 
 _SENSITIVE_TEXT_PATTERNS = [
     (
@@ -191,12 +207,18 @@ async def _doubao_visual_challenge_state_from_page(page: Page | None) -> dict:
     body_text = ""
     html = ""
     try:
-        body_text = await page.evaluate("document.body?.innerText || ''")
-    except Exception:
+        body_text = await asyncio.wait_for(
+            page.evaluate("document.body?.innerText || ''"),
+            timeout=POST_FAILURE_PAGE_READ_TIMEOUT_S,
+        )
+    except (asyncio.TimeoutError, Exception):
         pass
     try:
-        html = await page.content()
-    except Exception:
+        html = await asyncio.wait_for(
+            page.content(),
+            timeout=POST_FAILURE_PAGE_READ_TIMEOUT_S,
+        )
+    except (asyncio.TimeoutError, Exception):
         pass
     return _doubao_visual_challenge_state_from_text(f"{body_text}\n{html}")
 
@@ -3565,12 +3587,18 @@ async def _doubao_auth_state_reason_from_page(page: Page) -> str | None:
     body_text = ""
     html = ""
     try:
-        body_text = await page.evaluate("document.body?.innerText || ''")
-    except Exception:
+        body_text = await asyncio.wait_for(
+            page.evaluate("document.body?.innerText || ''"),
+            timeout=POST_FAILURE_PAGE_READ_TIMEOUT_S,
+        )
+    except (asyncio.TimeoutError, Exception):
         pass
     try:
-        html = await page.content()
-    except Exception:
+        html = await asyncio.wait_for(
+            page.content(),
+            timeout=POST_FAILURE_PAGE_READ_TIMEOUT_S,
+        )
+    except (asyncio.TimeoutError, Exception):
         pass
     return doubao_auth_state_reason(body_text, html)
 
@@ -3584,12 +3612,18 @@ async def _doubao_response_auth_reason_from_page(
     body_text = ""
     html = ""
     try:
-        body_text = await page.evaluate("document.body?.innerText || ''")
-    except Exception:
+        body_text = await asyncio.wait_for(
+            page.evaluate("document.body?.innerText || ''"),
+            timeout=POST_FAILURE_PAGE_READ_TIMEOUT_S,
+        )
+    except (asyncio.TimeoutError, Exception):
         pass
     try:
-        html = await page.content()
-    except Exception:
+        html = await asyncio.wait_for(
+            page.content(),
+            timeout=POST_FAILURE_PAGE_READ_TIMEOUT_S,
+        )
+    except (asyncio.TimeoutError, Exception):
         pass
     combined_text = "\n".join(part for part in (raw_text or "", body_text) if part)
     combined_html = "\n".join(part for part in (response_html or "", html) if part)
@@ -3678,53 +3712,63 @@ async def _save_runtime_snapshot(
             "input": config.get("input_selector", "") if config else "",
             "response": config.get("response_selector", "") if config else "",
         }
-        page_state = await page.evaluate(
-            """
-            (selectors) => {
-                const inspect = (selectorCsv) => {
-                    return (selectorCsv || '')
-                        .split(',')
-                        .map(s => s.trim())
-                        .filter(Boolean)
-                        .map(selector => {
-                            try {
-                                const nodes = [...document.querySelectorAll(selector)];
-                                const first = nodes[0] || null;
-                                return {
-                                    selector,
-                                    count: nodes.length,
-                                    visibleCount: nodes.filter(n => {
-                                        const r = n.getBoundingClientRect();
-                                        const style = getComputedStyle(n);
-                                        return r.width > 0 && r.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
-                                    }).length,
-                                    firstText: first ? (first.innerText || first.textContent || first.value || '').slice(0, 500) : '',
-                                    firstHtml: first ? first.outerHTML.slice(0, 1000) : '',
-                                };
-                            } catch (e) {
-                                return {selector, error: String(e).slice(0, 300)};
-                            }
-                        });
-                };
-                return {
-                    url: location.href,
-                    title: document.title,
-                    readyState: document.readyState,
-                    activeElement: document.activeElement ? {
-                        tagName: document.activeElement.tagName,
-                        id: document.activeElement.id || '',
-                        className: String(document.activeElement.className || '').slice(0, 200),
-                    } : null,
-                    bodyText: (document.body?.innerText || '').slice(0, 3000),
-                    inputSelectors: inspect(selectors.input),
-                    responseSelectors: inspect(selectors.response),
-                    loginLikeNodes: inspect("[class*='login'], [class*='sign-in'], [class*='passport'], [role='dialog']"),
-                    challengeLikeNodes: inspect("[role='dialog'], [class*='captcha'], [class*='verify'], [class*='challenge'], [class*='modal']"),
-                };
-            }
-            """,
-            selector_payload,
-        )
+        try:
+            page_state = await asyncio.wait_for(
+                page.evaluate(
+                    """
+                    (selectors) => {
+                        const inspect = (selectorCsv) => {
+                            return (selectorCsv || '')
+                                .split(',')
+                                .map(s => s.trim())
+                                .filter(Boolean)
+                                .map(selector => {
+                                    try {
+                                        const nodes = [...document.querySelectorAll(selector)];
+                                        const first = nodes[0] || null;
+                                        return {
+                                            selector,
+                                            count: nodes.length,
+                                            visibleCount: nodes.filter(n => {
+                                                const r = n.getBoundingClientRect();
+                                                const style = getComputedStyle(n);
+                                                return r.width > 0 && r.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+                                            }).length,
+                                            firstText: first ? (first.innerText || first.textContent || first.value || '').slice(0, 500) : '',
+                                            firstHtml: first ? first.outerHTML.slice(0, 1000) : '',
+                                        };
+                                    } catch (e) {
+                                        return {selector, error: String(e).slice(0, 300)};
+                                    }
+                                });
+                        };
+                        return {
+                            url: location.href,
+                            title: document.title,
+                            readyState: document.readyState,
+                            activeElement: document.activeElement ? {
+                                tagName: document.activeElement.tagName,
+                                id: document.activeElement.id || '',
+                                className: String(document.activeElement.className || '').slice(0, 200),
+                            } : null,
+                            bodyText: (document.body?.innerText || '').slice(0, 3000),
+                            inputSelectors: inspect(selectors.input),
+                            responseSelectors: inspect(selectors.response),
+                            loginLikeNodes: inspect("[class*='login'], [class*='sign-in'], [class*='passport'], [role='dialog']"),
+                            challengeLikeNodes: inspect("[role='dialog'], [class*='captcha'], [class*='verify'], [class*='challenge'], [class*='modal']"),
+                        };
+                    }
+                    """,
+                    selector_payload,
+                ),
+                timeout=POST_FAILURE_PAGE_READ_TIMEOUT_S,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                f"Runtime snapshot evaluate timed out "
+                f"({POST_FAILURE_PAGE_READ_TIMEOUT_S}s) for query_{query_id}_{suffix}"
+            )
+            page_state = {"error": "evaluate_timeout"}
         is_doubao_snapshot = "doubao" in suffix.lower() or "doubao" in (
             config.get("url", "") if config else ""
         ).lower()
@@ -3773,14 +3817,32 @@ async def _save_runtime_snapshot(
 
 
 async def _save_screenshot(page: Page, query_id: int, suffix: str = "") -> Optional[Path]:
-    """保存截图"""
+    """保存截图
+
+    Refs #963 follow-up to PR #1015 live evidence (Admin E2E run 25931878272
+    query 184968 retry 25, stage=response_wait, latency=480898ms):
+    ``page.screenshot`` on a dead/hung page is unbounded; the post-failure
+    cleanup chain in ``_query_one_llm`` invokes this without an outer
+    ``wait_for`` on every call site, so a hung screenshot can eat the
+    remaining budget after the response_wait stage already bailed. Bound
+    the screenshot call itself so cleanup cannot extend the failure latency.
+    """
     try:
         timestamp = int(datetime.utcnow().timestamp())
         filename = f"query_{query_id}_{suffix}_{timestamp}.png" if suffix else f"query_{query_id}_{timestamp}.png"
         path = SCREENSHOT_DIR / filename
-        await page.screenshot(path=str(path), full_page=True)
+        await asyncio.wait_for(
+            page.screenshot(path=str(path), full_page=True),
+            timeout=POST_FAILURE_SCREENSHOT_TIMEOUT_S,
+        )
         logger.info(f"截图已保存: {path}")
         return path
+    except asyncio.TimeoutError:
+        logger.warning(
+            f"保存截图超时 ({POST_FAILURE_SCREENSHOT_TIMEOUT_S}s) "
+            f"page.screenshot did not return for query_{query_id}_{suffix}"
+        )
+        return None
     except Exception as e:
         logger.warning(f"保存截图失败: {e}")
         return None
