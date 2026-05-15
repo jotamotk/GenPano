@@ -311,9 +311,20 @@ class DoubaoLoginHandler(BaseSMSLoginHandler):
         判断当前页面是否已经处于登录态。
         特征：
         - 全页严格鉴权状态没有登录/过期/登出运行时信号
-        - 聊天输入区的 textarea（placeholder='发消息...'）可见
+        - 聊天输入区的 textarea 可见（识别方式与 executor 配置保持一致）
         - 且页面上没有可见的 '登录' 按钮 / 链接
         这样可以避免在 cookies 仍有效时把账号误当做需要重新登录。
+
+        Refs #963 / PR #1005 review (Codex P2): the chat-input detector
+        used to ONLY match textareas whose ``placeholder`` regex matched
+        ``发消息|Message``. Doubao's 2026 SPA renders the same chat input
+        through the stable id/class selectors used elsewhere in
+        ``executor.GUEST_LLM_CONFIG['doubao']['input_selector']`` and may
+        leave the placeholder blank after login. Without the broader
+        match below, a legitimate logged-in page would fail
+        ``_already_logged_in``, which after PR #1005 means
+        ``verify_success`` rejects the real login and the SMS cookies
+        are never captured.
         """
         auth_reason = await self._post_login_auth_failure_reason(page)
         if auth_reason:
@@ -327,13 +338,37 @@ class DoubaoLoginHandler(BaseSMSLoginHandler):
             res = await page.evaluate(
                 """
                 () => {
-                    // 1) chat textarea 是否可见
-                    const inputs = [...document.querySelectorAll('textarea')];
-                    const chatInput = inputs.find(t => {
-                        const ph = t.getAttribute('placeholder') || '';
-                        const r = t.getBoundingClientRect();
-                        return /发消息|Message/i.test(ph) && r.width > 50 && r.height > 10;
-                    });
+                    // 1) chat textarea 是否可见。识别方式与 executor 的
+                    //    GUEST_LLM_CONFIG['doubao']['input_selector'] 保持一致，
+                    //    避免只认 placeholder 而漏掉已登录但 placeholder 为空
+                    //    的真实聊天输入。
+                    const isVisibleTextarea = (el) => {
+                        if (!el) return false;
+                        const r = el.getBoundingClientRect();
+                        if (!(r.width > 50 && r.height > 10)) return false;
+                        if (el.getAttribute('aria-hidden') === 'true') return false;
+                        return true;
+                    };
+                    const findChatInput = () => {
+                        // 1a) 稳定 id/class（2026 UI）
+                        const stableSelectors = [
+                            "#input-engine-container textarea.semi-input-textarea:not([aria-hidden='true'])",
+                            "textarea.semi-input-textarea:not([aria-hidden='true'])",
+                            "[data-testid='chat_input_input']",
+                        ];
+                        for (const sel of stableSelectors) {
+                            const el = document.querySelector(sel);
+                            if (isVisibleTextarea(el)) return el;
+                        }
+                        // 1b) placeholder 兜底（兼容旧 UI / 国际化变体）
+                        const inputs = [...document.querySelectorAll('textarea')];
+                        return inputs.find((t) => {
+                            const ph = t.getAttribute('placeholder') || '';
+                            if (!/发消息|Message/i.test(ph)) return false;
+                            return isVisibleTextarea(t);
+                        }) || null;
+                    };
+                    const chatInput = findChatInput();
                     if (!chatInput) return { chat: false, loginBtn: false };
 
                     // 2) 是否还有 '登录' 按钮 / 链接可见
@@ -898,6 +933,18 @@ class DoubaoLoginHandler(BaseSMSLoginHandler):
         验证是否成功登录。
         成功后 modal 关闭，页面仍在 doubao.com/chat，
         检查聊天输入框或登录按钮消失。
+
+        Refs #963: the previous proof-of-login here was too permissive — a
+        chat input element is also visible on Doubao 2026's logged-out
+        landing page (so guests can preview the input before the login
+        modal opens), so finding it did not actually prove a session had
+        been established. The SMS reauth flow could "succeed" by writing
+        cookies that the very next ``execute_query`` page load then
+        rejected as ``doubao_not_logged_in``, producing the
+        ``doubao_post_reauth_doubao_not_logged_in`` failure observed on
+        query 184968 retry 14 after PR #1000 deploy. Mirror the stricter
+        check from ``_already_logged_in``: a chat input visible AND no
+        visible "登录" button.
         """
         await page.wait_for_timeout(5000)
 
@@ -914,41 +961,22 @@ class DoubaoLoginHandler(BaseSMSLoginHandler):
             logger.warning("[doubao] post-login auth proof failed: %s", auth_reason)
             return auth_reason
 
-        chat_input = await page.query_selector(
-            "#input-engine-container textarea.semi-input-textarea:not([aria-hidden='true']), "
-            "textarea.semi-input-textarea:not([aria-hidden='true']), "
-            "[data-testid='chat_input_input']"
-        )
-        if chat_input:
-            logger.info("[doubao] 登录成功，聊天输入框已出现")
+        # Strict proof-of-login (Refs #963): reuse the same chat-input +
+        # no-visible-login-button check we run in _already_logged_in. The
+        # plain-text "登录" button stays visible on the logged-out landing
+        # even when the chat input is rendered, so we MUST require its
+        # absence before we accept this state as logged-in.
+        if await self._already_logged_in(page):
+            logger.info("[doubao] 登录成功（strict logged-in proof：chat input + no 登录 button）")
             return True
 
-        # fallback: 检查 textarea
-        textarea = await page.query_selector("textarea:not([aria-hidden='true'])")
-        if textarea:
-            logger.info("[doubao] 登录成功（textarea 可用）")
-            return True
-
-        # 检查登录按钮是否还在（如果消失说明已登录）
-        login_btn = await page.query_selector(
-            "[data-testid='to_login_button']"
-        )
-        if not login_btn:
-            logger.info("[doubao] 登录成功（登录按钮已消失）")
-            return True
-
-        # 可能有额外验证
+        # 可能有额外验证（图形验证码 / 滑块）。Handle and re-check.
         await self._handle_captcha(page)
         await page.wait_for_timeout(3000)
 
-        chat_input = await page.query_selector(
-            "#input-engine-container textarea.semi-input-textarea:not([aria-hidden='true']), "
-            "textarea.semi-input-textarea:not([aria-hidden='true']), "
-            "[data-testid='chat_input_input']"
-        )
-        if chat_input:
-            logger.info("[doubao] 登录成功（CAPTCHA 后）")
+        if await self._already_logged_in(page):
+            logger.info("[doubao] 登录成功（CAPTCHA 后 strict 校验通过）")
             return True
 
-        logger.error(f"[doubao] 登录验证失败, URL: {page.url}")
+        logger.error(f"[doubao] 登录验证失败 (strict proof of login not met), URL: {page.url}")
         return False

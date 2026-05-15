@@ -771,6 +771,183 @@ async def test_doubao_post_submit_login_chrome_rejects_chat_input_false_success(
     assert result == "doubao_not_logged_in"
 
 
+class _FakeDoubaoLoggedOutLandingPage(_FakePage):
+    """Refs #963: Doubao 2026 landing page that passes
+    ``doubao_auth_state_reason`` (positive ``user-avatar`` marker present
+    in HTML) AND has chat input visible, but ALSO still renders a
+    plain-text "登录" button — the exact false-success shape that
+    triggered the ``doubao_post_reauth_doubao_not_logged_in`` failure
+    after PR #1000 deploy. The OLD ``verify_success`` accepted this
+    because positive markers + chat input were enough; the fix reuses
+    the strict ``_already_logged_in`` proof which additionally requires
+    the login button to be absent.
+    """
+
+    def __init__(self, *, login_button_visible: bool) -> None:
+        super().__init__(
+            url="https://www.doubao.com/chat",
+            # Includes a positive auth marker so the inner
+            # _post_login_auth_failure_reason short-circuit does NOT
+            # reject this case before the strict proof runs.
+            body_text="user-avatar 我的账号",
+        )
+        self._login_button_visible = login_button_visible
+
+    async def query_selector(self, selector: str):
+        # Modal probe returns None (modal not visible), textarea probe
+        # returns the visible chat input.
+        if "login_content" in selector:
+            return None
+        if "textarea" in selector:
+            return _VisibleElement()
+        return None
+
+    async def content(self) -> str:
+        # Positive auth marker keeps _post_login_auth_failure_reason None.
+        return """
+        <body>
+          <header>
+            <div class="user-avatar"></div>
+          </header>
+          <main><textarea class="semi-input-textarea"></textarea></main>
+        </body>
+        """
+
+    async def evaluate(self, script: str):
+        if "innerText" in script:
+            return self._body_text
+        # _already_logged_in's JS check returns {chat, loginBtn}.
+        if "textarea" in script and "loginBtn" in script:
+            return {"chat": True, "loginBtn": self._login_button_visible}
+        return {}
+
+
+@pytest.mark.asyncio
+async def test_doubao_verify_success_rejects_visible_login_button_false_success(
+    monkeypatch,
+) -> None:
+    """Refs #963 follow-up: the previous ``verify_success`` accepted a
+    chat-input + no-auth-chrome page as logged-in, but Doubao's 2026
+    logged-out landing also renders the chat input (for guest preview)
+    while a plain-text "登录" button stays visible in the header. Account
+    42 reauth on 2026-05-15 wrote cookies on the back of this false
+    success, then the very next ``execute_query`` page load classified
+    the row as ``doubao_post_reauth_doubao_not_logged_in`` because the
+    session token was never actually established. ``verify_success``
+    must reuse the stricter ``_already_logged_in`` proof and reject this
+    state, so the SMS handler returns failed instead of writing a
+    half-baked cookie set."""
+    from geo_tracker.agent.sms_login import get_handler
+
+    handler = get_handler("doubao")
+    assert handler is not None
+
+    async def _noop(_page):
+        return None
+
+    monkeypatch.setattr(handler, "_handle_captcha", _noop)
+
+    page = _FakeDoubaoLoggedOutLandingPage(login_button_visible=True)
+    result = await handler.verify_success(page)
+    assert result is False, (
+        "verify_success must reject when a visible 登录 button proves "
+        "the session was not actually established, even if the chat "
+        "input is visible and the body has no strong auth-chrome markers"
+    )
+
+
+@pytest.mark.asyncio
+async def test_doubao_verify_success_accepts_strict_logged_in_state(
+    monkeypatch,
+) -> None:
+    """Refs #963 follow-up: the strict ``_already_logged_in`` proof must
+    still accept a real logged-in state — chat input visible AND no
+    visible "登录" button. Regression cover for the stricter
+    ``verify_success`` so it does not over-reject legitimate logins."""
+    from geo_tracker.agent.sms_login import get_handler
+
+    handler = get_handler("doubao")
+    assert handler is not None
+
+    async def _noop(_page):
+        return None
+
+    monkeypatch.setattr(handler, "_handle_captcha", _noop)
+
+    page = _FakeDoubaoLoggedOutLandingPage(login_button_visible=False)
+    result = await handler.verify_success(page)
+    assert result is True
+
+
+@pytest.mark.asyncio
+async def test_doubao_already_logged_in_accepts_stable_selector_chat_input_without_placeholder(
+    monkeypatch,
+) -> None:
+    """Refs #963 / PR #1005 review (Codex P2): the chat-input detector
+    must accept Doubao's 2026 stable id/class selectors (``#input-engine-
+    container textarea.semi-input-textarea`` / ``textarea.semi-input-
+    textarea``) even when the textarea ``placeholder`` is empty after
+    login. Without this, a real post-SMS logged-in page where Doubao left
+    the placeholder blank would fail ``_already_logged_in`` and the
+    stricter ``verify_success`` (PR #1005) would over-reject the real
+    login."""
+    from geo_tracker.agent.sms_login import get_handler
+
+    handler = get_handler("doubao")
+    assert handler is not None
+
+    class _StableSelectorLoggedInPage(_FakePage):
+        def __init__(self) -> None:
+            super().__init__(
+                url="https://www.doubao.com/chat",
+                body_text="user-avatar 我的账号",
+            )
+
+        async def query_selector(self, selector: str):
+            if "login_content" in selector:
+                return None
+            if "textarea" in selector:
+                return _VisibleElement()
+            return None
+
+        async def content(self) -> str:
+            return """
+            <body>
+              <header><div class="user-avatar"></div></header>
+              <main>
+                <div id="input-engine-container">
+                  <textarea class="semi-input-textarea"></textarea>
+                </div>
+              </main>
+            </body>
+            """
+
+        async def evaluate(self, script: str):
+            if "innerText" in script:
+                return self._body_text
+            # The new _already_logged_in JS finds the chat input via the
+            # stable id/class selector even though placeholder is blank.
+            if "isVisibleTextarea" in script or "stableSelectors" in script:
+                return {"chat": True, "loginBtn": False}
+            # Backwards compat: pre-fix JS only matched placeholder, so
+            # it would return {chat: false} — proves we are not relying
+            # on the old path.
+            if "placeholder" in script and "loginBtn" in script:
+                return {"chat": False, "loginBtn": False}
+            return {}
+
+    async def _noop(_page):
+        return None
+
+    monkeypatch.setattr(handler, "_handle_captcha", _noop)
+
+    result = await handler._already_logged_in(_StableSelectorLoggedInPage())
+    assert result is True, (
+        "_already_logged_in must accept the stable id/class chat input "
+        "even when textarea.placeholder is blank"
+    )
+
+
 def test_doubao_sms_login_uses_configured_proxy(monkeypatch) -> None:
     from geo_tracker.agent.sms_login.base import _sms_login_proxy_url
     from geo_tracker.agent.sms_login.base import _should_use_proxy_for_sms_login
