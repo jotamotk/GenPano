@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -458,9 +459,29 @@ class GuestQueryExecutor:
         self.account_cookies = account_cookies
         self.last_error_reason: str | None = None
         self.execution_stage: str | None = None
+        # Refs #963: when an outer asyncio.wait_for cancels execute(), the page
+        # is cleaned up inside _execute_once's finally before the caller can
+        # see TimeoutError. Track the active page + last-known URL/title/body
+        # so the caller can attach operator-visible evidence even after
+        # cancellation, and so the cancellation handler can save a snapshot
+        # before cleanup runs.
+        self.current_page: Page | None = None
+        self.last_page_url: str | None = None
+        self.last_page_title: str | None = None
+        self.last_page_body_snippet: str | None = None
+        self.last_snapshot_path: str | None = None
 
     def _set_execution_stage(self, stage: str) -> None:
         self.execution_stage = stage
+
+    def _record_page_pointer(self, page: "Page | None") -> None:
+        """Track the active page so cancellation handlers can preserve evidence."""
+        self.current_page = page
+        if page is not None:
+            try:
+                self.last_page_url = page.url
+            except Exception:
+                pass
 
     async def execute(self, query: Query) -> Optional[LLMResponse]:
         """
@@ -698,6 +719,7 @@ class GuestQueryExecutor:
 
             page_obj = await context.new_page()
             _attach_runtime_debug(page_obj)
+            self._record_page_pointer(page_obj)
 
             # 注入 localStorage（必须在页面打开后、导航前）
             if local_storage_data:
@@ -906,6 +928,7 @@ class GuestQueryExecutor:
                         await page_obj.close()
                         page_obj = await context.new_page()
                         _attach_runtime_debug(page_obj)
+                        self._record_page_pointer(page_obj)
                         try:
                             await page_obj.goto(config["url"], wait_until="domcontentloaded", timeout=60000)
                         except Exception as reopen_error:
@@ -1294,6 +1317,36 @@ class GuestQueryExecutor:
                     )
                 return None
 
+        except asyncio.CancelledError:
+            # Refs #963: outer asyncio.wait_for cancelling execute() must not
+            # discard browser-level evidence. Capture the active page state
+            # (URL/title/body) and persist a runtime snapshot before the
+            # finally-block cleanup tears the page down, so future
+            # `doubao_browser_timeout:<stage>` failures land with operator-
+            # readable context instead of a bare reason code.
+            stage_at_cancel = self.execution_stage or "unknown"
+            self.last_error_reason = self.last_error_reason or "browser_timeout"
+            if page_obj is not None:
+                try:
+                    await asyncio.shield(
+                        self._preserve_cancellation_evidence(
+                            page_obj,
+                            query.id,
+                            llm,
+                            config=config,
+                            runtime_events=runtime_events,
+                            proxy_diagnostic=proxy_diagnostic,
+                            stage=stage_at_cancel,
+                        )
+                    )
+                except BaseException as snap_err:
+                    logger.warning(
+                        "[%s] cancellation evidence save failed (stage=%s): %s",
+                        llm,
+                        stage_at_cancel,
+                        _redact_sensitive_text(str(snap_err))[:200],
+                    )
+            raise
         except Exception as e:
             logger.exception(f"[{llm}] 执行异常: {e}")
             self.last_error_reason = resolve_execution_failure_reason(
@@ -1318,6 +1371,63 @@ class GuestQueryExecutor:
                 camoufox_ctx=_camoufox_ctx,
                 playwright=_playwright,
             )
+            self.current_page = None
+
+    async def _preserve_cancellation_evidence(
+        self,
+        page_obj: "Page",
+        query_id: int,
+        llm: str,
+        *,
+        config: dict,
+        runtime_events: list[dict],
+        proxy_diagnostic: dict,
+        stage: str,
+    ) -> None:
+        """Capture page URL/title/body + runtime snapshot when an outer
+        timeout cancels execute().
+
+        Refs #963 handoff: each step is best-effort so a flaky page_obj
+        cannot block cancellation propagation. Callers should always wrap
+        this in ``asyncio.shield`` so the shielded awaits are not torn
+        down by a second cancellation while evidence is still being
+        written.
+        """
+        try:
+            self.last_page_url = page_obj.url
+        except Exception:
+            pass
+        try:
+            self.last_page_title = await page_obj.title()
+        except Exception:
+            pass
+        try:
+            body = await page_obj.evaluate("document.body?.innerText || ''")
+            if isinstance(body, str):
+                self.last_page_body_snippet = _redact_sensitive_text(body)[:1000]
+        except Exception:
+            pass
+        try:
+            snapshot_path = await _save_runtime_snapshot(
+                page_obj,
+                query_id,
+                f"{llm}_browser_timeout_{stage}",
+                config=config,
+                runtime_events=runtime_events,
+                proxy_diagnostic=proxy_diagnostic,
+            )
+            if snapshot_path is not None:
+                self.last_snapshot_path = str(snapshot_path)
+        except Exception as e:
+            logger.warning(
+                "[%s] browser_timeout snapshot save failed: %s",
+                llm,
+                _redact_sensitive_text(str(e))[:200],
+            )
+        try:
+            await _save_screenshot(page_obj, query_id, f"{llm}_browser_timeout_{stage}")
+        except Exception:
+            pass
 
     async def _recover_from_doubao_unavailable_page(
         self,
