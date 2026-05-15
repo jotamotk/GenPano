@@ -66,6 +66,28 @@ Minimum evidence checklist before opening a fix PR for a user-reported bug:
 Inferred behaviour without these four steps is a hypothesis, not a diagnosis.
 Do not ship a fix on a hypothesis.
 
+### Business Goal And Root Cause Gates
+
+The first target is the issue's business goal. A fix that only changes the
+visible error state is not complete.
+
+- Human Input and Epic issues must state `Business Goal`, `Final Success
+  Evidence`, and `What Does NOT Count As Done` before child work is split.
+- Incident PRs must pass a `Root Cause Gate`: direct trigger, underlying
+  product/system root cause, evidence, alternatives ruled out, remaining
+  unknowns, and why the fix should produce the final business outcome.
+- If root cause is still unknown, the PR can be marked only as
+  `diagnostics/instrumentation only`; do not present it as the incident fix.
+- Review work must include a failure-chain review: why did this happen, why did
+  the previous guard fail, why does this fix reach the business goal, what is
+  the next likely failure, and what live evidence proves success?
+- Live retries or other live budget spend require preflight: current row/object
+  state, retry count or equivalent budget, account/session state when relevant,
+  post-action consequence, expected final evidence, and fallback if the next
+  layer fails.
+- Completion language has only three allowed states: `Business success proven`,
+  `Diagnostic progress only`, or `Blocked / decision needed`.
+
 ### Evidence-First Shipping
 
 When you change a value that crosses a boundary (API field, enum, schema,
@@ -136,6 +158,11 @@ judgment-first, and useful three weeks later.
 - `EVIDENCE` records exact proof: PR, run URL, commit SHA, route, request id,
   screenshot, Playwright trace, server diagnostic, or API readback.
 
+Use `Business success proven` only when the final business artifact/readback is
+present. Use `Diagnostic progress only` when observability improved but the
+business result is not proven. Use `Blocked / decision needed` when root cause,
+acceptance, or safe next action is uncertain.
+
 Before posting a comment, check that it answers: what is the core judgment, what
 evidence supports it, what changed, and what happens next?
 
@@ -152,8 +179,9 @@ evidence supports it, what changed, and what happens next?
 - Downstream issues must inline their execution contract. Do not rely on
   unresolved pointers such as "depends on #123" as the only source of scope.
 - Execution contracts should include Goal, Path (`fast` or `full`), Owner Hat,
-  Allowed Scope, Forbidden Scope, Contract Snapshot, Acceptance Matrix,
-  Verification Evidence Ledger, Dependencies, and Handoff when relevant.
+  Parent Business Goal, Allowed Scope, Forbidden Scope, Contract Snapshot,
+  Acceptance Matrix, Root Cause Gate, Failure Chain Review, Verification
+  Evidence Ledger, Dependencies, and Handoff when relevant.
 - PRDs are product-owner-approved facts. If implementation reveals a PRD problem,
   Codex must request a `PRD-CHANGE`; it must not silently rewrite PRD intent.
 - PRs must include: Linked Issue, Owner Hat, Summary, Scope, Acceptance Matrix
@@ -171,6 +199,9 @@ passed" by itself is not enough.
 
 - Before implementation starts, the Lead hat translates PRD requirements, user
   reports, and accepted Human Input decisions into an `Acceptance Matrix`.
+- Before implementation starts, the Lead hat also confirms the Business Goal and
+  Final Success Evidence. If unclear, post `HUMAN DECISION NEEDED` instead of
+  splitting work.
 - Each acceptance row must cite its source: PRD ID, user-reported symptom,
   Human Input disposition, issue `DECISION`, or approved `PRD-CHANGE`.
 - No source means the acceptance row is invalid. If the PRD requires behavior
@@ -188,6 +219,9 @@ passed" by itself is not enough.
   better error code is not acceptance unless that row also passes. For scraper
   recovery, this means exact query readback such as `done + response evidence`
   when the user asked for capture success.
+- Observability-only improvements are useful but cannot close a business
+  incident unless the Business Result Gate passes. Better diagnostics, a more
+  specific error code, or a clean deploy is `Diagnostic progress only`.
 - Any Playwright test that mutates a live object, such as retrying a production
   query or submitting analyzer work, must run with Playwright retries disabled.
   A workflow must not repeat a live mutation because the first assertion failed.
@@ -286,6 +320,9 @@ worker task, branch, PR, or PRD by itself.
 
 - The Lead hat owns triage: classify each raw item as `bug`, `feature change`,
   `new requirement`, `question/idea`, or `needs clarification`.
+- The Lead hat must confirm the Human Input `Business Goal`, `Final Success
+  Evidence`, and `What Does NOT Count As Done`. If any are unclear, post
+  `HUMAN DECISION NEEDED` before routing implementation.
 - The Lead hat must split actionable Human Input into one or more executable
   issues: Fast Path issue, Full Path coordination issue, PRD-change request, or
   scoped deliverable issue. Each child issue links back with `Refs #<human>`.
