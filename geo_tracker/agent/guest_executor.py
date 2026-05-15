@@ -455,6 +455,10 @@ class GuestQueryExecutor:
         self.proxy_url = proxy_url or os.getenv("CLASH_PROXY_URL") or os.getenv("HTTPS_PROXY") or os.getenv("HTTP_PROXY")
         self.account_cookies = account_cookies
         self.last_error_reason: str | None = None
+        self.execution_stage: str | None = None
+
+    def _set_execution_stage(self, stage: str) -> None:
+        self.execution_stage = stage
 
     async def execute(self, query: Query) -> Optional[LLMResponse]:
         """
@@ -468,6 +472,7 @@ class GuestQueryExecutor:
             LLMResponse 对象，如果失败返回 None
         """
         self.last_error_reason = None
+        self._set_execution_stage("start")
         llm = query.target_llm
         config = GUEST_LLM_CONFIG.get(llm)
         if not config:
@@ -479,9 +484,11 @@ class GuestQueryExecutor:
 
         # 国内 LLM 或不使用代理时，直接执行一次，无需重试换节点
         if not use_proxy:
+            self._set_execution_stage("browser_session")
             return await self._execute_once(query, config, use_proxy=False)
 
         if _requires_global_proxy_route(llm):
+            self._set_execution_stage("proxy_route_preflight")
             route = await ensure_global_proxy_route(CLASH_API_URL, CLASH_PROXY_GROUP)
             if not route.ok:
                 self.last_error_reason = route.reason or "proxy_global_route_unavailable"
@@ -526,6 +533,7 @@ class GuestQueryExecutor:
                     break
                 logger.info(f"[{llm}] 第 {attempt + 1} 次重试，已切换到节点: {new_node}")
 
+            self._set_execution_stage("browser_session")
             result = await self._execute_once(query, config, use_proxy=True)
             if result is not None:
                 return result
@@ -551,6 +559,7 @@ class GuestQueryExecutor:
         # N-1's stale reason and mask the real exception of attempt N. Scope
         # the preservation to within a single _execute_once invocation.
         self.last_error_reason = None
+        self._set_execution_stage("browser_launch")
         llm = query.target_llm
         proxy_cfg = {"server": self.proxy_url} if use_proxy else None
         proxy_diagnostic = _proxy_runtime_diagnostic(llm, self.proxy_url, bool(use_proxy))
@@ -781,6 +790,7 @@ class GuestQueryExecutor:
             # 打开目标页面
             logger.info(f"[{llm}] 打开: {config['url']} (proxy: {self.proxy_url if use_proxy else 'none'})")
             try:
+                self._set_execution_stage("page_load")
                 await page_obj.goto(config["url"], wait_until="domcontentloaded", timeout=90000)
                 title = await page_obj.title()
                 logger.info(f"[{llm}] 页面标题 (domcontentloaded): {title}")
@@ -1175,6 +1185,7 @@ class GuestQueryExecutor:
                 return None
 
             # 尝试找输入框
+            self._set_execution_stage("input_wait")
             input_el = None
             selectors = [s.strip() for s in config["input_selector"].split(",")]
             logger.info(f"[{llm}] 尝试选择器: {selectors}")
@@ -1235,6 +1246,7 @@ class GuestQueryExecutor:
                 return None
 
             # 执行查询
+            self._set_execution_stage("browser_query")
             resp_text, resp_html, citations = await self._browser_query(
                 page_obj,
                 config,
@@ -1247,6 +1259,7 @@ class GuestQueryExecutor:
 
             if resp_text:
                 self.last_error_reason = None
+                self._set_execution_stage("artifact_save")
                 screenshot_path = await _save_screenshot(page_obj, query.id, llm)
                 return LLMResponse(
                     query_id=query.id,
@@ -1268,6 +1281,7 @@ class GuestQueryExecutor:
                     await self._prefer_doubao_auth_failure_reason(llm, page_obj)
                 self.last_error_reason = self.last_error_reason or "no_response"
                 if page_obj:
+                    self._set_execution_stage("artifact_save")
                     await _save_screenshot(page_obj, query.id, f"{llm}_no_response")
                     await _save_runtime_snapshot(
                         page_obj,
@@ -1290,6 +1304,7 @@ class GuestQueryExecutor:
                     pass
             return None
         finally:
+            self._set_execution_stage("cleanup")
             # 生产事故 2026-04-27 根因修复:
             # 原代码 try/except: pass 捕不了 await hang, 浏览器 close 卡死时
             # 后续 camoufox/playwright 清理永不执行, 进程泄漏到 458 PIDs.
@@ -2017,6 +2032,7 @@ class GuestQueryExecutor:
         """在已打开的页面里输入 query，等待响应，抓取文本和引用
         Returns: (response_text, response_html, citations_list)"""
         debug_query_id = _debug_query_id(query_id)
+        self._set_execution_stage("prompt_fill")
         if input_el is None:
             input_el = await page.wait_for_selector(cfg["input_selector"].split(",")[0], timeout=10000)
 
@@ -2186,6 +2202,7 @@ class GuestQueryExecutor:
                 """
             )
 
+        self._set_execution_stage("prompt_submit")
         submitted = False
         if cfg.get("submit_button"):
             for btn_sel in [s.strip() for s in cfg["submit_button"].split(",")]:
@@ -2282,6 +2299,7 @@ class GuestQueryExecutor:
             except Exception:
                 return False
 
+        self._set_execution_stage("submit_confirm")
         if llm_name in ("doubao", "chatgpt", "deepseek"):
             confirmed = False
             for _ in range(10):  # 最多 ~5s 轮询
@@ -2357,6 +2375,7 @@ class GuestQueryExecutor:
         stable_rounds = 0       # 文本长度连续不变的轮数
         STABLE_THRESHOLD = 2    # 连续 N 轮不变才认为生成完毕
 
+        self._set_execution_stage("response_wait")
         while elapsed < wait_total:
             await page.wait_for_timeout(min(wait_interval, wait_total - elapsed))
             elapsed += wait_interval

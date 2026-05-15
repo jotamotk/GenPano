@@ -57,6 +57,7 @@ from geo_tracker.tasks.account_assignment import (
 )
 from geo_tracker.tasks.account_quota_settlement import AccountQuotaSettlement
 from geo_tracker.tasks.query_failure import (
+    browser_execution_timeout_reason,
     _empty_response_failure_reason,
 )
 from geo_tracker.tasks.query_lifecycle import mark_query_finished, mark_query_started
@@ -72,6 +73,22 @@ from geo_tracker.tasks.stale_running_repair import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _browser_execution_timeout_seconds(llm_name: str | None) -> float | None:
+    if (llm_name or "").lower() != "doubao":
+        return None
+    raw = os.getenv("DOUBAO_BROWSER_EXECUTION_TIMEOUT_SECONDS") or os.getenv(
+        "SCRAPER_BROWSER_EXECUTION_TIMEOUT_SECONDS"
+    )
+    if raw:
+        try:
+            value = float(raw)
+            if value > 0:
+                return value
+        except ValueError:
+            logger.warning("Invalid Doubao browser execution timeout: %r", raw)
+    return 480.0
 
 
 def _env_flag(name: str, default: bool = False) -> bool:
@@ -636,17 +653,28 @@ async def _mark_query_failed_after_task_abort_async(
             query = result.scalar_one_or_none()
             if query is None or query.status == QueryStatus.DONE.value:
                 return
+            effective_reason = reason
+            if reason == "soft_time_limit" and query.target_llm == "doubao":
+                response_result = await db.execute(
+                    select(LLMResponse.id).where(LLMResponse.query_id == query_id).limit(1)
+                )
+                effective_reason = browser_execution_timeout_reason(
+                    query.target_llm,
+                    stage="task_soft_limit",
+                    has_existing_response=response_result.scalar_one_or_none()
+                    is not None,
+                )
             mark_query_finished(
                 query,
                 status=QueryStatus.FAILED.value,
                 started_at=query.started_at,
-                reason=reason,
+                reason=effective_reason,
             )
             if quota_settlement is not None:
                 await quota_settlement.settle_failure(
                     db,
                     AccountPool(db),
-                    reason=reason,
+                    reason=effective_reason,
                 )
             await db.commit()
     finally:
@@ -810,7 +838,31 @@ def execute_query(self, query_id: int) -> dict:
                         proxy_url=proxy_url,
                         account_cookies=account_cookies,
                     )
-                    return await guest_executor.execute(query)
+                    timeout_s = _browser_execution_timeout_seconds(query.target_llm)
+                    try:
+                        if timeout_s:
+                            return await asyncio.wait_for(
+                                guest_executor.execute(query),
+                                timeout=timeout_s,
+                            )
+                        return await guest_executor.execute(query)
+                    except asyncio.TimeoutError:
+                        stage = getattr(guest_executor, "execution_stage", None)
+                        failure_reason = browser_execution_timeout_reason(
+                            query.target_llm,
+                            stage=stage,
+                        )
+                        guest_executor.last_error_reason = failure_reason
+                        logger.warning(
+                            "Query %s: %s browser execution timed out after %.1fs "
+                            "(stage=%s, reason=%s)",
+                            query_id,
+                            query.target_llm,
+                            timeout_s,
+                            stage,
+                            failure_reason,
+                        )
+                        return None
 
                 response: LLMResponse | None = await _run_with_account_session_lock(
                     query.target_llm,
