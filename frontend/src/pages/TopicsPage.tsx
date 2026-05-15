@@ -1324,8 +1324,12 @@ function QueriesView({
 
       <div className="space-y-3">
         {groups.map((group) => {
-          const latestRow = group.dailyRows[group.dailyRows.length - 1]
-          const latestAttempt = latestRow?.attempt
+          const latestAttempt = group.dailyRows.reduce<LooseRecord | null>((acc, row) => {
+            if (!acc) return row.attempt
+            return String(latestTimestamp(row.attempt)) > String(latestTimestamp(acc))
+              ? row.attempt
+              : acc
+          }, null)
           const engines = Array.from(
             new Set(
               group.dailyRows
@@ -1622,16 +1626,31 @@ function ResponseAttemptsModal({
   )
   const initialAttempts = attempts.length ? attempts : [query]
   const initialQueryId = query?.query_id || initialAttempts[0]?.query_id
-  const detailQ = useQueryResponse(projectId, initialQueryId, responseParams)
+  const [activeId, setActiveId] = useState(initialQueryId)
+  // Fetch detail for the *active* attempt so switching dates in a multi-day
+  // logical query group surfaces each day's full response/analyzer_facts.
+  const detailQ = useQueryResponse(projectId, activeId, responseParams)
   const detail = detailQ.data
   const detailedAttempts = Array.isArray((detail as LooseRecord | null | undefined)?.attempts)
     ? ((detail as LooseRecord).attempts as LooseRecord[])
     : []
-  const orderedAttempts = detailedAttempts.length ? detailedAttempts : initialAttempts
-  const [activeId, setActiveId] = useState(orderedAttempts[0]?.query_id)
+  // Prefer the caller's multi-attempt list (daily group attempts) so older
+  // days remain reachable from the sidebar; only fall back to API-returned
+  // retry attempts when the caller passed a single-attempt placeholder.
+  const orderedAttempts =
+    initialAttempts.length > 1
+      ? initialAttempts
+      : detailedAttempts.length
+        ? detailedAttempts
+        : initialAttempts
+  // In the legacy single-attempt path, the API may resolve a richer attempt
+  // list after the modal mounts; sync activeId to its first entry once.
   useEffect(() => {
-    setActiveId(orderedAttempts[0]?.query_id)
-  }, [orderedAttempts[0]?.query_id])
+    if (initialAttempts.length <= 1 && detailedAttempts.length > 0) {
+      const first = detailedAttempts[0]?.query_id
+      if (first != null) setActiveId(first)
+    }
+  }, [initialAttempts.length, detailedAttempts[0]?.query_id])
 
   const activeAttempt =
     orderedAttempts.find((attempt) => attempt.query_id === activeId) || orderedAttempts[0]

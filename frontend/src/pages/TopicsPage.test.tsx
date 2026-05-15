@@ -1036,6 +1036,15 @@ describe('TopicsPage live brand override', () => {
     expect(screen.getByText('Citations')).toBeInTheDocument()
     expect(screen.getAllByText('2').length).toBeGreaterThanOrEqual(1)
     expect(screen.queryByText('All profiles')).not.toBeInTheDocument()
+
+    // Regression guard (#992 review by chatgpt-codex-connector): clicking a
+    // multi-day logical query group card must keep every daily attempt
+    // reachable in the modal sidebar — do not let detailedAttempts from the
+    // API (scoped to a single query_id) shadow the caller-supplied list.
+    fireEvent.click(screen.getByText('Vitamin C serum safety group'))
+    const modal = screen.getByRole('dialog', { name: /Response attempts/i })
+    expect(within(modal).getByText('2026-05-10')).toBeInTheDocument()
+    expect(within(modal).getByText('2026-05-09')).toBeInTheDocument()
   })
 
   it('does not reconstruct query groups from legacy raw execution rows without daily_latest', () => {
