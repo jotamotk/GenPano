@@ -89,6 +89,21 @@ DOUBAO_IMAGE_CHALLENGE_LOAD_FAILED_MARKERS = (
 SCREENSHOT_DIR = Path(os.getenv("SCREENSHOT_DIR", "/data/screenshots"))
 SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
 
+# Refs #963 follow-up to PR #1008 live evidence (Admin E2E run 25924635842
+# query 184968 retry 20, stage=prompt_fill, latency=481115ms): each
+# ``_fill_plain_text_input`` step is individually bounded so a page in a
+# degenerate state (overlay covering input, focus stolen, browser context
+# dead-but-not-yet-collected) cannot burn the outer execute_query budget.
+# Bounds are kept generous vs. the expected work (typical 30-char query
+# completes in ~3s) so legitimate slow renders still succeed; they exist to
+# fail fast on a stuck page. Exposed as module constants so the regression
+# test can monkeypatch them down for sub-second CI runs (Codex review on
+# PR #1009, P2). Production values must not change.
+PROMPT_FILL_CLEAR_TIMEOUT_S = 10
+PROMPT_FILL_INJECT_TIMEOUT_S = 15
+PROMPT_FILL_KEYBOARD_TYPE_TIMEOUT_S = 60
+PROMPT_FILL_VALUE_READ_TIMEOUT_S = 10
+
 _SENSITIVE_TEXT_PATTERNS = [
     (
         re.compile(
@@ -2219,15 +2234,43 @@ class GuestQueryExecutor:
         query_text: str,
         llm_name: str,
     ) -> bool:
-        """Fill a textarea/input, using JS first for Doubao's controlled input."""
+        """Fill a textarea/input, using JS first for Doubao's controlled input.
+
+        Refs #963 follow-up to PR #1008 live evidence (E2E run 25924635842 +
+        Server Diagnostics run 25925187531): query 184968 retry 20 on a
+        fresh active account 44 hung at ``stage=prompt_fill`` for the full
+        480s soft-time-limit. The prior implementation called
+        ``input_el.fill("")``, ``self._inject_controlled_textarea_value(...)``,
+        ``input_el.evaluate(...)``, and ``page.keyboard.type(...)`` with no
+        timeout — if the page sits in a degenerate state where the input
+        node is attached but does not accept events (overlay covering the
+        input, focus stolen, browser context dead-but-not-yet-collected),
+        any of these awaits hangs indefinitely. Bound each step
+        individually so a hung input cannot burn the outer execute_query
+        budget. Each bound is generous compared to the expected work
+        (~3s for a typical 30-char query) so legitimate slow renders still
+        succeed; the bounds exist to fail fast on a stuck page.
+        """
         try:
-            await input_el.fill("")
+            await asyncio.wait_for(
+                input_el.fill(""), timeout=PROMPT_FILL_CLEAR_TIMEOUT_S
+            )
         except Exception:
             pass
         await page.wait_for_timeout(random.randint(200, 500))
 
         if llm_name == "doubao":
-            actual = await self._inject_controlled_textarea_value(input_el, query_text)
+            try:
+                actual = await asyncio.wait_for(
+                    self._inject_controlled_textarea_value(input_el, query_text),
+                    timeout=PROMPT_FILL_INJECT_TIMEOUT_S,
+                )
+            except (asyncio.TimeoutError, Exception) as inject_err:
+                logger.warning(
+                    f"[{llm_name}] JS 注入受控 textarea 超时/异常: "
+                    f"{_redact_sensitive_text(str(inject_err))[:200]}"
+                )
+                actual = ""
             if actual.strip() == query_text.strip():
                 logger.info(f"[{llm_name}] 通过 JS 注入受控 textarea")
                 return True
@@ -2236,10 +2279,34 @@ class GuestQueryExecutor:
                 f"（len={len(actual or '')} vs {len(query_text)}），回退到键盘输入"
             )
 
-        await page.keyboard.type(query_text, delay=random.randint(50, 120))
+        try:
+            await asyncio.wait_for(
+                page.keyboard.type(query_text, delay=random.randint(50, 120)),
+                timeout=PROMPT_FILL_KEYBOARD_TYPE_TIMEOUT_S,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                f"[{llm_name}] keyboard.type 超时 "
+                f"({PROMPT_FILL_KEYBOARD_TYPE_TIMEOUT_S}s)，回退到 JS 注入"
+            )
+            try:
+                actual = await asyncio.wait_for(
+                    self._inject_controlled_textarea_value(input_el, query_text),
+                    timeout=PROMPT_FILL_INJECT_TIMEOUT_S,
+                )
+                return actual.strip() == query_text.strip()
+            except (asyncio.TimeoutError, Exception) as fallback_err:
+                logger.warning(
+                    f"[{llm_name}] 键盘超时后 JS 注入兜底失败: "
+                    f"{_redact_sensitive_text(str(fallback_err))[:200]}"
+                )
+                return False
 
         try:
-            actual = await input_el.evaluate("el => el.value ?? el.textContent ?? ''")
+            actual = await asyncio.wait_for(
+                input_el.evaluate("el => el.value ?? el.textContent ?? ''"),
+                timeout=PROMPT_FILL_VALUE_READ_TIMEOUT_S,
+            )
         except Exception:
             actual = None
         if actual is not None and actual.strip() != query_text.strip():
@@ -2247,8 +2314,14 @@ class GuestQueryExecutor:
                 f"[{llm_name}] 输入值与期望不一致（len={len(actual or '')} vs {len(query_text)}），"
                 "改用 JS 注入并触发 React input 事件"
             )
-            actual = await self._inject_controlled_textarea_value(input_el, query_text)
-            return actual.strip() == query_text.strip()
+            try:
+                actual = await asyncio.wait_for(
+                    self._inject_controlled_textarea_value(input_el, query_text),
+                    timeout=PROMPT_FILL_INJECT_TIMEOUT_S,
+                )
+                return actual.strip() == query_text.strip()
+            except (asyncio.TimeoutError, Exception):
+                return False
         return True
 
     async def _browser_query(
