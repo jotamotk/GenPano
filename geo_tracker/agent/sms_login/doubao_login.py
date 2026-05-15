@@ -864,8 +864,31 @@ class DoubaoLoginHandler(BaseSMSLoginHandler):
             "button[type='submit']",
         ])
         if submit_btn:
-            await submit_btn.click()
-            return True
+            try:
+                await submit_btn.click()
+                return True
+            except Exception as e:
+                message = str(e)
+                if "not attached to the DOM" in message:
+                    logger.warning(
+                        "[doubao] submit button detached after click; "
+                        "checking whether login already continued"
+                    )
+                    await page.wait_for_timeout(1500)
+                    auth_reason = await self._post_login_auth_failure_reason(page)
+                    if not auth_reason:
+                        logger.info(
+                            "[doubao] submit click detached during page update; "
+                            "continuing to login verification"
+                        )
+                        return True
+                    logger.warning(
+                        "[doubao] submit click detached but auth proof still failed: %s",
+                        auth_reason,
+                    )
+                else:
+                    logger.warning(f"[doubao] submit button click failed: {e}")
+                return False
 
         logger.warning("[doubao] 未找到提交按钮")
         return False
