@@ -348,35 +348,27 @@ async def _requeue_doubao_query_after_reauth(
     return True
 
 
-async def _requeue_doubao_query_after_new_account(
-    db,
-    *,
-    account_id: int,
-    query_id: int | None,
-) -> bool:
-    if not query_id:
-        return False
+_NEW_ACCOUNT_REQUEUE_ELIGIBLE_RETRY_REASONS = (
+    set(NO_ACCOUNT_REQUEUE_REASONS) | {NO_ACCOUNT_REQUEUE_REASON_TAG}
+)
 
-    result = await db.execute(select(Query).where(Query.id == query_id))
-    query = result.scalar_one_or_none()
+
+async def _query_eligible_for_new_account_requeue(db, query) -> bool:
     if not query:
         return False
-
-    eligible_retry_reasons = set(NO_ACCOUNT_REQUEUE_REASONS)
-    eligible_retry_reasons.add(NO_ACCOUNT_REQUEUE_REASON_TAG)
     if query.target_llm != "doubao":
         return False
     if query.status not in {QueryStatus.FAILED.value, QueryStatus.PENDING.value}:
         return False
-    if query.retry_reason not in eligible_retry_reasons:
+    if query.retry_reason not in _NEW_ACCOUNT_REQUEUE_ELIGIBLE_RETRY_REASONS:
         return False
-
     response_result = await db.execute(
-        select(LLMResponse.id).where(LLMResponse.query_id == query_id)
+        select(LLMResponse.id).where(LLMResponse.query_id == query.id)
     )
-    if response_result.scalar_one_or_none() is not None:
-        return False
+    return response_result.scalar_one_or_none() is None
 
+
+def _apply_new_account_requeue(query, account_id: int) -> None:
     from datetime import datetime as dt
 
     query.account_id = account_id
@@ -388,17 +380,85 @@ async def _requeue_doubao_query_after_new_account(
     query.finished_at = None
     query.executed_at = None
     query.latency_ms = None
+
+
+async def _claim_oldest_no_account_doubao_query(db, *, exclude_query_id: int | None):
+    """Find the oldest waiting Doubao no-account query for new-account handoff.
+
+    Refs #963 handoff: query rows that exhausted the bounded no-account
+    requeue budget land in FAILED with retry_reason in
+    NO_ACCOUNT_REQUEUE_REASONS. Without this fallback, a new Doubao
+    account that comes in without the original query_id (or in flight
+    while a different request was failing) will not claim those stuck
+    rows, and operators must retry by hand.
+    """
+    response_subq = select(LLMResponse.id).where(LLMResponse.query_id == Query.id)
+    stmt = (
+        select(Query)
+        .where(Query.target_llm == "doubao")
+        .where(Query.status == QueryStatus.FAILED.value)
+        .where(Query.retry_reason.in_(_NEW_ACCOUNT_REQUEUE_ELIGIBLE_RETRY_REASONS))
+        .where(~response_subq.exists())
+        .order_by(Query.created_at.asc(), Query.id.asc())
+        .limit(1)
+    )
+    if exclude_query_id is not None:
+        stmt = stmt.where(Query.id != exclude_query_id)
+    result = await db.execute(stmt)
+    return result.scalar_one_or_none()
+
+
+async def _requeue_doubao_query_after_new_account(
+    db,
+    *,
+    account_id: int,
+    query_id: int | None,
+) -> int | None:
+    """Requeue a Doubao no-account query after new-account login.
+
+    Returns the claimed query id (which may differ from ``query_id`` when
+    the caller's row is no longer eligible and the fallback claims the
+    oldest stuck no-account query) or ``None`` if nothing was claimed.
+    """
+    target_query = None
+
+    if query_id:
+        result = await db.execute(select(Query).where(Query.id == query_id))
+        candidate = result.scalar_one_or_none()
+        if await _query_eligible_for_new_account_requeue(db, candidate):
+            target_query = candidate
+
+    if target_query is None:
+        # Refs #963: any Doubao new-account success should claim the oldest
+        # waiting no-account row even when this auto_login was not started
+        # with the matching query_id (e.g. it was already in flight when
+        # the failing query landed, or a sibling failure issued the call).
+        target_query = await _claim_oldest_no_account_doubao_query(
+            db,
+            exclude_query_id=query_id,
+        )
+        if target_query is None:
+            return None
+        logger.warning(
+            "auto_login: no explicit query_id requeue (passed=%s); "
+            "claiming oldest stuck Doubao query %s for new account %s",
+            query_id,
+            target_query.id,
+            account_id,
+        )
+
+    _apply_new_account_requeue(target_query, account_id)
     await db.commit()
 
-    execute_query.apply_async(args=[query_id], queue="llm_doubao")
+    execute_query.apply_async(args=[target_query.id], queue="llm_doubao")
     logger.warning(
         "Query %s: assigned new Doubao account %s and requeued after "
         "new-account login success (retry_count=%s)",
-        query_id,
+        target_query.id,
         account_id,
-        query.retry_count,
+        target_query.retry_count,
     )
-    return True
+    return target_query.id
 
 
 async def _handle_doubao_account_failure_handoff(
@@ -926,14 +986,33 @@ def execute_query(self, query_id: int) -> dict:
                             stage=stage,
                         )
                         guest_executor.last_error_reason = failure_reason
+                        # Refs #963 handoff: the executor preserves last
+                        # URL/title/body and may have written a runtime
+                        # snapshot before its finally-block cleanup tore the
+                        # page down. Surface those on the operator log so
+                        # browser_timeout failures stop reading as a bare
+                        # reason code.
+                        last_url = getattr(guest_executor, "last_page_url", None)
+                        last_title = getattr(guest_executor, "last_page_title", None)
+                        last_body = getattr(
+                            guest_executor, "last_page_body_snippet", None
+                        )
+                        snapshot_path = getattr(
+                            guest_executor, "last_snapshot_path", None
+                        )
                         logger.warning(
                             "Query %s: %s browser execution timed out after %.1fs "
-                            "(stage=%s, reason=%s)",
+                            "(stage=%s, reason=%s, url=%s, title=%s, "
+                            "snapshot=%s, body_snippet=%r)",
                             query_id,
                             query.target_llm,
                             timeout_s,
                             stage,
                             failure_reason,
+                            last_url,
+                            (last_title[:120] if last_title else None),
+                            snapshot_path,
+                            (last_body[:300] if last_body else None),
                         )
                         return None
 
@@ -1634,13 +1713,13 @@ def auto_login(
                         "phone": login_result["phone"],
                     }
                     if platform == "doubao":
-                        requeued = await _requeue_doubao_query_after_new_account(
+                        requeued_id = await _requeue_doubao_query_after_new_account(
                             db,
                             account_id=new_account_obj.id,
                             query_id=query_id,
                         )
-                        if requeued:
-                            result_payload["requeued_query_id"] = query_id
+                        if requeued_id is not None:
+                            result_payload["requeued_query_id"] = requeued_id
                     return result_payload
                 else:
                     reason = (login_result or {}).get("reason", "unknown")

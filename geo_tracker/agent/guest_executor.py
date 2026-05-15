@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -49,7 +50,10 @@ from geo_tracker.agent.response_validation import (
     invalid_response_reason,
 )
 from geo_tracker.db.models import LLMResponse, Query
-from geo_tracker.tasks.query_failure import resolve_execution_failure_reason
+from geo_tracker.tasks.query_failure import (
+    browser_execution_timeout_reason,
+    resolve_execution_failure_reason,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -394,6 +398,12 @@ GUEST_LLM_CONFIG = {
         # receive_message testid 已移除；用 .flow-markdown-body 作为 AI 响应容器的主 selector
         "response_selector": ".flow-markdown-body, [data-testid='receive_message'], [data-testid='receive_message'] [data-testid='message_text_content'], [data-testid='receive_message'] .flow-markdown-body, [class*='message-content'], [class*='chat-message-content']",
         "wait_after_submit": 60000,
+        # Refs #963: when "深度思考" / "正在搜索" is still visible at 60s, or
+        # the response is actively streaming/growing, allow response_wait to
+        # extend up to this many additional milliseconds. 120s gives a 3-min
+        # effective ceiling for slow Doubao responses while still leaving
+        # the worker's 480s outer budget room for page_load + cleanup.
+        "wait_after_submit_max_extension": 120000,
         "load_wait":        10000,
         # 动态判断：有 DOUBAO_COOKIES_JSON 则可免登录，否则需要登录
         "requires_login":   not bool(os.getenv("DOUBAO_COOKIES_JSON", "").strip()),
@@ -458,9 +468,29 @@ class GuestQueryExecutor:
         self.account_cookies = account_cookies
         self.last_error_reason: str | None = None
         self.execution_stage: str | None = None
+        # Refs #963: when an outer asyncio.wait_for cancels execute(), the page
+        # is cleaned up inside _execute_once's finally before the caller can
+        # see TimeoutError. Track the active page + last-known URL/title/body
+        # so the caller can attach operator-visible evidence even after
+        # cancellation, and so the cancellation handler can save a snapshot
+        # before cleanup runs.
+        self.current_page: Page | None = None
+        self.last_page_url: str | None = None
+        self.last_page_title: str | None = None
+        self.last_page_body_snippet: str | None = None
+        self.last_snapshot_path: str | None = None
 
     def _set_execution_stage(self, stage: str) -> None:
         self.execution_stage = stage
+
+    def _record_page_pointer(self, page: "Page | None") -> None:
+        """Track the active page so cancellation handlers can preserve evidence."""
+        self.current_page = page
+        if page is not None:
+            try:
+                self.last_page_url = page.url
+            except Exception:
+                pass
 
     async def execute(self, query: Query) -> Optional[LLMResponse]:
         """
@@ -698,6 +728,7 @@ class GuestQueryExecutor:
 
             page_obj = await context.new_page()
             _attach_runtime_debug(page_obj)
+            self._record_page_pointer(page_obj)
 
             # 注入 localStorage（必须在页面打开后、导航前）
             if local_storage_data:
@@ -906,6 +937,7 @@ class GuestQueryExecutor:
                         await page_obj.close()
                         page_obj = await context.new_page()
                         _attach_runtime_debug(page_obj)
+                        self._record_page_pointer(page_obj)
                         try:
                             await page_obj.goto(config["url"], wait_until="domcontentloaded", timeout=60000)
                         except Exception as reopen_error:
@@ -1284,26 +1316,123 @@ class GuestQueryExecutor:
                 self.last_error_reason = self.last_error_reason or "no_response"
                 if page_obj:
                     self._set_execution_stage("artifact_save")
-                    await _save_screenshot(page_obj, query.id, f"{llm}_no_response")
-                    await _save_runtime_snapshot(
-                        page_obj,
-                        query.id,
-                        f"{llm}_no_response",
-                        config=config,
-                        runtime_events=runtime_events,
-                    )
+                    # Refs #963: unbounded artifact saves on a half-broken
+                    # page (CF challenge, login redirect, SPA stuck mid-
+                    # render) used to be able to burn the rest of the outer
+                    # execute_query budget — including pushing the worker
+                    # over its Celery soft_time_limit when other Doubao
+                    # rows had already used most of the 480s. Bound each
+                    # save call so a hung page cannot prevent the rest of
+                    # the worker (cleanup, DB writeback) from running.
+                    try:
+                        await asyncio.wait_for(
+                            _save_screenshot(
+                                page_obj, query.id, f"{llm}_no_response"
+                            ),
+                            timeout=15,
+                        )
+                    except Exception as save_err:
+                        logger.warning(
+                            "[%s] no_response screenshot save failed: %s",
+                            llm,
+                            _redact_sensitive_text(str(save_err))[:200],
+                        )
+                    try:
+                        await asyncio.wait_for(
+                            _save_runtime_snapshot(
+                                page_obj,
+                                query.id,
+                                f"{llm}_no_response",
+                                config=config,
+                                runtime_events=runtime_events,
+                            ),
+                            timeout=15,
+                        )
+                    except Exception as save_err:
+                        logger.warning(
+                            "[%s] no_response runtime snapshot save failed: %s",
+                            llm,
+                            _redact_sensitive_text(str(save_err))[:200],
+                        )
                 return None
 
-        except Exception as e:
-            logger.exception(f"[{llm}] 执行异常: {e}")
-            self.last_error_reason = resolve_execution_failure_reason(
-                e, self.last_error_reason
-            )
-            if page_obj:
+        except asyncio.CancelledError:
+            # Refs #963: outer asyncio.wait_for cancelling execute() must not
+            # discard browser-level evidence. Capture the active page state
+            # (URL/title/body) and persist a runtime snapshot before the
+            # finally-block cleanup tears the page down, so future
+            # `doubao_browser_timeout:<stage>` failures land with operator-
+            # readable context instead of a bare reason code.
+            stage_at_cancel = self.execution_stage or "unknown"
+            self.last_error_reason = self.last_error_reason or "browser_timeout"
+            if page_obj is not None:
                 try:
-                    await _save_screenshot(page_obj, query.id, f"{llm}_exception")
-                except Exception:
-                    pass
+                    await asyncio.shield(
+                        self._preserve_active_page_evidence(
+                            page_obj,
+                            query.id,
+                            llm,
+                            config=config,
+                            runtime_events=runtime_events,
+                            proxy_diagnostic=proxy_diagnostic,
+                            stage=stage_at_cancel,
+                            suffix_prefix="browser_timeout",
+                        )
+                    )
+                except BaseException as snap_err:
+                    logger.warning(
+                        "[%s] cancellation evidence save failed (stage=%s): %s",
+                        llm,
+                        stage_at_cancel,
+                        _redact_sensitive_text(str(snap_err))[:200],
+                    )
+            raise
+        except Exception as e:
+            stage_at_exc = self.execution_stage or "unknown"
+            logger.exception(f"[{llm}] 执行异常: {e}")
+            reason = resolve_execution_failure_reason(e, self.last_error_reason)
+            # Refs #963 follow-up: a Playwright TimeoutError bubbling out of an
+            # inner await previously landed as generic ``browser_timeout``, with
+            # no stage info and only a bare screenshot. The latest live
+            # diagnostics for #963 (query 184968) show this is the actual
+            # current failure mode — latency ~157s on a 480s outer budget — so
+            # operators were left guessing which inner stage hung. For Doubao,
+            # upgrade ``browser_timeout`` to ``doubao_browser_timeout:<stage>``
+            # so the retry_reason carries the same stage info as the outer
+            # cancellation path and routes through the same infrastructure
+            # bucket in INFRASTRUCTURE_FAILURE_REASONS.
+            if (
+                (llm or "").lower() == "doubao"
+                and (
+                    reason == "browser_timeout"
+                    or (reason or "").lower() == "browser_timeout"
+                )
+            ):
+                reason = browser_execution_timeout_reason(llm, stage=stage_at_exc)
+            self.last_error_reason = reason
+            if page_obj:
+                # Save full evidence (URL/title/body/snapshot + screenshot) so
+                # the next inner-timeout failure leaves on-disk artifacts the
+                # operator can read, instead of relying on a bare screenshot
+                # whose failure used to be silently swallowed.
+                try:
+                    await self._preserve_active_page_evidence(
+                        page_obj,
+                        query.id,
+                        llm,
+                        config=config,
+                        runtime_events=runtime_events,
+                        proxy_diagnostic=proxy_diagnostic,
+                        stage=stage_at_exc,
+                        suffix_prefix="exception",
+                    )
+                except Exception as snap_err:
+                    logger.warning(
+                        "[%s] exception evidence save failed (stage=%s): %s",
+                        llm,
+                        stage_at_exc,
+                        _redact_sensitive_text(str(snap_err))[:200],
+                    )
             return None
         finally:
             self._set_execution_stage("cleanup")
@@ -1317,6 +1446,91 @@ class GuestQueryExecutor:
                 browser=browser,
                 camoufox_ctx=_camoufox_ctx,
                 playwright=_playwright,
+            )
+            self.current_page = None
+
+    async def _preserve_active_page_evidence(
+        self,
+        page_obj: "Page",
+        query_id: int,
+        llm: str,
+        *,
+        config: dict,
+        runtime_events: list[dict],
+        proxy_diagnostic: dict,
+        stage: str,
+        suffix_prefix: str,
+    ) -> None:
+        """Capture page URL/title/body + runtime snapshot + screenshot when
+        the executor leaves ``_execute_once`` without a successful response.
+
+        Refs #963 handoff: each step is best-effort and individually bounded
+        by ``asyncio.wait_for`` so a half-broken page (CF challenge, login
+        redirect, SPA stuck mid-render) cannot block cancellation propagation
+        or hide other failures behind a hanging snapshot. Callers in the
+        cancellation path should additionally wrap this in ``asyncio.shield``
+        so its awaits are not torn down by a second cancellation while
+        evidence is still being written.
+
+        ``suffix_prefix`` is "browser_timeout" for the outer-cancellation
+        path and "exception" for the inner-exception path; the resulting
+        artifact suffix is ``{llm}_{suffix_prefix}_{stage}`` so artifacts
+        from the two paths stay distinguishable on disk.
+        """
+        try:
+            self.last_page_url = page_obj.url
+        except Exception:
+            pass
+        try:
+            self.last_page_title = await asyncio.wait_for(
+                page_obj.title(), timeout=5
+            )
+        except Exception:
+            pass
+        try:
+            body = await asyncio.wait_for(
+                page_obj.evaluate("document.body?.innerText || ''"),
+                timeout=5,
+            )
+            if isinstance(body, str):
+                self.last_page_body_snippet = _redact_sensitive_text(body)[:1000]
+        except Exception:
+            pass
+        suffix = f"{llm}_{suffix_prefix}_{stage}"
+        try:
+            snapshot_path = await asyncio.wait_for(
+                _save_runtime_snapshot(
+                    page_obj,
+                    query_id,
+                    suffix,
+                    config=config,
+                    runtime_events=runtime_events,
+                    proxy_diagnostic=proxy_diagnostic,
+                ),
+                timeout=15,
+            )
+            if snapshot_path is not None:
+                self.last_snapshot_path = str(snapshot_path)
+        except Exception as e:
+            logger.warning(
+                "[%s] %s snapshot save failed (stage=%s): %s",
+                llm,
+                suffix_prefix,
+                stage,
+                _redact_sensitive_text(str(e))[:200],
+            )
+        try:
+            await asyncio.wait_for(
+                _save_screenshot(page_obj, query_id, suffix),
+                timeout=15,
+            )
+        except Exception as e:
+            logger.warning(
+                "[%s] %s screenshot save failed (stage=%s): %s",
+                llm,
+                suffix_prefix,
+                stage,
+                _redact_sensitive_text(str(e))[:200],
             )
 
     async def _recover_from_doubao_unavailable_page(
@@ -2304,7 +2518,18 @@ class GuestQueryExecutor:
         self._set_execution_stage("submit_confirm")
         if llm_name in ("doubao", "chatgpt", "deepseek"):
             confirmed = False
-            for _ in range(10):  # 最多 ~5s 轮询
+            # Refs #963: the original ~5s window (10 iterations × 500ms) was
+            # too short for Doubao's 2026 SPA on a slow render: the click
+            # could land successfully and the request fire upstream, but the
+            # user-message bubble was not yet in the DOM when we polled, so
+            # the code "retried" the submit by clicking again, occasionally
+            # producing a duplicate request and confusing the upstream
+            # response routing. Widen the wait for Doubao specifically
+            # (~15s, 30 × 500ms) so a slow-but-correct first submit is
+            # detected before we kick off the retry path. Other engines
+            # keep the original budget.
+            confirm_iters = 30 if llm_name == "doubao" else 10
+            for _ in range(confirm_iters):
                 if await _submit_confirmed():
                     confirmed = True
                     break
@@ -2376,6 +2601,63 @@ class GuestQueryExecutor:
         prev_resp_len = 0       # 上一轮检测到的响应文本长度
         stable_rounds = 0       # 文本长度连续不变的轮数
         STABLE_THRESHOLD = 2    # 连续 N 轮不变才认为生成完毕
+
+        # Refs #963: when Doubao is in "深度思考" or "正在搜索" mode the answer
+        # can take significantly longer than ``wait_after_submit`` to start
+        # streaming. The previous loop only RESET the stability counter when
+        # the still-generating indicator was visible — it never extended
+        # ``wait_total``, so the loop bailed at the original budget and the
+        # row landed as ``no_response`` (or, when the answer arrived just
+        # past the cutoff, ``response_too_short``). Allow a bounded extension
+        # in those two situations:
+        #   1. answer hasn't started yet but the still-generating sign is up;
+        #   2. answer is streaming and length is still growing.
+        # Per-call hard cap is ``wait_after_submit_max_extension`` (default:
+        # 2x ``wait_after_submit``) so a permanently-stuck UI cannot burn
+        # the entire outer execution budget here.
+        extension_max = cfg.get("wait_after_submit_max_extension")
+        if extension_max is None:
+            extension_max = int(wait_total) * 2
+        extension_used = 0
+        extension_step = wait_interval
+
+        def _maybe_extend_wait_total(
+            current_elapsed: int,
+            current_wait_total: int,
+            still_generating_flag: bool,
+            resp_ready_flag: bool,
+            resp_growing: bool,
+            extension_used_so_far: int,
+        ) -> tuple[int, int]:
+            """Extend wait_total when there is concrete evidence the model is
+            still working. Returns ``(new_wait_total, new_extension_used)``."""
+            if extension_max <= 0:
+                return current_wait_total, extension_used_so_far
+            if extension_used_so_far >= extension_max:
+                return current_wait_total, extension_used_so_far
+            # Only extend when we are about to exit the loop AND we have a
+            # real reason to wait longer (still-generating indicator visible
+            # or the response is actively growing).
+            if current_elapsed + wait_interval < current_wait_total:
+                return current_wait_total, extension_used_so_far
+            should_extend = still_generating_flag or (resp_ready_flag and resp_growing)
+            if not should_extend:
+                return current_wait_total, extension_used_so_far
+            step = min(extension_step, extension_max - extension_used_so_far)
+            if step <= 0:
+                return current_wait_total, extension_used_so_far
+            logger.info(
+                "[%s] response_wait extended (+%dms, total +%dms / max +%dms): "
+                "still_generating=%s, resp_growing=%s, resp_ready=%s",
+                llm_name,
+                step,
+                extension_used_so_far + step,
+                extension_max,
+                still_generating_flag,
+                resp_growing,
+                resp_ready_flag,
+            )
+            return current_wait_total + step, extension_used_so_far + step
 
         self._set_execution_stage("response_wait")
         while elapsed < wait_total:
@@ -2469,6 +2751,18 @@ class GuestQueryExecutor:
                     )
                     break
 
+            # ``stable_rounds == 0`` after the resp_ready block means the
+            # response was actively growing this round (it gets reset to 0
+            # both on length growth and on still_streaming/still_generating).
+            wait_total, extension_used = _maybe_extend_wait_total(
+                elapsed,
+                wait_total,
+                still_generating,
+                resp_ready,
+                resp_ready and stable_rounds == 0,
+                extension_used,
+            )
+
         # 抓取响应文本 + HTML
         resp_text = ""
         resp_html = ""
@@ -2530,6 +2824,17 @@ class GuestQueryExecutor:
                             '[class*="send-message"]',
                             '[class*="message-item"]',
                             '[class*="chat-item"]',
+                            // Refs #963: Doubao 2026 Semi Design 偶尔把用户气泡的
+                            // class 改成 user-bubble / my-bubble / semi-message-user 类。
+                            // 加更宽松的兜底，避免因为 class 改名导致 user_msg_present=false
+                            // 进而跳过 JS fallback 抽取，把本来已经渲染出的回答漏掉。
+                            '[class*="user-bubble"]',
+                            '[class*="my-bubble"]',
+                            '[class*="my-message"]',
+                            '[class*="semi-message-user"]',
+                            '[class*="bubble-user"]',
+                            '[data-role="user"]',
+                            '[data-author="user"]',
                         ];
                         for (const sel of sels) {
                             const els = document.querySelectorAll(sel);
@@ -2539,6 +2844,15 @@ class GuestQueryExecutor:
                         }
                         // 进入 /c/{id} 路径也算（chatgpt 等）
                         if (/\/c\/[a-zA-Z0-9-]+/.test(location.pathname)) return true;
+                        // Refs #963: Doubao 提交后 URL 通常会变成
+                        //   /chat/{id}, /chat?conversation=..., /chat/conversation/...
+                        // 都属于"已经进入会话页"的证据，足以解锁 JS fallback 抽取。
+                        if (llmName === 'doubao') {
+                            const path = location.pathname || '';
+                            const search = location.search || '';
+                            if (/\/chat\/[a-zA-Z0-9_-]+/.test(path)) return true;
+                            if (/[?&](conversation|chatId|conv_id|cid)=/.test(search)) return true;
+                        }
                         return false;
                     }
                     """,
