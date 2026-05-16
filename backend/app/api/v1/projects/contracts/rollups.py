@@ -297,3 +297,70 @@ def _rollup_pano_geo(packages: list[dict[str, Any]]) -> dict[str, Any]:
     )
     evidence["reason_codes"] = _unique_str(evidence["reason_codes"])
     return evidence
+
+
+def _rollup_topic_product(packages: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Aggregate per-response `topic_product` packages into a page-level rollup.
+
+    Issue #1039: `/api/v1/projects/<id>/products` must surface a
+    `metric_formula_evidence.topic_product` record so the frontend
+    `canUseMetricEvidence(data, 'product')` gate (BrandProductsPage.tsx:92)
+    can render the products list. The per-response shape produced by
+    `geo_tracker/analyzer/fact_contract.py::_topic_product_package` is:
+        {status, topic_chain_missing_response_ids, topic_chain_count,
+         product_fact_count, product_status, reason_codes}
+
+    Returns `None` when no in-scope package carried a `topic_product`
+    key (e.g. legacy v3 packages, or older `issue_602_v1` fixtures) so
+    the caller can omit the entry from `metric_formula_evidence` and
+    preserve backwards compatibility for callers that never consumed
+    product evidence.
+    """
+    evidence = _metric_evidence_template("topic_product", FORMULA_NO_EVIDENCE_STATUS)
+    topic_chain_count = 0
+    product_fact_count = 0
+    missing_chain_ids: list[int] = []
+    contributing_response_ids: list[int] = []
+    saw_topic_product = False
+    for package in packages:
+        topic_product = package.get("topic_product")
+        if not isinstance(topic_product, dict):
+            continue
+        saw_topic_product = True
+        topic_chain_count += int(topic_product.get("topic_chain_count") or 0)
+        product_fact_count += int(topic_product.get("product_fact_count") or 0)
+        missing_raw = topic_product.get("topic_chain_missing_response_ids")
+        if isinstance(missing_raw, list):
+            for value in missing_raw:
+                try:
+                    missing_chain_ids.append(int(value))
+                except (TypeError, ValueError):
+                    continue
+        evidence["reason_codes"].extend(_package_reason_codes(package, "topic_product"))
+        for rid in _package_response_ids(package):
+            contributing_response_ids.append(int(rid))
+
+    if not saw_topic_product:
+        return None
+    if topic_chain_count == 0 and product_fact_count == 0:
+        # Responses carried the key but no product facts and no chain rows —
+        # the page is genuinely empty (not blocked).
+        evidence["formula_status"] = "empty"
+        status = "empty"
+    else:
+        evidence["formula_status"] = FORMULA_OK_STATUS
+        status = FORMULA_OK_STATUS
+
+    evidence.update(
+        {
+            "status": status,
+            "topic_chain_count": topic_chain_count,
+            "product_fact_count": product_fact_count,
+            "topic_chain_missing_response_ids": sorted(set(missing_chain_ids))[:20],
+            "source_tables": _package_source_tables(packages),
+            "fact_classes": ["topic_product"],
+        }
+    )
+    evidence["reason_codes"] = _unique_str(evidence["reason_codes"])
+    evidence["sample_response_ids"] = sorted(set(contributing_response_ids))[:5]
+    return evidence
