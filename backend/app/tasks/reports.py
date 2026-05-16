@@ -213,31 +213,42 @@ def run_schedules() -> dict[str, Any]:
     return _run_async(_do())
 
 
+async def expire_share_tokens_in_session(session: Any) -> dict[str, Any]:
+    """Sweep logic, factored out so tests can call it against the
+    fixture-injected AsyncSession (audit #1044 B2-14). Marks every
+    not-yet-revoked share token whose `expires_at` is in the past with
+    `revoked_at = now()` and returns `{"expired_count": N}`.
+    """
+    from genpano_models import ReportShareToken
+
+    now = _now()
+    stmt = (
+        update(ReportShareToken)
+        .where(
+            ReportShareToken.revoked_at.is_(None),
+            ReportShareToken.expires_at < now,
+        )
+        .values(revoked_at=now)
+    )
+    res = await session.execute(stmt)
+    await session.commit()
+    count = getattr(res, "rowcount", 0) or 0
+    return {"expired_count": int(count)}
+
+
 @celery_app.task(name="app.tasks.reports.expire_share_tokens", queue="beat")  # type: ignore[untyped-decorator]
 def expire_share_tokens() -> dict[str, Any]:
     """Mark expired share tokens with revoked_at so public reads return 410."""
 
     async def _do() -> dict[str, Any]:
-        from genpano_models import ReportShareToken
         from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
         settings = get_settings()
         engine = create_async_engine(settings.database_url, future=True)
         sm = async_sessionmaker(engine, expire_on_commit=False)
         async with sm() as session:
-            now = _now()
-            stmt = (
-                update(ReportShareToken)
-                .where(
-                    ReportShareToken.revoked_at.is_(None),
-                    ReportShareToken.expires_at < now,
-                )
-                .values(revoked_at=now)
-            )
-            res = await session.execute(stmt)
-            await session.commit()
-            count = getattr(res, "rowcount", 0) or 0
+            result = await expire_share_tokens_in_session(session)
         await engine.dispose()
-        return {"expired_count": int(count)}
+        return result
 
     return _run_async(_do())
