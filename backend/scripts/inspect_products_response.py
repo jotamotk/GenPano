@@ -56,6 +56,15 @@ Scenarios:
       correct AND the per-product compute path works when given enough
       ProductScoreDaily history — so production "暂无产品数据" means
       BestCoffer has < 14 days of `product_score_daily` rows per product.
+  (h) Issue #1031 EARLY-STAGE BRAND repro: v3 packages PLUS only 5 days of
+      `ProductScoreDaily` per product (between the new
+      `MIN_SPARKLINE_DAYS=3` floor and the old `>= 14` threshold). After
+      lowering the threshold + switching to an adaptive half-and-half
+      window, the per-product `trend_30d` MUST still compute (non-null)
+      and the BCG filter MUST pass for ≥1 row. Pre-fix this scenario
+      would produce `trend_30d=None` on every product and render
+      "暂无产品数据" even though the brand has visible products. This is
+      the BestCoffer simulation.
 
 Usage:
   uv run python backend/scripts/inspect_products_response.py
@@ -761,11 +770,12 @@ async def main() -> None:
         )
     )
     # Scenario (g) — Issue #1031 FULL happy-path: v3 packages PLUS 20 days
-    # of ProductScoreDaily per product so the per-product sparkline crosses
-    # the `len(sparkline) >= 14` threshold (`_brand_service.py:601`) and
-    # `trend_30d` is non-null per item. Verifies that when production has
-    # 14+ days of `product_score_daily` history for a brand, the BCG
-    # filter (`x,y,z != null`) passes for ≥1 row and the page renders.
+    # of ProductScoreDaily per product so the per-product sparkline triggers
+    # the legacy first-7 vs last-7 path in `_compute_trend_30d`
+    # (`_brand_service.py`) and `trend_30d` is non-null per item. Verifies
+    # that when production has 14+ days of `product_score_daily` history
+    # for a brand, the BCG filter (`x,y,z != null`) passes for ≥1 row and
+    # the page renders. Scenario (h) covers the early-stage (< 14 days) case.
     summaries.append(
         await _run_scenario(
             "(g)",
@@ -777,6 +787,28 @@ async def main() -> None:
             include_topic_product=False,
             v3_payload=True,
             product_score_daily_days=20,
+        )
+    )
+    # Scenario (h) — Issue #1031 EARLY-STAGE BRAND: v3 packages PLUS only
+    # 5 days of ProductScoreDaily per product. This sits BETWEEN the new
+    # `MIN_SPARKLINE_DAYS=3` floor and the legacy `>= 14` threshold.
+    # Pre-fix (`len(sparkline) >= 14`) this would render "暂无产品数据"
+    # because every product's `trend_30d` was None. Post-fix the adaptive
+    # window (`min(7, len // 2)` → window=2 here) computes a non-zero
+    # trend and the BCG filter passes for ≥1 row. This is the BestCoffer
+    # production simulation (brand barely a week old).
+    summaries.append(
+        await _run_scenario(
+            "(h)",
+            "Issue #1031 EARLY-STAGE BRAND — v3 packages + only 5 days "
+            "of ProductScoreDaily (between MIN_SPARKLINE_DAYS=3 and the "
+            "legacy 14-day threshold). Adaptive window should still "
+            "produce a non-null trend_30d so the BCG filter passes",
+            response_ids=[10000, 10001, 10002],
+            product_fact_count=3,
+            include_topic_product=False,
+            v3_payload=True,
+            product_score_daily_days=5,
         )
     )
 
@@ -799,7 +831,7 @@ async def main() -> None:
         # metrics NULL) vs the full happy path (g: Issue #1031 — per-item
         # mention_rate / trend_30d / mention_count all non-null so the BCG
         # row filter passes).
-        if s["label"] in {"(e)", "(g)"}:
+        if s["label"] in {"(e)", "(g)", "(h)"}:
             for item in s.get("items_metric_audit") or []:
                 print(
                     f"      item.product_name={item['product_name']!r} "
@@ -874,6 +906,44 @@ async def main() -> None:
         "  Conclusion: when product_score_daily has 14+ days/product, the\n"
         "  BCG matrix renders. If production still shows '暂无产品数据',\n"
         "  the brand's product_score_daily history is < 14 days."
+    )
+
+    # Issue #1031 scenario (h) — EARLY-STAGE BRAND assertion. With only 5
+    # days of ProductScoreDaily (below the legacy 14-day threshold but
+    # above the new MIN_SPARKLINE_DAYS=3 floor), the adaptive window in
+    # `_compute_trend_30d` must still resolve a non-null trend so the BCG
+    # filter passes for >=1 row. Pre-fix this would fail (BCG renders
+    # "暂无产品数据" for any brand under 14 days of history); post-fix it
+    # renders for brands at or above 3 days.
+    scenario_h = next((s for s in summaries if s["label"] == "(h)"), None)
+    if scenario_h is None:
+        raise AssertionError("scenario (h) result missing from summaries")
+    items_h = scenario_h.get("items_metric_audit") or []
+    items_h_with_trend = [it for it in items_h if it.get("trend_30d") is not None]
+    assert items_h, "scenario (h): expected >=1 product item, got 0"
+    assert items_h_with_trend, (
+        f"scenario (h): expected >=1 item with non-null trend_30d "
+        f"(5 days of ProductScoreDaily seeded, MIN_SPARKLINE_DAYS=3); "
+        f"got all-null. The adaptive window in _compute_trend_30d is "
+        f"broken. items={items_h!r}"
+    )
+    assert scenario_h["bcg_filter_pass"], (
+        f"scenario (h): BCG filter MUST pass for >=1 row at 5 days of "
+        f"ProductScoreDaily (post-#1031 adaptive window); got "
+        f"{scenario_h['bcg_filter_passing_count']}"
+        f"/{scenario_h['bcg_filter_total']} rows passing. items={items_h!r}"
+    )
+    print(
+        "\n-- Issue #1031 scenario (h) assertion (EARLY-STAGE BRAND) --\n"
+        "  scenario (h) adaptive trend_30d for short sparkline: PASS\n"
+        f"  items with non-null trend_30d: {len(items_h_with_trend)}/{len(items_h)}\n"
+        f"  BCG filter pass: {scenario_h['bcg_filter_passing_count']}"
+        f"/{scenario_h['bcg_filter_total']} rows "
+        f"({'render' if scenario_h['bcg_filter_pass'] else '暂无产品数据'})\n"
+        "  Conclusion: early-stage brands with 3-13 days of product_score_daily\n"
+        "  now render in the BCG matrix (was '暂无产品数据' pre-#1031). The\n"
+        "  adaptive half-and-half window prevents the first/last slice overlap\n"
+        "  that would otherwise zero out the trend at exactly 7 days."
     )
 
 
