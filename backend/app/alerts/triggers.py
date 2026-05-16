@@ -18,6 +18,7 @@ import logging
 import uuid
 
 from genpano_models import Alert, Diagnostic
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 log = logging.getLogger(__name__)
@@ -49,6 +50,18 @@ async def create_alert_from_diagnostic(
         body = diagnostic.description
     """
     if diagnostic.severity not in SEVERITY_ALERT_THRESHOLD:
+        return None
+
+    # Dedup: at most one alert per (source, source_ref_id). Without this
+    # guard, every evaluator retry (manual refresh, periodic re-eval)
+    # inserts a duplicate bell-badge entry. There's no UniqueConstraint
+    # on alerts(source, source_ref_id) yet, so we enforce in code.
+    existing_stmt = select(Alert).where(
+        Alert.source == "diagnostic",
+        Alert.source_ref_id == diagnostic.id,
+    )
+    existing = (await session.execute(existing_stmt)).scalar_one_or_none()
+    if existing is not None:
         return None
 
     alert = Alert(

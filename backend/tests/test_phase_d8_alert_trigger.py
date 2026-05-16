@@ -153,6 +153,43 @@ async def test_no_alert_for_p3(db_session, project):
     assert alert is None
 
 
+@pytest.mark.asyncio
+async def test_create_alert_is_idempotent_per_diagnostic(db_session, project):
+    """Second call for the same diagnostic must NOT insert a duplicate alert."""
+    from genpano_models import Alert
+    from sqlalchemy import func, select
+
+    from app.alerts.triggers import create_alert_from_diagnostic
+
+    diag = Diagnostic(
+        id=_new_id(),
+        project_id=project.id,
+        brand_id=505,
+        category="visibility_decline",
+        severity="P0",
+        type="brand",
+        title="dup-guard",
+        evidence={},
+        reader_hints=["operator"],
+        rule_id="visibility_decline_v1",
+        status="open",
+    )
+    db_session.add(diag)
+    await db_session.commit()
+
+    first = await create_alert_from_diagnostic(db_session, diag)
+    assert first is not None
+    # Retry — must not insert a second row.
+    second = await create_alert_from_diagnostic(db_session, diag)
+    assert second is None
+
+    count_stmt = select(func.count(Alert.id)).where(
+        Alert.source == "diagnostic", Alert.source_ref_id == diag.id
+    )
+    count = (await db_session.execute(count_stmt)).scalar_one()
+    assert count == 1
+
+
 # ── resolve_alert_for_diagnostic ──────────────────────────────────
 
 
