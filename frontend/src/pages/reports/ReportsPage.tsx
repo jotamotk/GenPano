@@ -228,7 +228,7 @@ export default function ReportsPage() {
                         and a title attribute explains the state to
                         anyone hovering. */}
                     <span
-                      title="示例数据无可下载文件,请在上方 LIVE 区生成真实报告"
+                      title={t('reports.actions.pdf_disabled_tooltip')}
                       onClick={(e) => e.stopPropagation()}
                     >
                       <Button variant="secondary" size="sm" disabled>
