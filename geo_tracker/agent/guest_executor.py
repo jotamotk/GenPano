@@ -27,6 +27,9 @@ try:
 except ImportError:
     HAS_CAMOUFOX = False
 
+from geo_tracker.agent.browser_fingerprint import (
+    extract_fingerprint_from_account_cookies,
+)
 from geo_tracker.agent.browser_lifecycle import cleanup_browser_resources
 from geo_tracker.agent.captcha import CaptchaSolver, detect_and_solve, CAPSOLVER_API_KEY
 from geo_tracker.agent.clash_api import (
@@ -736,6 +739,26 @@ class GuestQueryExecutor:
                 }
                 if use_proxy:
                     camoufox_kwargs["proxy"] = {"server": self.proxy_url}
+                # Refs #963: reuse the Camoufox fingerprint that auto_login
+                # captured for this account so the query opens with the exact
+                # same UA/screen/Canvas seed Doubao saw when the cookies were
+                # issued. Without this, every query gets a fresh random
+                # fingerprint and Doubao's session validator marks the account
+                # logged out within seconds of receiving the cookies (account
+                # ricochets active → expired → auto_login → active → expired,
+                # see production evidence at 03:01:46 → 03:03:15 → 03:04:25
+                # in server-diagnostics run 25951168887). Fingerprint payload
+                # is optional — if absent or unparseable, fall back to a
+                # freshly generated one, which matches the pre-fix behaviour.
+                saved_fp = extract_fingerprint_from_account_cookies(
+                    self.account_cookies
+                )
+                if saved_fp is not None:
+                    camoufox_kwargs["fingerprint"] = saved_fp
+                    logger.info(
+                        "[%s] reusing persisted Camoufox fingerprint for account",
+                        llm,
+                    )
 
                 _camoufox_ctx = AsyncCamoufox(**camoufox_kwargs)
                 browser = await _camoufox_ctx.__aenter__()

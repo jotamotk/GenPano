@@ -5813,3 +5813,192 @@ def test_post_failure_page_read_timeout_constants_exist():
         guest_executor_mod.POST_FAILURE_SCREENSHOT_TIMEOUT_S, (int, float)
     )
     assert guest_executor_mod.POST_FAILURE_SCREENSHOT_TIMEOUT_S > 0
+
+
+# Refs #963 production evidence (server-diagnostics run 25951168887, account
+# 39 lifecycle 03:01:46 → 03:03:15 → 03:04:25): each Camoufox launch picks a
+# fresh random Firefox fingerprint (UA / screen resolution / Canvas seed /
+# fonts), and the auto_login flow used fingerprint A to register/login
+# while the next query opened a new Camoufox with fingerprint B and
+# injected A's cookies. Doubao's session validator saw the mismatch and
+# treated the session as logged out within seconds — accounts ricocheted
+# active → expired → auto_login → active → expired. Persisting the
+# Fingerprint object alongside cookies eliminates that drift. These tests
+# pin the serialize/deserialize/extract roundtrip and the persistence-key
+# contract so a silent format change in browserforge or the cookie payload
+# format does not regress the fix.
+def test_camoufox_fingerprint_serialize_deserialize_roundtrip():
+    """Generated fingerprint must survive a JSON roundtrip with UA preserved."""
+    from geo_tracker.agent.browser_fingerprint import (
+        deserialize_fingerprint,
+        generate_doubao_fingerprint,
+        is_available,
+        serialize_fingerprint,
+    )
+
+    if not is_available():
+        import pytest
+        pytest.skip("browserforge not installed")
+
+    fp = generate_doubao_fingerprint()
+    assert fp is not None
+    serialized = serialize_fingerprint(fp)
+    assert isinstance(serialized, dict)
+    assert "navigator" in serialized
+    # The UA is the most critical field for session validation — pin that
+    # it roundtrips exactly. Other fields (screen, fonts, canvas seed)
+    # also matter but UA is the easiest external signal Doubao checks.
+    original_ua = fp.navigator.userAgent
+    assert original_ua
+
+    deserialized = deserialize_fingerprint(serialized)
+    assert deserialized is not None
+    assert deserialized.navigator.userAgent == original_ua, (
+        "Fingerprint UA must survive the JSON roundtrip; otherwise the next "
+        "query opens with a different fingerprint than auto_login captured."
+    )
+
+
+def test_camoufox_fingerprint_extract_from_account_cookies_payload():
+    """``extract_fingerprint_from_account_cookies`` must pull from new format."""
+    import json
+    from geo_tracker.agent.browser_fingerprint import (
+        extract_fingerprint_from_account_cookies,
+        generate_doubao_fingerprint,
+        is_available,
+        serialize_fingerprint,
+    )
+
+    if not is_available():
+        import pytest
+        pytest.skip("browserforge not installed")
+
+    fp = generate_doubao_fingerprint()
+    serialized = serialize_fingerprint(fp)
+    payload = json.dumps({
+        "cookies": [{"name": "sid_tt", "value": "<redacted>"}],
+        "localStorage": {"some_key": "some_value"},
+        "camoufoxFingerprint": serialized,
+    })
+
+    extracted = extract_fingerprint_from_account_cookies(payload)
+    assert extracted is not None
+    assert extracted.navigator.userAgent == fp.navigator.userAgent
+
+
+def test_camoufox_fingerprint_extract_handles_legacy_list_format():
+    """Legacy account_cookies (plain cookie list) must return None safely."""
+    import json
+    from geo_tracker.agent.browser_fingerprint import (
+        extract_fingerprint_from_account_cookies,
+    )
+
+    # Old format: just a list of cookies, no fingerprint key at all.
+    legacy_payload = json.dumps([
+        {"name": "sid_tt", "value": "<redacted>"},
+        {"name": "ttwid", "value": "<redacted>"},
+    ])
+
+    # Must NOT raise. Returns None so the caller falls back to a fresh
+    # fingerprint (the pre-fix behaviour for legacy accounts).
+    assert extract_fingerprint_from_account_cookies(legacy_payload) is None
+
+
+def test_camoufox_fingerprint_extract_handles_missing_key():
+    """New-format payload without the fingerprint key must return None safely."""
+    import json
+    from geo_tracker.agent.browser_fingerprint import (
+        extract_fingerprint_from_account_cookies,
+    )
+
+    payload = json.dumps({
+        "cookies": [{"name": "sid_tt", "value": "<redacted>"}],
+        "localStorage": {"some_key": "some_value"},
+        # No camoufoxFingerprint key — accounts written before the fix
+        # have this shape.
+    })
+
+    assert extract_fingerprint_from_account_cookies(payload) is None
+
+
+def test_camoufox_fingerprint_extract_handles_malformed_payload():
+    """Garbage payloads must not crash the executor on load."""
+    from geo_tracker.agent.browser_fingerprint import (
+        extract_fingerprint_from_account_cookies,
+    )
+
+    # All of these must return None instead of raising:
+    assert extract_fingerprint_from_account_cookies(None) is None
+    assert extract_fingerprint_from_account_cookies("") is None
+    assert extract_fingerprint_from_account_cookies("not-json-at-all") is None
+    assert extract_fingerprint_from_account_cookies("[]") is None
+    assert extract_fingerprint_from_account_cookies(
+        '{"camoufoxFingerprint": "garbage-not-a-dict"}'
+    ) is None
+    assert extract_fingerprint_from_account_cookies(
+        '{"camoufoxFingerprint": {"navigator": "wrong-type"}}'
+    ) is None
+
+
+def test_camoufox_fingerprint_attach_to_login_result():
+    """``attach_fingerprint_to_login_result`` adds the key, no-op when missing."""
+    from geo_tracker.agent.browser_fingerprint import (
+        attach_fingerprint_to_login_result,
+        generate_doubao_fingerprint,
+        is_available,
+    )
+
+    if not is_available():
+        import pytest
+        pytest.skip("browserforge not installed")
+
+    fp = generate_doubao_fingerprint()
+    result: dict = {"phone": "1380000XXXX", "cookies": []}
+
+    attach_fingerprint_to_login_result(result, fp)
+    assert "camoufoxFingerprint" in result
+    assert isinstance(result["camoufoxFingerprint"], dict)
+    assert "navigator" in result["camoufoxFingerprint"]
+
+    # None fingerprint → no key added, no crash.
+    result2: dict = {"phone": "x", "cookies": []}
+    attach_fingerprint_to_login_result(result2, None)
+    assert "camoufoxFingerprint" not in result2
+
+
+def test_camoufox_fingerprint_persistence_wired_into_auto_login_writeback():
+    """celery_tasks.auto_login must persist fingerprint into cookies_json."""
+    from pathlib import Path
+
+    source_path = (
+        Path(__file__).resolve().parent.parent / "tasks" / "celery_tasks.py"
+    )
+    source = source_path.read_text(encoding="utf-8")
+    # Both branches (re-login + new registration) must include the
+    # fingerprint write-back. A regression that drops fingerprint from
+    # either branch silently re-introduces the active→expired ricochet.
+    assert source.count("camoufoxFingerprint") >= 4, (
+        "auto_login must read and write camoufoxFingerprint in both "
+        "re-login and new-account branches; a count >= 4 catches the "
+        "common case of dropping it from one branch."
+    )
+
+
+def test_camoufox_fingerprint_persistence_wired_into_executor_launch():
+    """guest_executor must read fingerprint from account_cookies."""
+    from pathlib import Path
+
+    source_path = (
+        Path(__file__).resolve().parent.parent / "agent" / "guest_executor.py"
+    )
+    source = source_path.read_text(encoding="utf-8")
+    assert "extract_fingerprint_from_account_cookies" in source, (
+        "guest_executor must import the fingerprint extractor and pass "
+        "the saved fingerprint to Camoufox so the per-account UA / screen "
+        "/ Canvas seed stays stable across queries."
+    )
+    # The fingerprint must be passed via the Camoufox kwargs, not just
+    # imported. Match the exact kwarg name to catch a typo.
+    assert "camoufox_kwargs[\"fingerprint\"]" in source, (
+        "saved fingerprint must be wired into camoufox_kwargs['fingerprint']"
+    )
