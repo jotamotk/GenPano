@@ -389,33 +389,111 @@ def _doubao_strong_persistence_auth_reason(
     return None
 
 
+# Refs #963 production evidence (Q-184971 retry on worker SHA ``9e9b1e0``,
+# 2026-05-16 16:15-16:18 UTC, GitHub Actions verify-readonly run
+# 25967204514 \u2192
+# https://github.com/jotamotk/trash_test/issues/963#issuecomment-4467456937).
+# Worker log: ``[doubao] \u901a\u8fc7 selector \u63d0\u53d6\u54cd\u5e94: .flow-markdown-body
+# (1023 chars)`` followed 21ms later by ``[doubao] \u672a\u80fd\u83b7\u53d6\u54cd\u5e94`` +
+# account 45 marked ``expired`` + ``Query 184971 failed
+# (doubao_post_reauth_doubao_not_logged_in: 0 chars)``. The Phase 1
+# diagnostic ran every gate stage against the saved HTML
+# ``query_184971_doubao_not_logged_in_1778948280.html`` (455785 bytes)
+# and produced:
+#   visible_login_dialog          = True
+#   substantive_answer_html       = True
+#   hard_persistence_auth_reason  = doubao_not_logged_in
+#   strong_persistence_auth_reason= doubao_not_logged_in
+#   HARD markers found            = (none)
+#   STATE_LOGOUT_RE matches       = (none)
+# i.e. neither the hard string markers (``\u4f1a\u8bdd\u8fc7\u671f``,
+# ``from_logout=1``) nor the JS-state RE (``is_login:false`` /
+# ``error_code:13`` / ``user_id:0``) fired; the dialog probe alone
+# returned True. The literal triggering substrings captured were:
+#   DIALOG-CANDIDATE 'passport' at offset 428251: ...,"app_user_info":{},
+#     "avatar_url":"https:\\u002F\\u002Fp9-passport.byteacctimg.com
+#     \\u002Fimg\\u002Fuser-avatar\\u002Fassets\\u002Fe7b19241fb224c
+#     ea967dfaea35448102_1080_10..."
+#   DIALOG-CANDIDATE '\u624b\u673a\u53f7' at offset 365248:
+#     ...\u5ba2\u6237\u8d44\u6599\uff1a\u8eab\u4efd\u8bc1\u3001
+#     \u624b\u673a\u53f7\u3001\u94f6\u884c\u5361\u53f7\u8bc6\u522b
+#     \u51c6\u786e\u738799.7%\uff0c\u652f\u630115/18 \u4f4d\u8eab
+#     \u4efd\u8bc1\u533a\u5206...
+# i.e. ``passport`` matched the Bytedance SSO asset host
+# (``p9-passport.byteacctimg.com``) inside the logged-in user's
+# ``accountInfo.app_user_info.avatar_url`` JSON state \u2014 that JSON only
+# exists when the account IS authenticated, so the substring proves
+# the opposite of what the gate inferred \u2014 and ``\u624b\u673a\u53f7``
+# matched the bullet ``\u5ba2\u6237\u8d44\u6599\uff1a\u8eab\u4efd\u8bc1
+# \u3001\u624b\u673a\u53f7\u3001\u94f6\u884c\u5361\u53f7\u8bc6\u522b
+# \u51c6\u786e\u738799.7%`` inside the LLM-generated answer about
+# data masking. None of ``role="dialog"`` / ``login-dialog`` /
+# ``login-button`` / ``\u626b\u7801\u767b\u5f55`` /
+# ``\u624b\u673a\u53f7\u767b\u5f55`` / ``\u77ed\u4fe1\u9a8c\u8bc1\u7801``
+# / ``\u8bf7\u8f93\u5165\u624b\u673a\u53f7`` existed in the visible
+# HTML \u2014 the real login dialog was not present.
+#
+# This is the 3rd iteration on persistence_auth_reason after #1047 and
+# #1076 + Codex P1 on #1076. AGENTS.md rule 5 (SECOND FAILED ITERATION
+# -> step-back redesign) applies: stop adding more markers to the
+# disjunction and instead require the dialog probe to bind on chrome
+# that actually proves a dialog is on screen. Bare substrings that
+# ride along on every Bytedance SPA page (``passport`` matches any
+# ``*passport*.byteacctimg.com`` / ``passport.bytedance.com`` /
+# ``passport.douyin.com`` asset URL) and bare substrings that ride
+# along on any Chinese answer about personal data (``\u624b\u673a\u53f7``
+# for phone-number) cannot trip the gate by themselves. A real Doubao
+# login dialog carries explicit chrome \u2014 ``role="dialog"`` /
+# ``login-dialog`` paired with ``login-button`` / ``\u626b\u7801\u767b
+# \u5f55``, or one of the explicit login-context phrases
+# (``\u624b\u673a\u53f7\u767b\u5f55`` / ``\u77ed\u4fe1\u9a8c\u8bc1\u7801``
+# / ``\u8bf7\u8f93\u5165\u624b\u673a\u53f7``).
+_DOUBAO_LOGIN_DIALOG_CHROME_MARKERS = (
+    "role=\"dialog\"",
+    "role='dialog'",
+    "login-dialog",
+)
+_DOUBAO_LOGIN_DIALOG_ACTION_MARKERS = (
+    "login-button",
+    "\u626b\u7801\u767b\u5f55",  # \u626b\u7801\u767b\u5f55 (QR-code login)
+)
+_DOUBAO_LOGIN_DIALOG_TEXT_MARKERS = (
+    "\u624b\u673a\u53f7\u767b\u5f55",      # \u624b\u673a\u53f7\u767b\u5f55 (phone-number login)
+    "\u77ed\u4fe1\u9a8c\u8bc1\u7801",          # \u77ed\u4fe1\u9a8c\u8bc1\u7801 (SMS code)
+    "\u8bf7\u8f93\u5165\u624b\u673a\u53f7",  # \u8bf7\u8f93\u5165\u624b\u673a\u53f7 (enter phone)
+)
+
+
 def _doubao_has_visible_login_dialog(combined: str) -> bool:
+    """Decide whether the visible HTML contains a real Doubao login dialog.
+
+    Refs #963 Q-184971 evidence (run 25967204514). Bare ``passport``
+    and bare ``\u624b\u673a\u53f7`` (phone-number Chinese, without a
+    login qualifier) are not enough: the logged-in shell embeds
+    ``p9-passport.byteacctimg.com`` avatar URLs in ``accountInfo``,
+    and an LLM answer about data masking can spell out
+    ``\u624b\u673a\u53f7`` as a bullet point. A real login dialog
+    always carries one of the explicit chrome markers
+    (``role="dialog"`` / ``login-dialog``) combined with a login
+    action marker (``login-button`` / ``\u626b\u7801\u767b\u5f55``),
+    or one of the explicit login-context Chinese phrases
+    (``\u624b\u673a\u53f7\u767b\u5f55`` / ``\u77ed\u4fe1\u9a8c\u8bc1
+    \u7801`` / ``\u8bf7\u8f93\u5165\u624b\u673a\u53f7``). Require
+    those combinations.
+    """
     has_dialog = any(
         marker in combined
-        for marker in (
-            "role=\"dialog\"",
-            "role='dialog'",
-            "login-dialog",
-            "passport",
-        )
+        for marker in _DOUBAO_LOGIN_DIALOG_CHROME_MARKERS
     )
     has_login_action = any(
         marker in combined
-        for marker in (
-            "login-button",
-            "\u626b\u7801\u767b\u5f55",
-            "\u624b\u673a\u53f7",
-        )
+        for marker in _DOUBAO_LOGIN_DIALOG_ACTION_MARKERS
     )
     if has_dialog and has_login_action:
         return True
     return any(
         marker in combined
-        for marker in (
-            "\u624b\u673a\u53f7\u767b\u5f55",
-            "\u77ed\u4fe1\u9a8c\u8bc1\u7801",
-            "\u8bf7\u8f93\u5165\u624b\u673a\u53f7",
-        )
+        for marker in _DOUBAO_LOGIN_DIALOG_TEXT_MARKERS
     )
 
 
