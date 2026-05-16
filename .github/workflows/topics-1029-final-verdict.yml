@@ -1,0 +1,286 @@
+name: Topics #1029 Final Verdict
+
+# Final verdict experiment for issue #1029.
+# Accounts 16 (chatgpt) and 20 (deepseek) were force-flipped from 'expired' to
+# 'active' in a prior workflow run on branch claude/fix-issue-1029-account-status-test-Ny8TZ.
+# This workflow:
+#  1. Re-confirms accounts 16+20 are still active.
+#  2. Resets the failed chatgpt + deepseek queries for the stuck topics
+#     (162..170) back to pending, scoped to rows that have NO llm_responses.
+#  3. dispatch_many's the reset queries through the existing celery dispatch path.
+#  4. Waits 3 minutes for workers to process.
+#  5. Captures a read-only post-readback (queries status, llm_responses,
+#     account state, recent retry_reasons).
+#  6. Posts the captured output as a comment on the PR.
+#
+# llm_accounts schema has NO updated_at column (only created_at,
+# cookies_updated_at, last_used_at) per PR #1077 readback — no UPDATE in this
+# workflow references updated_at.
+#
+# Doubao queries are explicitly excluded (separate issue #963).
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches:
+      - claude/fix-issue-1029-final-verdict-Ny8TZ
+    paths:
+      - '.github/workflows/topics-1029-final-verdict.yml'
+
+concurrency:
+  group: topics-1029-final-verdict
+  cancel-in-progress: false
+
+jobs:
+  final-verdict:
+    name: Reset failed chatgpt + deepseek queries and retry through reactivated accounts
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    env:
+      SERVER_HOST: ${{ secrets.SERVER_HOST }}
+      SERVER_USER: ${{ secrets.SERVER_USER }}
+      SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+
+    steps:
+      - name: Set up SSH
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "${SERVER_SSH_KEY}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H "${SERVER_HOST}" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Step 1..5 — Verify accounts, reset queries, dispatch, wait, post-readback
+        shell: bash
+        run: |
+          set -euo pipefail
+          ssh \
+            -i ~/.ssh/id_rsa \
+            -o StrictHostKeyChecking=accept-new \
+            "${SERVER_USER}@${SERVER_HOST}" \
+            "bash -s" <<'REMOTE' | tee /tmp/topics_1029_final_verdict.txt
+          # Don't fail-fast on a single SQL/python error — emit full diagnostic
+          # trail so the artifact + PR comment is complete even on partial fail.
+          set +e
+          cd /opt/genpano
+
+          echo "=== Captured at ==="
+          date -u +"%Y-%m-%dT%H:%M:%SZ"
+
+          echo
+          echo "=== Step 1. Verify accounts 16 + 20 still 'active' ==="
+          # llm_accounts has NO updated_at column. Schema per PR #1077 readback:
+          # id, llm_name, status, cookies_updated_at, last_used_at, created_at,
+          # consecutive_fails, cooldown_until, ...
+          printf '%s\n' \
+            "\\pset pager off" \
+            "\\set ON_ERROR_STOP off" \
+            "SELECT id, llm_name, status, cookies_updated_at, last_used_at, consecutive_fails, cooldown_until FROM llm_accounts WHERE id IN (16, 20) ORDER BY id;" \
+            > /tmp/verify_accts.sql
+          docker cp /tmp/verify_accts.sql genpano-postgres-1:/tmp/verify_accts.sql 2>&1 || true
+          docker compose exec -T postgres psql -U genpano -d genpano -X -f /tmp/verify_accts.sql 2>&1 < /dev/null
+          verify_rc=$?
+          echo "VERIFY_RC=${verify_rc}"
+
+          echo
+          echo "=== Step 2. Reset failed chatgpt + deepseek queries for topics 162..170 ==="
+          # Reset scoped tightly:
+          #  - target_llm IN ('chatgpt','deepseek')  -- excludes doubao (#963)
+          #  - status='failed'
+          #  - topic_id IN (162..170)
+          #  - no llm_responses row (NOT EXISTS guard prevents re-running done ones)
+          # NOTE: queries table columns per PR #1077 readback are:
+          #   id, prompt_id, profile_id, brand_id, query_text, target_llm,
+          #   status, retry_count, scheduled_at, executed_at, created_at,
+          #   account_id, queued_at, started_at, finished_at, latency_ms,
+          #   retry_reason, schedule_id
+          # UPDATE only touches the per-attempt columns; immutable columns
+          # (prompt_id, target_llm, query_text, etc.) are left untouched.
+          printf '%s\n' \
+            "\\pset pager off" \
+            "\\set ON_ERROR_STOP off" \
+            "BEGIN;" \
+            "\\echo '--- rows_to_reset (pre-update count) ---'" \
+            "SELECT COUNT(*) AS rows_to_reset" \
+            "FROM queries q" \
+            "JOIN prompts p ON p.id = q.prompt_id" \
+            "WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170)" \
+            "  AND q.status = 'failed'" \
+            "  AND q.target_llm IN ('chatgpt', 'deepseek')" \
+            "  AND NOT EXISTS (SELECT 1 FROM llm_responses r WHERE r.query_id = q.id);" \
+            "\\echo '--- applying UPDATE: failed -> pending, clearing per-attempt cols ---'" \
+            "UPDATE queries q" \
+            "SET status = 'pending'," \
+            "    retry_count = 0," \
+            "    retry_reason = NULL," \
+            "    account_id = NULL," \
+            "    started_at = NULL," \
+            "    finished_at = NULL," \
+            "    latency_ms = NULL," \
+            "    queued_at = NOW()" \
+            "FROM prompts p" \
+            "WHERE q.prompt_id = p.id" \
+            "  AND p.topic_id IN (162,163,164,165,166,167,168,169,170)" \
+            "  AND q.status = 'failed'" \
+            "  AND q.target_llm IN ('chatgpt', 'deepseek')" \
+            "  AND NOT EXISTS (SELECT 1 FROM llm_responses r WHERE r.query_id = q.id);" \
+            "\\echo '--- post-update: pending rows with queued_at < 1min ago ---'" \
+            "SELECT q.target_llm, COUNT(*) AS reset_count" \
+            "FROM queries q" \
+            "JOIN prompts p ON p.id = q.prompt_id" \
+            "WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170)" \
+            "  AND q.target_llm IN ('chatgpt', 'deepseek')" \
+            "  AND q.status = 'pending'" \
+            "  AND q.queued_at > NOW() - INTERVAL '1 minute'" \
+            "GROUP BY q.target_llm;" \
+            "COMMIT;" \
+            > /tmp/reset_queries.sql
+          docker cp /tmp/reset_queries.sql genpano-postgres-1:/tmp/reset_queries.sql 2>&1 || true
+          docker compose exec -T postgres psql -U genpano -d genpano -X -f /tmp/reset_queries.sql 2>&1 < /dev/null
+          reset_rc=$?
+          echo "RESET_RC=${reset_rc}"
+
+          if [ "${reset_rc}" != "0" ]; then
+            echo "ERROR: reset transaction failed (rc=${reset_rc}); STOPPING per AGENTS.md rule 3."
+            echo "=== Final verdict workflow aborted (BLOCKED) ==="
+            exit "${reset_rc}"
+          fi
+
+          echo
+          echo "=== Step 3. dispatch_many for the just-reset pending queries ==="
+          # Build python via printf to avoid nesting heredocs inside the outer
+          # SSH heredoc. The 5-minute window is wide enough to capture all
+          # rows we just reset above without picking up unrelated old pending
+          # rows.
+          printf '%s\n' \
+            "import asyncio" \
+            "from app.db.session import AsyncSessionLocal" \
+            "from sqlalchemy import text" \
+            "from app.admin.queries.celery_dispatch import dispatch_many" \
+            "" \
+            "async def main():" \
+            "    async with AsyncSessionLocal() as session:" \
+            "        rows = await session.execute(text(\"\"\"" \
+            "            SELECT q.id, q.target_llm" \
+            "            FROM queries q" \
+            "            JOIN prompts p ON p.id = q.prompt_id" \
+            "            LEFT JOIN llm_responses r ON r.query_id = q.id" \
+            "            WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170)" \
+            "              AND q.target_llm IN ('chatgpt', 'deepseek')" \
+            "              AND q.status = 'pending'" \
+            "              AND r.id IS NULL" \
+            "              AND q.queued_at > NOW() - INTERVAL '5 minutes'" \
+            "        \"\"\"))" \
+            "        items = [{'id': r[0], 'target_llm': r[1]} for r in rows]" \
+            "        print(f'dispatching {len(items)} reset queries')" \
+            "        dispatched, failed = dispatch_many(items)" \
+            "        print(f'dispatch_many: dispatched={dispatched} failed={failed}')" \
+            "" \
+            "asyncio.run(main())" \
+            > /tmp/dispatch_final.py
+          docker cp /tmp/dispatch_final.py genpano-backend-1:/tmp/dispatch_final.py 2>&1 || true
+          docker compose exec -T backend python /tmp/dispatch_final.py 2>&1 < /dev/null
+          dispatch_rc=$?
+          echo "DISPATCH_RC=${dispatch_rc}"
+
+          echo
+          echo "=== Step 4. Wait 180s for worker processing ==="
+          echo "Waiting 180s for worker processing..."
+          sleep 180
+
+          echo
+          echo "=== Step 5. Post-readback (READ ONLY) ==="
+          printf '%s\n' \
+            "\\pset pager off" \
+            "\\set ON_ERROR_STOP off" \
+            "BEGIN TRANSACTION READ ONLY;" \
+            "\\echo '--- queries status by target_llm ---'" \
+            "SELECT q.target_llm, q.status, COUNT(*) AS n" \
+            "FROM queries q" \
+            "JOIN prompts p ON p.id = q.prompt_id" \
+            "WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170)" \
+            "  AND q.target_llm IN ('chatgpt', 'deepseek')" \
+            "GROUP BY q.target_llm, q.status" \
+            "ORDER BY q.target_llm, q.status;" \
+            "\\echo '--- llm_responses + analyzed counts by target_llm ---'" \
+            "SELECT q.target_llm, COUNT(r.id) AS responses_count," \
+            "       COUNT(*) FILTER (WHERE r.analysis_status = 'done') AS analyzed" \
+            "FROM queries q" \
+            "JOIN prompts p ON p.id = q.prompt_id" \
+            "LEFT JOIN llm_responses r ON r.query_id = q.id" \
+            "WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170)" \
+            "  AND q.target_llm IN ('chatgpt', 'deepseek')" \
+            "GROUP BY q.target_llm;" \
+            "\\echo '--- account state after experiment (16, 17, 20) ---'" \
+            "SELECT id, llm_name, status, consecutive_fails, last_used_at, cooldown_until" \
+            "FROM llm_accounts" \
+            "WHERE id IN (16, 17, 20);" \
+            "\\echo '--- recent retry_reasons (failures in last 5 min) ---'" \
+            "SELECT q.target_llm, q.retry_reason, COUNT(*) AS n" \
+            "FROM queries q" \
+            "JOIN prompts p ON p.id = q.prompt_id" \
+            "WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170)" \
+            "  AND q.target_llm IN ('chatgpt', 'deepseek')" \
+            "  AND q.status = 'failed'" \
+            "  AND q.finished_at > NOW() - INTERVAL '5 minutes'" \
+            "GROUP BY q.target_llm, q.retry_reason" \
+            "ORDER BY n DESC;" \
+            "ROLLBACK;" \
+            > /tmp/postreadback_final.sql
+          docker cp /tmp/postreadback_final.sql genpano-postgres-1:/tmp/postreadback_final.sql 2>&1 || true
+          docker compose exec -T postgres psql -U genpano -d genpano -X -f /tmp/postreadback_final.sql 2>&1 < /dev/null
+
+          echo
+          echo "=== Final verdict workflow complete ==="
+          REMOTE
+
+      - name: Upload run log as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: topics-1029-final-verdict
+          path: /tmp/topics_1029_final_verdict.txt
+          if-no-files-found: warn
+
+      - name: Post final verdict result to PR as comment
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -s /tmp/topics_1029_final_verdict.txt ]; then
+            echo "log file missing or empty; skipping PR comment"
+            exit 0
+          fi
+          # Find the open PR for this branch (the draft PR opened alongside
+          # this workflow); fall back to PR #1077 if no head match.
+          PR_NUMBER=$(gh pr list --repo "$REPO" --head "$BRANCH" --state open --json number --jq '.[0].number' || true)
+          if [ -z "${PR_NUMBER}" ]; then
+            PR_NUMBER=1077
+          fi
+          echo "Posting comment on PR #${PR_NUMBER}"
+          {
+            echo "## Final verdict experiment (issue #1029)"
+            echo ""
+            echo "**Run**: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo "**Branch**: \`${{ github.ref_name }}\`"
+            echo ""
+            echo "<details><summary>Raw verify + reset + dispatch + post-readback output (click)</summary>"
+            echo ""
+            echo '```'
+            # Strip ANSI; cap to ~55KB to stay under GitHub's 64KB comment limit.
+            sed 's/\x1b\[[0-9;]*m//g' /tmp/topics_1029_final_verdict.txt | head -c 55000
+            echo ''
+            echo '```'
+            echo ""
+            echo "</details>"
+          } > /tmp/final-verdict-comment.md
+          gh pr comment "$PR_NUMBER" --repo "$REPO" --body-file /tmp/final-verdict-comment.md
