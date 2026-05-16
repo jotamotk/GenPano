@@ -1429,3 +1429,194 @@ async def test_citation_charts_clear_when_only_legacy_data_without_analyzer_pack
         "response_analyses.raw_analysis_json.analyzer_fact_packages"
         in composition_body["missing_inputs"]
     )
+
+
+@pytest.mark.asyncio
+async def test_top_cited_pages_uses_lenient_brand_match_for_alias_only_mentions(
+    client,
+    user: User,
+    db_session: AsyncSession,
+) -> None:
+    """Issue #1019: the new `/citations/top-pages` endpoint must match
+    citations via the lenient `brand_mention_match_condition` (FK OR
+    canonical-name alias) so production rows where the analyzer stored
+    only `BrandMention.brand_name` (with `brand_id=NULL`) still surface.
+
+    This mirrors the bestCoffer #1002 root cause: the strict
+    `BrandMention.brand_id == primary` filter previously hid every
+    citation whose mention was attached only by name. The lenient
+    match is the same one `/citations` list (PR-merged at #687) uses.
+    """
+    project = await _project(db_session, user)
+    await _seed_admin_chain_tables(db_session)
+    await db_session.execute(
+        text("INSERT INTO brands (id, name, industry) VALUES (12, 'Estee Lauder', 'Beauty')")
+    )
+    await _seed_chain_response(
+        db_session,
+        topic_id=10191,
+        prompt_id=10192,
+        query_id=10193,
+        response_id=10194,
+    )
+    fk_mention = BrandMention(
+        response_id=10194,
+        brand_id=12,
+        brand_name="Estee Lauder",
+        mention_count=1,
+        sentiment="positive",
+        sentiment_score=0.8,
+        created_at=DAY,
+    )
+    alias_only_mention = BrandMention(
+        response_id=10194,
+        brand_id=None,
+        brand_name="Estee Lauder",
+        mention_count=1,
+        sentiment="positive",
+        sentiment_score=0.8,
+        created_at=DAY,
+    )
+    db_session.add_all([fk_mention, alias_only_mention])
+    await db_session.flush()
+    db_session.add_all(
+        [
+            # Citation attached to the FK-bound mention — popular page.
+            CitationSource(
+                response_id=10194,
+                mention_id=fk_mention.id,
+                url="https://example.com/popular",
+                domain="example.com",
+                title="Popular FK-bound page",
+                source_type="publisher",
+                created_at=DAY,
+            ),
+            CitationSource(
+                response_id=10194,
+                mention_id=fk_mention.id,
+                url="https://example.com/popular",
+                domain="example.com",
+                title="Popular FK-bound page",
+                source_type="publisher",
+                created_at=DAY,
+            ),
+            CitationSource(
+                response_id=10194,
+                mention_id=fk_mention.id,
+                url="https://example.com/popular",
+                domain="example.com",
+                title="Popular FK-bound page",
+                source_type="publisher",
+                created_at=DAY,
+            ),
+            # Citation attached to the alias-only mention — this is the
+            # production shape #1019 exists to fix. The lenient match
+            # must include it.
+            CitationSource(
+                response_id=10194,
+                mention_id=alias_only_mention.id,
+                url="https://example.com/alias-only",
+                domain="example.com",
+                title="Alias-only mention page",
+                source_type="publisher",
+                created_at=DAY,
+            ),
+            _analysis(10194, _base_packages(response_id=10194)),
+        ]
+    )
+    await db_session.commit()
+
+    resp = await client.get(
+        f"/api/v1/projects/{project.id}/citations/top-pages",
+        headers=_bearer(user),
+        params={"from": DAY.date().isoformat(), "to": DAY.date().isoformat()},
+    )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["brand_id"] == 12
+    urls = {item["url"] for item in body["items"]}
+    assert "https://example.com/popular" in urls, body
+    # The critical assertion: the alias-only-attributed citation
+    # surfaces under the lenient match.
+    assert "https://example.com/alias-only" in urls, body
+    # Items sorted by count desc — popular FK page first.
+    assert body["items"][0]["url"] == "https://example.com/popular"
+    assert body["items"][0]["count"] == 3
+    alias_row = next(
+        item for item in body["items"] if item["url"] == "https://example.com/alias-only"
+    )
+    assert alias_row["count"] == 1
+    # Contract envelope present.
+    assert body["state"] in {"ok", "partial"}
+    assert "citation_sources" in body["source_provenance"]
+    # Per-page page-level metadata exposed.
+    popular = next(
+        item for item in body["items"] if item["url"] == "https://example.com/popular"
+    )
+    assert popular["title"] == "Popular FK-bound page"
+    assert popular["domain"] == "example.com"
+    assert popular["first_seen_at"] is not None
+    assert popular["last_seen_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_top_cited_pages_honors_limit_param(
+    client,
+    user: User,
+    db_session: AsyncSession,
+) -> None:
+    """Issue #1019: ``limit`` query param caps `items` length while
+    `total` still reflects distinct (url, title) pairs."""
+    project = await _project(db_session, user)
+    await _seed_admin_chain_tables(db_session)
+    await db_session.execute(
+        text("INSERT INTO brands (id, name, industry) VALUES (12, 'Estee Lauder', 'Beauty')")
+    )
+    await _seed_chain_response(
+        db_session,
+        topic_id=10291,
+        prompt_id=10292,
+        query_id=10293,
+        response_id=10294,
+    )
+    mention = BrandMention(
+        response_id=10294,
+        brand_id=12,
+        brand_name="Estee Lauder",
+        mention_count=1,
+        sentiment="positive",
+        sentiment_score=0.8,
+        created_at=DAY,
+    )
+    db_session.add(mention)
+    await db_session.flush()
+    citations = [
+        CitationSource(
+            response_id=10294,
+            mention_id=mention.id,
+            url=f"https://example.com/page-{i}",
+            domain="example.com",
+            title=f"Page {i}",
+            source_type="publisher",
+            created_at=DAY,
+        )
+        for i in range(5)
+    ]
+    db_session.add_all([*citations, _analysis(10294, _base_packages(response_id=10294))])
+    await db_session.commit()
+
+    resp = await client.get(
+        f"/api/v1/projects/{project.id}/citations/top-pages",
+        headers=_bearer(user),
+        params={
+            "from": DAY.date().isoformat(),
+            "to": DAY.date().isoformat(),
+            "limit": 2,
+        },
+    )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert len(body["items"]) == 2
+    assert body["total"] == 5

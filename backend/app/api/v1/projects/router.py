@@ -13,6 +13,7 @@ Endpoints:
   GET    /v1/projects/:id/topics               Project topics + pin state
   GET    /v1/projects/:id/sentiment            Sentiment distribution + drivers
   GET    /v1/projects/:id/citations            Citation list + top domains
+  GET    /v1/projects/:id/citations/top-pages   Top cited pages (Issue #1019)
   GET    /v1/projects/:id/products             SKU rollup (Phase 2.3)
   GET    /v1/projects/:id/competitors/metrics  Competitor matrix (Phase 2.3)
   GET    /v1/projects/:id/diagnostics          Derived diagnostics (Phase 2.3)
@@ -54,6 +55,7 @@ from app.api.v1.projects._charts_dto import (
     SentimentByEngineOut,
     SentimentTrendByEngineOut,
     SimulatorBaselineOut,
+    TopCitedPagesOut,
     TopicAttributionOut,
     TopicHeatmapOut,
 )
@@ -71,6 +73,7 @@ from app.api.v1.projects._charts_service import (
     get_sentiment_by_engine,
     get_sentiment_trend_by_engine,
     get_simulator_baseline,
+    get_top_cited_pages,
     get_topic_attribution,
     get_topic_heatmap,
 )
@@ -886,6 +889,40 @@ async def project_citation_composition(
         segment_id=segment_id,
         profile_id=profile_id,
         brand_id_override=brand_id,
+    )
+
+
+# Issue #1019: Top 引用页面 — page-level (url + title) aggregation of
+# citation_sources, ordered by count desc. Mirrors the lenient brand
+# match used by `/citations` so production rows with `brand_id=NULL`
+# still surface via canonical alias.
+@router.get(
+    "/{project_id}/citations/top-pages",
+    response_model=TopCitedPagesOut,
+)
+async def project_top_cited_pages(
+    project_id: str,
+    user: Annotated[User, Depends(current_user)],
+    session: AsyncSession = _DependsDb,
+    from_: str | None = Query(None, alias="from"),
+    to: str | None = Query(None),
+    engine: str | None = Query(None),
+    segment_id: str | None = Query(None),
+    profile_id: str | None = Query(None),
+    brand_id: int | None = Query(None),
+    limit: int = Query(10, ge=1, le=50),
+) -> TopCitedPagesOut:
+    project = await service.get_project_for_user(session, user, project_id)
+    return await get_top_cited_pages(
+        session,
+        project,
+        from_date=_parse_date(from_, "from"),
+        to_date=_parse_date(to, "to"),
+        engines=_parse_csv(engine),
+        segment_id=segment_id,
+        profile_id=profile_id,
+        brand_id_override=brand_id,
+        limit=limit,
     )
 
 

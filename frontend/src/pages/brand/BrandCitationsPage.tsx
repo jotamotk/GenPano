@@ -20,6 +20,7 @@ import {
   useContentGap,
   usePrTargets,
   useSimulatorBaseline,
+  useTopCitedPages,
 } from '../../hooks/useCharts';
 import {
   adaptAuthorityTrend,
@@ -27,6 +28,7 @@ import {
   adaptContentGap,
   adaptPrTargets,
   adaptSimulatorBaseline,
+  adaptTopCitedPages,
 } from '../../adapters/chartAdapters';
 import {
   BRANDS,
@@ -77,6 +79,7 @@ export default function BrandCitationsPage() {
   const citationsQ = useBrandCitations(isLive ? liveProjectId : null, 50, chartFilters);
   const authorityTrendQ = useAuthorityTrend(isLive ? liveProjectId : null, chartFilters);
   const compositionQ = useCitationComposition(isLive ? liveProjectId : null, chartFilters);
+  const topPagesQ = useTopCitedPages(isLive ? liveProjectId : null, 10, chartFilters);
   const contentGapQ = useContentGap(isLive ? liveProjectId : null, 12, chartFilters);
   const prTargetsQ = usePrTargets(isLive ? liveProjectId : null);
   const simulatorQ = useSimulatorBaseline(isLive ? liveProjectId : null);
@@ -103,8 +106,13 @@ export default function BrandCitationsPage() {
   const topDomains = isLive ? liveDomains : TOP_CITED_DOMAINS;
   const topDomainsIsMock = !isLive;
 
-  // Top cited pages require an authoritative backend chart row array.
-  const livePages = [];
+  // Top cited pages: wired to the authoritative `/citations/top-pages`
+  // endpoint (Issue #1019). The endpoint aggregates `citation_sources`
+  // by (url, title) with the lenient brand match so production rows
+  // with `brand_id=NULL` but matching `brand_name` still surface.
+  // Do NOT reconstruct from `citationsQ.data.items` — `items` is the
+  // most-recent N citations, not the top-by-count list.
+  const livePages = adaptTopCitedPages(topPagesQ.data);
   const topPages = isLive ? livePages : TOP_CITED_PAGES;
   const topPagesIsMock = !isLive;
 

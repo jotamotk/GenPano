@@ -163,6 +163,22 @@ export function useCitationComposition(
   })
 }
 
+// Issue #1019: page-level citation aggregation, replacing the
+// `livePages = []` deferral on BrandCitationsPage.
+export function useTopCitedPages(
+  projectId: string | null | undefined,
+  limit = 10,
+  filters: ProjectAnalysisParams = {},
+) {
+  return useQuery({
+    queryKey: ['charts', 'top-cited-pages', projectId, limit, filterKey(filters)],
+    queryFn: () => projectChartsApi.topCitedPages(projectId as string, limit, filters),
+    enabled: isLiveProjectId(projectId),
+    staleTime: STALE,
+    retry: false,
+  })
+}
+
 export function useContentGap(
   projectId: string | null | undefined,
   limit = 12,
