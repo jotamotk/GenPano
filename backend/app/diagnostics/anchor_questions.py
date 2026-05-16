@@ -118,7 +118,7 @@ def build_anchor_questions(
     fill = {
         "brand": brand_name or "品牌",
         "category": category,
-        "pct": _fmt_pct(evidence.get("changePercent")),
+        "pct": _fmt_pct(_pick(evidence, "change_percent", "changePercent")),
         "top_competitor": top_competitor or "竞品",
     }
     out: dict[str, list[str]] = {}
@@ -133,6 +133,13 @@ def _safe_format(template: str, fill: dict[str, Any]) -> str:
         return template.format(**fill)
     except (KeyError, IndexError):
         return template
+
+
+def _pick(d: dict[str, Any], *keys: str) -> Any:
+    for k in keys:
+        if k in d and d[k] is not None:
+            return d[k]
+    return None
 
 
 def _fmt_pct(v: Any) -> str:
