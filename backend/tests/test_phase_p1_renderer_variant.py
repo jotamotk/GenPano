@@ -151,8 +151,11 @@ def test_b2_10_variant_runs_before_narrator_so_narrative_matches_payload():
     assert sec.tables == []  # variant cleared tables
 
     # Now narrate — generic fallback uses len(section.tables).
+    # Use asyncio.run() (not get_event_loop().run_until_complete) so
+    # the test is order-independent: pytest-asyncio may have closed the
+    # event loop after a prior async test ran in the same session.
     with patch.dict("os.environ", {}, clear=False):
-        sec.narrative = asyncio.get_event_loop().run_until_complete(narrate(sec, ctx))
+        sec.narrative = asyncio.run(narrate(sec, ctx))
 
     # Narrative must NOT reference tables (since there are none post-variant).
     assert sec.narrative is not None
