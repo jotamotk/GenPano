@@ -66,8 +66,17 @@ async def create_job(
     project = await get_project_for_user(session, user, project_id)
 
     if report_type == "lead_diagnostic":
-        # Phase RP.8 — dedicated 4-layer view, NOT SECTION_MATRIX
-        payload = await build_lead_diagnostic(session, project=project, locale=locale)
+        # Phase RP.8 — dedicated 4-layer view, NOT SECTION_MATRIX.
+        # Audit #1044 B2-8: honor explicit from/to dates so ad-hoc
+        # API callers can pin a window; otherwise fall back to the
+        # rolling 30-day default the BD-team auto-create path uses.
+        payload = await build_lead_diagnostic(
+            session,
+            project=project,
+            locale=locale,
+            from_date=from_date,
+            to_date=to_date,
+        )
     else:
         payload = await build_report(
             session,
@@ -122,6 +131,8 @@ async def get_job_with_payload(
                 session,
                 project=project,
                 locale=scope.get("locale", "zh-CN"),
+                from_date=_parse_date(scope.get("from_date")),
+                to_date=_parse_date(scope.get("to_date")),
             )
         else:
             payload = await build_report(
@@ -215,6 +226,8 @@ async def read_public_report(
             session,
             project=project,
             locale=scope.get("locale", "zh-CN"),
+            from_date=_parse_date(scope.get("from_date")),
+            to_date=_parse_date(scope.get("to_date")),
         )
     else:
         payload = await build_report(
