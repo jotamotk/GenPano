@@ -7,6 +7,7 @@ import {
   adaptProductRelations,
   adaptSimulatorBaseline,
   adaptSentimentByEngine,
+  adaptTopCitedPages,
   adaptTopicAttribution,
 } from './chartAdapters'
 
@@ -174,6 +175,38 @@ describe('chart adapters analyzer formula-status guards', () => {
         type: 'COMPETES_WITH',
         confidence: null,
       },
+    ])
+  })
+
+  // Issue #1002 follow-up: the upstream citation_sources.title column
+  // sometimes carries integer-like garbage (Doubao reference indices stored
+  // as `-1`, `-2`, `[5]`, …). Live bestCoffer page showed these as the row
+  // titles, which read like negative counts. Sanitize at the adapter so the
+  // page renders a URL-derived label instead.
+  it('falls back to URL-derived title when the upstream title is non-readable', () => {
+    const okCitationEvidence = {
+      state: 'ok',
+      formula_status: 'ok',
+      metric_formula_evidence: { citation: { formula_status: 'ok' } },
+    } as const
+    const rows = adaptTopCitedPages({
+      ...okCitationEvidence,
+      items: [
+        // Bare negative integer → fall back.
+        { url: 'https://example.com/foo/bar', title: '-1', domain: 'example.com', tier: 1, count: 6, first_seen_at: null, last_seen_at: null },
+        // Bracketed reference → fall back.
+        { url: 'https://example.com/baz', title: '[5]', domain: 'example.com', tier: 1, count: 4, first_seen_at: null, last_seen_at: null },
+        // Empty after trim → fall back.
+        { url: 'https://example.com/qux', title: '   ', domain: 'example.com', tier: 4, count: 2, first_seen_at: null, last_seen_at: null },
+        // Genuine human title → keep.
+        { url: 'https://example.com/keep', title: 'Real human title', domain: 'example.com', tier: 1, count: 1, first_seen_at: null, last_seen_at: null },
+      ],
+    } as any)
+    expect(rows.map((r) => r.title)).toEqual([
+      'bar',
+      'baz',
+      'qux',
+      'Real human title',
     ])
   })
 })

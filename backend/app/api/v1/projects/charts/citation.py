@@ -166,12 +166,23 @@ async def _target_top_cited_pages_rows(
         (await session.execute(select(func.count()).select_from(base.subquery()))).scalar_one() or 0
     )
     rows = (await session.execute(base.order_by(desc("cnt"), desc("last_seen")).limit(limit))).all()
+    # Issue #1002 follow-up to #1019/#1020: apply the heuristic tier fallback
+    # to top-pages too. The original PR #1026 only joined to ``DomainAuthority``,
+    # which returns NULL for every cited domain on live envs where the
+    # ``domain_authorities`` table is unseeded — so the page rendered
+    # ``Tier ?`` for every row even though composition + authority_trend
+    # already classified the same domains (Tier 1 via brand alias for
+    # ``bestcoffer.com``, Tier 4 for unclassified UGC like ``spc.org.cn``).
+    # Mirror the heuristic application from ``_target_citation_composition_rows``.
+    aliases = sorted(await brand_mention_names(session, brand_id))
     items = [
         TopCitedPageRow(
             url=row.url,
             title=row.title,
             domain=row.domain,
-            tier=int(row.tier) if row.tier is not None else None,
+            tier=int(row.tier)
+            if row.tier is not None
+            else _classify_untiered_domain(row.domain, aliases),
             count=int(row.cnt or 0),
             first_seen_at=row.first_seen.isoformat() if row.first_seen else None,
             last_seen_at=row.last_seen.isoformat() if row.last_seen else None,
