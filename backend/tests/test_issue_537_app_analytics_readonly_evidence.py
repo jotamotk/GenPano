@@ -45,6 +45,9 @@ def test_db_sql_is_read_only_and_covers_required_evidence() -> None:
     assert "analyzer run/failure counts" in lowered
     assert "brand_mentions coverage" in lowered
     assert "citation_sources and official domains" in lowered
+    assert "cited responses date distribution (issue #1021" in lowered
+    assert "cited responses spans summary" in lowered
+    assert "per-cited-response date detail (issue #1021" in lowered
     assert "sentiment_drivers" in lowered
     assert "topic -> prompt -> query -> response linkage" in lowered
     assert "daily score/component aggregate counts" in lowered
