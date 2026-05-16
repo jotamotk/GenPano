@@ -297,7 +297,7 @@ class _TimeoutHeroSMSProvider(_FakeHeroSMSProvider):
 async def _patch_successful_flow(monkeypatch, handler, *, verify_result):
     from geo_tracker.agent.sms_login import base
 
-    async def _launch_browser():
+    async def _launch_browser(qg_lease=None):
         return object(), None, object(), _FakeContext()
 
     async def _true(_page=None, *_args):
@@ -366,7 +366,7 @@ async def test_existing_cookie_relogin_success_skips_sms_phone_form(monkeypatch)
     provider = _FakeProvider()
     monkeypatch.setattr(handler, "sms_provider_factory", lambda: provider)
 
-    async def _launch_browser():
+    async def _launch_browser(qg_lease=None):
         return object(), None, object(), _FakeContext(_FakePage())
 
     async def _navigate(_page):
@@ -417,7 +417,7 @@ async def test_doubao_relogin_fallback_continues_sms_when_inline_form_is_ready(
 
     monkeypatch.setattr(handler, "sms_provider_factory", lambda: provider)
 
-    async def _launch_browser():
+    async def _launch_browser(qg_lease=None):
         return object(), None, object(), _FakeContext(page)
 
     async def _none(*_args, **_kwargs):
@@ -502,7 +502,7 @@ async def test_doubao_existing_cookie_relogin_does_not_succeed_on_logged_out_run
     page = _FakeDoubaoLoggedOutRuntimePage()
     monkeypatch.setattr(handler, "sms_provider_factory", lambda: provider)
 
-    async def _launch_browser():
+    async def _launch_browser(qg_lease=None):
         return object(), None, object(), _FakeContext(page)
 
     async def _none(*_args, **_kwargs):
@@ -599,7 +599,7 @@ async def test_chatgpt_success_requires_persistable_cookies(monkeypatch) -> None
     monkeypatch.setattr(handler, "sms_provider_factory", lambda: provider)
     await _patch_successful_flow(monkeypatch, handler, verify_result=True)
 
-    async def _launch_browser():
+    async def _launch_browser(qg_lease=None):
         return object(), None, object(), _EmptyCookieContext(page)
 
     async def _none(*_args, **_kwargs):
@@ -1065,7 +1065,7 @@ async def test_chatgpt_initial_navigation_waits_for_domcontentloaded(
     monkeypatch.setattr(handler, "sms_provider_factory", lambda: provider)
     await _patch_successful_flow(monkeypatch, handler, verify_result=True)
 
-    async def _launch_browser():
+    async def _launch_browser(qg_lease=None):
         return object(), None, object(), _FakeContext(page)
 
     async def _none(*_args, **_kwargs):
@@ -1095,7 +1095,7 @@ async def test_chatgpt_initial_navigation_recovers_from_transient_interrupt(
     monkeypatch.setattr(handler, "sms_provider_factory", lambda: provider)
     await _patch_successful_flow(monkeypatch, handler, verify_result=True)
 
-    async def _launch_browser():
+    async def _launch_browser(qg_lease=None):
         return object(), None, object(), _FakeContext(page)
 
     async def _none(*_args, **_kwargs):
@@ -1123,7 +1123,7 @@ async def test_doubao_initial_navigation_still_waits_for_load(monkeypatch) -> No
     monkeypatch.setattr(handler, "sms_provider_factory", lambda: provider)
     await _patch_successful_flow(monkeypatch, handler, verify_result=True)
 
-    async def _launch_browser():
+    async def _launch_browser(qg_lease=None):
         return object(), None, object(), _FakeContext(page)
 
     async def _none(*_args, **_kwargs):
@@ -1153,7 +1153,7 @@ async def test_existing_handlers_preserve_navigation_exception_reason(
     monkeypatch.setattr(handler, "sms_provider_factory", lambda: provider)
     await _patch_successful_flow(monkeypatch, handler, verify_result=True)
 
-    async def _launch_browser():
+    async def _launch_browser(qg_lease=None):
         return object(), None, object(), _FakeContext(page)
 
     async def _none(*_args, **_kwargs):

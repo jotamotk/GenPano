@@ -6491,7 +6491,7 @@ def test_qg_proxy_env_vars_wired_into_deploy_yaml():
 # auto_login Camoufox too, so the entire chain (registration + first
 # query) is done from a fresh residential IP.
 def test_qg_proxy_wired_into_sms_login_launch():
-    """``sms_login/base.py:_launch_browser`` must reserve a qg IP for Doubao."""
+    """``sms_login/base.py`` must reserve a qg IP for Doubao auto_login."""
     from pathlib import Path
 
     source_path = (
@@ -6504,19 +6504,44 @@ def test_qg_proxy_wired_into_sms_login_launch():
         "sms_login/base.py must import QGProxyClient so auto_login can "
         "reserve a rotating qg.net IP at Camoufox launch time."
     )
-    # 2. Inside _launch_browser, the doubao branch reserves a lease.
-    launch_idx = source.index("async def _launch_browser")
-    launch_block = source[launch_idx:launch_idx + 6000]
-    assert "QGProxyClient.from_env()" in launch_block, (
-        "_launch_browser must call QGProxyClient.from_env() so the qg "
+    # 2. A _reserve_qg_lease helper exists. The reservation lives outside
+    # _launch_browser so the device_env_error retry path can rotate to a
+    # fresh IP before relaunching (Codex P2 on PR #1042).
+    assert "async def _reserve_qg_lease" in source, (
+        "sms_login/base.py must expose a _reserve_qg_lease helper so the "
+        "device_env_error retry path can reserve a fresh IP between "
+        "browser relaunches instead of reusing the rejected lease."
+    )
+    reserve_idx = source.index("async def _reserve_qg_lease")
+    reserve_block = source[reserve_idx:reserve_idx + 3000]
+    assert "QGProxyClient.from_env()" in reserve_block, (
+        "_reserve_qg_lease must call QGProxyClient.from_env() so the qg "
         "credentials gate the lease reservation."
     )
-    assert 'self.platform == "doubao"' in launch_block, (
+    assert 'self.platform != "doubao"' in reserve_block or \
+        'self.platform == "doubao"' in reserve_block, (
         "qg reservation must be gated on platform=='doubao' so chatgpt / "
         "deepseek auto_login do not consume qg credits."
+    )
+    # 3. _launch_browser accepts the qg_lease and wires it into proxy kwargs.
+    launch_idx = source.index("async def _launch_browser")
+    launch_block = source[launch_idx:launch_idx + 6000]
+    assert "qg_lease=None" in launch_block or "qg_lease=" in launch_block, (
+        "_launch_browser must accept a qg_lease parameter so the caller "
+        "(or the device_env_error retry path) can inject a freshly "
+        "reserved lease instead of _launch_browser reserving it itself."
     )
     assert "qg_lease.server_url" in launch_block, (
         "Camoufox kwargs must wire qg_lease.server_url + auth_key + "
         "auth_password into the proxy={server, username, password} shape "
         "Playwright expects."
+    )
+    # 4. A _recycle_browser_with_fresh_qg_lease helper exists for the
+    # device_env_error retry path so a rejected IP is reported back to
+    # the qg pool and a new one is reserved before relaunching.
+    assert "async def _recycle_browser_with_fresh_qg_lease" in source, (
+        "sms_login/base.py must expose _recycle_browser_with_fresh_qg_lease "
+        "so device_env_error retries drop the rejected IP and reserve a "
+        "fresh one before relaunching Camoufox — otherwise every retry "
+        "burns a fresh SMS number on the same fingerprinted IP."
     )
