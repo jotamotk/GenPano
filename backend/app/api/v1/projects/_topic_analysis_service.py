@@ -253,6 +253,94 @@ async def _count_brand_topics_total(session: AsyncSession, brand_id: int) -> int
     return int(row.get("topic_count") or 0)
 
 
+def _merge_missing_brand_topics(
+    topics: list[TopicMonitoringRow],
+    listing: list[dict[str, Any]],
+    *,
+    associated_brand: str | None,
+) -> list[TopicMonitoringRow]:
+    """Append brand topics without evidence so the user-facing list matches
+    admin (#1029). Topics already present (with evidence) keep their metrics
+    and position; missing topics appear after them with zero-valued metrics.
+    """
+    if not listing:
+        return topics
+    present = {item.topic_id for item in topics}
+    merged: list[TopicMonitoringRow] = list(topics)
+    for row in listing:
+        tid = _as_int(row.get("topic_id"))
+        if tid is None or tid in present:
+            continue
+        present.add(tid)
+        merged.append(
+            TopicMonitoringRow(
+                topic_id=tid,
+                topic_name=row.get("topic_name") or f"topic-{tid}",
+                dimension=row.get("topic_dimension"),
+                associated_brand=associated_brand,
+                status=row.get("topic_status"),
+                prompt_count=0,
+                query_count=0,
+                response_count=0,
+                success_rate=None,
+                engine_coverage=[],
+                mention_rate=None,
+                visibility_rate=None,
+                sov=None,
+                avg_rank=None,
+                avg_geo_score=None,
+                sentiment_distribution={"positive": 0, "neutral": 0, "negative": 0},
+                citation_count=0,
+                citation_rate=None,
+                last_collected=None,
+            )
+        )
+    return merged
+
+
+async def _fetch_brand_topics_listing(session: AsyncSession, brand_id: int) -> list[dict[str, Any]]:
+    """Raw topic rows for a brand (id, text, category, status).
+
+    Mirrors `_count_brand_topics_total`'s scope (no status filter) so the
+    app-surface topic LIST matches the admin Topic Plan listing, not just the
+    count. Returns ``[]`` when the legacy ``topics`` table is missing or the
+    query fails (#1029).
+    """
+    try:
+        cols = await legacy_table_columns(session, "topics")
+    except Exception:
+        return []
+    if not cols or "id" not in cols or "brand_id" not in cols:
+        return []
+    text_expr = _topic_name_expr(cols)
+    category_expr = "category" if "category" in cols else "NULL"
+    status_expr = "status" if "status" in cols else "NULL"
+    created_expr = "created_at" if "created_at" in cols else "NULL"
+    order_clause = (
+        "ORDER BY created_at DESC NULLS LAST, id DESC"
+        if "created_at" in cols
+        else "ORDER BY id DESC"
+    )
+    sql = text(
+        f"""
+        SELECT
+            t.id AS topic_id,
+            {text_expr} AS topic_name,
+            {category_expr} AS topic_dimension,
+            {status_expr} AS topic_status,
+            {created_expr} AS topic_created_at
+        FROM topics t
+        WHERE t.brand_id = :brand_id
+        {order_clause}
+        """
+    )
+    try:
+        rows = (await session.execute(sql, {"brand_id": int(brand_id)})).mappings().all()
+    except Exception:
+        return []
+    return [dict(r) for r in rows]
+
+
 def _topic_aggregates(
     rows: list[dict[str, Any]],
     *,
@@ -470,13 +558,23 @@ async def get_topic_monitoring(
         return _empty_monitoring(project, brand_id=brand_id)
     rows = await _fact_rows(session, project, filters=filters, brand_id_override=brand_id)
     brand_names = await resolve_brand_names(session, [brand_id])
+    associated_brand = brand_names.get(brand_id)
     topics, summary, intent_matrix = _topic_aggregates(
         rows,
         project=project,
         filters=filters,
-        associated_brand=brand_names.get(brand_id),
+        associated_brand=associated_brand,
     )
     summary.topic_count_total = await _count_brand_topics_total(session, brand_id)
+    # Merge in brand topics without evidence so the list matches admin's count
+    # (#1029). Summary.topic_count stays as the with-evidence count; the list
+    # itself shows every topic so operators can spot coverage gaps.
+    if not filters.explicit:
+        topics = _merge_missing_brand_topics(
+            topics,
+            await _fetch_brand_topics_listing(session, brand_id),
+            associated_brand=associated_brand,
+        )
     state = "ok" if summary.query_count or (topics and not filters.explicit) else "empty"
     out = TopicMonitoringOut(
         project_id=project.id,

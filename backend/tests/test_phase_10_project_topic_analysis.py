@@ -582,6 +582,35 @@ async def test_topic_monitoring_aggregates_admin_chain(client, db_session, user)
 
 
 @pytest.mark.asyncio
+async def test_topic_monitoring_list_includes_topics_without_evidence(client, db_session, user):
+    """Regression for #1029: the user-facing topic list should match admin's
+    topic count (no status filter), not just the with-evidence subset. Topic
+    102 (Vitamin C) has no responses but is a valid brand-42 topic, so it
+    should appear in the list with zero-valued metrics. summary.topic_count
+    stays as the with-evidence count.
+    """
+    project = await _seed_admin_chain(db_session, user)
+    resp = await client.get(
+        f"/api/v1/projects/{project.id}/topics/monitoring",
+        headers=_bearer(user),
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    topic_ids = [row["topic_id"] for row in body["topics"]]
+    assert 101 in topic_ids
+    assert 102 in topic_ids
+    # summary.topic_count still reports only topics with evidence
+    assert body["summary"]["topic_count"] == 1
+    # summary.topic_count_total reports the admin-equivalent raw count
+    assert body["summary"]["topic_count_total"] == 2
+    empty_row = next(row for row in body["topics"] if row["topic_id"] == 102)
+    assert empty_row["prompt_count"] == 0
+    assert empty_row["query_count"] == 0
+    assert empty_row["response_count"] == 0
+    assert empty_row["engine_coverage"] == []
+
+
+@pytest.mark.asyncio
 async def test_topic_prompt_query_response_drilldown(client, db_session, user):
     project = await _seed_admin_chain(db_session, user)
     headers = _bearer(user)
