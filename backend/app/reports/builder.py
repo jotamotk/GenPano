@@ -106,6 +106,51 @@ def _default_window(report_type: str, today: date | None = None) -> tuple[date, 
     return today - timedelta(days=6), today
 
 
+def _apply_variant(rendered: SectionData, primary_brand_id: int | None) -> None:
+    """Post-render variant projection. Each variant is documented in
+    PRD §4.7.2:
+
+      - `full`         → no-op (everything ships)
+      - `simple`       → drop tables + charts; keep summary / narrative
+                         / metrics. Used when the consumer wants a
+                         glanceable card without the data grid.
+      - `focus`        → narrow each table to rows where `is_primary=True`
+                         OR `brand_id == primary_brand_id`. Used by
+                         lead_diagnostic where the report is single-
+                         brand-centric. Falls through to no-op when
+                         primary_brand_id is None.
+      - `p01_only` / `all` / `strengthened` / `top3` → handled inside
+                         the section itself (where it can actually filter
+                         the underlying query). No projection needed
+                         here.
+
+    Idempotent and safe on any SectionData shape.
+    """
+    variant = rendered.chosen_variant
+    if variant == "simple":
+        rendered.tables = []
+        rendered.charts = []
+        return
+    if variant == "focus":
+        if primary_brand_id is None:
+            return
+        kept_tables: list[dict[str, Any]] = []
+        for table in rendered.tables or []:
+            rows = table.get("rows") or []
+            filtered = [
+                r
+                for r in rows
+                if r.get("is_primary") is True or r.get("brand_id") == primary_brand_id
+            ]
+            # If filter would empty the table, drop it entirely rather
+            # than leaving an empty-header artifact in the renderer.
+            if filtered:
+                new_table = dict(table)
+                new_table["rows"] = filtered
+                kept_tables.append(new_table)
+        rendered.tables = kept_tables
+
+
 async def build_report(
     session: AsyncSession,
     *,
@@ -157,6 +202,16 @@ async def build_report(
         if cls is None:
             continue
         rendered = await cls().render(ctx, variant=variant)
+        # B2-10 (PRD §4.7.2 — section variant must actually change output):
+        # `simple` drops tables + charts so a "simple" exec_summary on
+        # an on_demand report doesn't look identical to "full". `focus`
+        # narrows tables to the primary-brand row only — used by
+        # lead_diagnostic where the report is single-brand-centric.
+        # MUST run before narrate() so the generic-fallback narrative
+        # (which counts tables/charts) doesn't promise "see the N
+        # table(s) below" and then have variant strip those tables out
+        # (Codex review on #1083).
+        _apply_variant(rendered, ctx.project.primary_brand_id)
         # B2-4 (PRD §4.7.3): after each section render, run the narrator
         # to produce an LLM-or-fallback prose paragraph distinct from
         # the section's stat-heavy `summary`. Narrator is best-effort —

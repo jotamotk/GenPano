@@ -24,8 +24,10 @@ _LABELS = {
         "perspective": "视角",
         "section": "章节",
         "summary": "摘要",
+        "narrative": "洞察",
         "metrics": "指标",
         "tables": "数据表",
+        "charts": "图表",
         "no_data": "本期无数据。",
     },
     "en-US": {
@@ -37,8 +39,10 @@ _LABELS = {
         "perspective": "Reader",
         "section": "Section",
         "summary": "Summary",
+        "narrative": "Narrative",
         "metrics": "Metrics",
         "tables": "Tables",
+        "charts": "Charts",
         "no_data": "No data this period.",
     },
 }
@@ -97,6 +101,16 @@ def render_markdown(payload: dict[str, Any]) -> str:
             parts.append(summary)
             parts.append("")
 
+        # B2-4: narrator-produced prose layer. Distinct from `summary`
+        # so renderers show both — summary as stat line, narrative as
+        # prose paragraph.
+        narrative = sec.get("narrative")
+        if narrative:
+            parts.append(f"**{lang['narrative']}**")
+            parts.append("")
+            parts.append(narrative)
+            parts.append("")
+
         metrics = sec.get("metrics") or {}
         if metrics:
             parts.append(f"**{lang['metrics']}**")
@@ -115,4 +129,27 @@ def render_markdown(payload: dict[str, Any]) -> str:
             parts.append(_md_table(rows))
             parts.append("")
 
+        # B2-11: render charts. Each chart is a spec dict — emit it as
+        # a fenced JSON block so consumers (Markdown viewers, PDF
+        # renderer, AI assistants) can decode the chart spec rather
+        # than silently dropping it.
+        for chart in sec.get("charts") or []:
+            chart_name = chart.get("name", chart.get("type", "chart"))
+            parts.append(f"**{lang['charts']}: {chart_name}**")
+            parts.append("")
+            parts.append("```json")
+            parts.append(_compact_json(chart))
+            parts.append("```")
+            parts.append("")
+
     return "\n".join(parts).rstrip() + "\n"
+
+
+def _compact_json(value: Any) -> str:
+    """Pretty-stable JSON dump for chart specs embedded in Markdown."""
+    import json
+
+    try:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2)
+    except (TypeError, ValueError):
+        return str(value)
