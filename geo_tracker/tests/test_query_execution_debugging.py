@@ -6687,6 +6687,63 @@ def test_runtime_snapshot_captures_doubao_fingerprint_diagnostics():
         )
 
 
+# Refs #963 doubao_homepage_content follow-up: a qg.net Chinese
+# residential exit IP paired with the worker container's UTC timezone
+# is the canonical "you're using a proxy" signal. Pin Camoufox to
+# Shanghai geo + timezone for Doubao on both the query path and the
+# auto_login path so JS-side geo matches qg exit-IP geo. The Dockerfile
+# must also install ``tzdata`` so Firefox can actually resolve named
+# timezones — without it the env TZ silently no-ops.
+def test_camoufox_doubao_launches_pin_china_timezone_and_geolocation():
+    """Both Doubao Camoufox launches must override timezone + geolocation."""
+    from pathlib import Path
+
+    for relpath in (
+        ("agent", "sms_login", "base.py"),
+        ("agent", "guest_executor.py"),
+    ):
+        source_path = Path(__file__).resolve().parent.parent.joinpath(*relpath)
+        source = source_path.read_text(encoding="utf-8")
+        # Both files set kwargs in a Doubao-gated block. Look for the
+        # config / env overrides near the Doubao platform check.
+        assert '"timezone": "Asia/Shanghai"' in source, (
+            f"{'/'.join(relpath)} must pin Camoufox config timezone to "
+            "Asia/Shanghai for Doubao — otherwise Firefox falls back to "
+            "the container's UTC timezone and Doubao's risk control "
+            "catches the IP-geo / JS-geo mismatch."
+        )
+        assert '"geolocation:longitude"' in source, (
+            f"{'/'.join(relpath)} must pin Camoufox geolocation for "
+            "Doubao so navigator.geolocation reads as Shanghai, "
+            "consistent with the qg residential exit IP."
+        )
+        assert '"TZ": "Asia/Shanghai"' in source, (
+            f"{'/'.join(relpath)} must pass TZ=Asia/Shanghai to the "
+            "Firefox subprocess env. The Camoufox ``config`` parameter "
+            "sets the JS Intl timezone, but the env TZ also affects "
+            "lower-level C library calls and is the standard belt-and-"
+            "braces approach to keeping the entire subprocess coherent."
+        )
+
+
+def test_worker_dockerfile_installs_tzdata():
+    """tzdata is needed for Firefox to resolve named timezones."""
+    from pathlib import Path
+
+    dockerfile = (
+        Path(__file__).resolve().parent.parent.parent
+        / "geo_tracker" / "Dockerfile"
+    )
+    content = dockerfile.read_text(encoding="utf-8")
+    assert "tzdata" in content, (
+        "geo_tracker/Dockerfile must install tzdata in the apt-get "
+        "block — without it, Firefox/glibc cannot resolve names like "
+        "Asia/Shanghai and JS Intl.DateTimeFormat falls back to UTC "
+        "regardless of any TZ env we pass. This silently no-ops the "
+        "timezone fix for Doubao."
+    )
+
+
 def test_doubao_homepage_content_path_saves_all_three_artifacts():
     """homepage_content failures must persist HTML + screenshot + runtime snapshot."""
     from pathlib import Path

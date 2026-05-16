@@ -981,6 +981,23 @@ class BaseSMSLoginHandler(ABC):
                 "disable_coop": True,
                 "i_know_what_im_doing": True,
             }
+            # Refs #963 doubao_homepage_content follow-up: pair Camoufox's
+            # JS-side geo / timezone with the qg.net Chinese exit IP so
+            # Doubao's risk control doesn't catch a "UTC offset on a
+            # Chinese IP" mismatch at registration time. Without this,
+            # auto_login's Firefox subprocess inherits the worker's
+            # container timezone (UTC) and every fresh number gets seeded
+            # with a bot-flagged risk profile. Dockerfile installs
+            # ``tzdata`` so the env TZ actually resolves; without it the
+            # override silently no-ops.
+            if self.platform == "doubao":
+                camoufox_kwargs["config"] = {
+                    "timezone": "Asia/Shanghai",
+                    "geolocation:longitude": 121.4737,
+                    "geolocation:latitude": 31.2304,
+                    "geolocation:accuracy": 100,
+                }
+                camoufox_kwargs["env"] = {**os.environ, "TZ": "Asia/Shanghai"}
             if self._launch_fingerprint is not None:
                 camoufox_kwargs["fingerprint"] = self._launch_fingerprint
             if qg_lease is not None:
