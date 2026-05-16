@@ -202,17 +202,21 @@ async def build_report(
         if cls is None:
             continue
         rendered = await cls().render(ctx, variant=variant)
-        # B2-4 (PRD §4.7.3): after each section render, run the narrator
-        # to produce an LLM-or-fallback prose paragraph distinct from
-        # the section's stat-heavy `summary`. Narrator is best-effort —
-        # failure leaves narrative=None, never raises.
-        rendered.narrative = await narrate(rendered, ctx)
         # B2-10 (PRD §4.7.2 — section variant must actually change output):
         # `simple` drops tables + charts so a "simple" exec_summary on
         # an on_demand report doesn't look identical to "full". `focus`
         # narrows tables to the primary-brand row only — used by
         # lead_diagnostic where the report is single-brand-centric.
+        # MUST run before narrate() so the generic-fallback narrative
+        # (which counts tables/charts) doesn't promise "see the N
+        # table(s) below" and then have variant strip those tables out
+        # (Codex review on #1083).
         _apply_variant(rendered, ctx.project.primary_brand_id)
+        # B2-4 (PRD §4.7.3): after each section render, run the narrator
+        # to produce an LLM-or-fallback prose paragraph distinct from
+        # the section's stat-heavy `summary`. Narrator is best-effort —
+        # failure leaves narrative=None, never raises.
+        rendered.narrative = await narrate(rendered, ctx)
         sections.append(rendered)
 
     return {

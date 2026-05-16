@@ -104,6 +104,62 @@ def test_b2_10_focus_drops_empty_tables_after_filter():
     assert sec.tables == []
 
 
+# ── B2-10 ordering contract: variant projection BEFORE narrator ─
+
+
+def test_b2_10_variant_runs_before_narrator_so_narrative_matches_payload():
+    """Codex review on #1083: the generic-fallback narrative counts
+    `len(section.tables)`. If narrator runs BEFORE variant projection,
+    a `simple` section ends up with narrative claiming "see the 1
+    table below" while variant then strips the table out — narrative
+    is now lying about the payload.
+
+    Verify the builder applies variant projection first, then narrate.
+    """
+    import asyncio
+    from datetime import date, timedelta
+    from unittest.mock import patch
+
+    from app.reports.builder import _apply_variant
+    from app.reports.narrator import narrate
+    from app.reports.sections.base import ReportContext, SectionData
+
+    sec = SectionData(
+        section_type="brand_performance",
+        title="Brand Perf",
+        summary="3 brand(s) measured.",
+        narrative=None,
+        metrics={},
+        tables=[{"name": "brand_performance", "rows": [{"brand_id": 1}]}],
+        chosen_variant="simple",
+    )
+
+    class _StubProject:
+        id = "p-1"
+
+    ctx = ReportContext(
+        session=None,  # narrator only reads section in fallback path
+        project=_StubProject(),
+        brand_ids=[1],
+        from_date=date.today() - timedelta(days=6),
+        to_date=date.today(),
+        locale="en-US",
+    )
+
+    # Simulate the builder's ordering: variant first, then narrate.
+    _apply_variant(sec, primary_brand_id=1)
+    assert sec.tables == []  # variant cleared tables
+
+    # Now narrate — generic fallback uses len(section.tables).
+    with patch.dict("os.environ", {}, clear=False):
+        sec.narrative = asyncio.get_event_loop().run_until_complete(narrate(sec, ctx))
+
+    # Narrative must NOT reference tables (since there are none post-variant).
+    assert sec.narrative is not None
+    assert "table(s) below" not in sec.narrative
+    assert "数据表" not in sec.narrative
+
+
 # ── B2-11 Markdown emits charts ─────────────────────────────────
 
 
