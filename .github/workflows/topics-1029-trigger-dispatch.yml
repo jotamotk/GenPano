@@ -20,6 +20,10 @@ name: Topics #1029 Trigger Dispatch
 # Dispatch IS NOT idempotent in the same way the schedule backfill was —
 # every successful trigger inserts queries up to schedule_limit. The
 # brand_id=24 filter constrains scope to BestCoffer; do NOT remove it.
+#
+# Second run header: the first auto-trigger ran before PR #1082 existed
+# and therefore skipped the comment step. This re-trigger gets the
+# dispatch result + verification numbers posted to PR #1082.
 
 on:
   workflow_dispatch:
