@@ -6289,6 +6289,58 @@ def test_luban_service_id_env_wired_into_provider_factory():
     assert 'factory_kwargs["service_id"]' in source
 
 
+# Refs #963 follow-up (2026-05-16): operator confirmed the LubanSMS
+# keyword API has recovered. Add a kill switch
+# ``LUBANSMS_<PLATFORM>_DISABLE_SERVICE_ID_FALLBACK`` so registrations
+# go through the keyword API exclusively when it's healthy, without
+# needing a code change or secret rotation. Default behaviour on
+# production is "disabled" (i.e. the fallback path is OFF until the
+# keyword API regresses again).
+def test_luban_service_id_fallback_has_kill_switch():
+    """Operators must be able to turn the service-id fallback off via env."""
+    from pathlib import Path
+
+    base_source = (
+        Path(__file__).resolve().parent.parent / "agent" / "sms_login" / "base.py"
+    ).read_text(encoding="utf-8")
+    assert "DISABLE_SERVICE_ID_FALLBACK" in base_source, (
+        "BaseSMSLoginHandler must check a per-platform "
+        "LUBANSMS_<PLATFORM>_DISABLE_SERVICE_ID_FALLBACK env var so the "
+        "service-id fallback can be turned off when the keyword API is "
+        "healthy, without rotating the SERVICE_ID secret or shipping "
+        "code."
+    )
+    # The flag must take precedence over the SERVICE_ID env var so an
+    # operator-set kill switch wins over a lingering 666056 secret.
+    disable_idx = base_source.index("DISABLE_SERVICE_ID_FALLBACK")
+    service_id_idx = base_source.find("_SERVICE_ID\"", disable_idx)
+    assert service_id_idx > disable_idx, (
+        "The kill-switch check must run BEFORE the service_id env read "
+        "so the disable flag short-circuits the service_id wiring."
+    )
+
+
+def test_luban_service_id_fallback_disabled_by_default_in_deploy():
+    """Deploy default should be "disabled" — keyword API only."""
+    from pathlib import Path
+
+    deploy = (
+        Path(__file__).resolve().parent.parent.parent
+        / ".github" / "workflows" / "deploy.yml"
+    ).read_text(encoding="utf-8")
+    assert "LUBANSMS_DOUBAO_DISABLE_SERVICE_ID_FALLBACK" in deploy, (
+        "deploy.yml must wire the kill switch through so the worker "
+        "container picks it up — otherwise the env stays unset on "
+        "production and the fallback keeps firing."
+    )
+    # The default value when no repo variable is set is "1" (disabled).
+    assert "DISABLE_SERVICE_ID_FALLBACK || '1'" in deploy, (
+        "deploy.yml default must be '1' (fallback disabled, keyword API "
+        "only) per operator instruction on 2026-05-16. Flipping the repo "
+        "variable to '0' re-enables the fallback cleanly."
+    )
+
+
 # Refs #963 production evidence (server-diagnostics run 25955749209 at
 # 2026-05-16 07:07:50 → 07:11:01): after all the fingerprint / routing /
 # persistence-gate fixes shipped, account 44 still failed with
