@@ -23,7 +23,7 @@ const STORAGE_KEY = 'genpano.locale';
 const LocaleContext = createContext({
   locale: DEFAULT_LOCALE,
   setLocale: () => {},
-  t: (key) => key,
+  t: (key, params) => key,
   formatDate: (d) => String(d),
   formatDateRange: () => '',
   formatNumber: (n) => String(n),

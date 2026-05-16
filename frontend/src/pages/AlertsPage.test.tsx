@@ -27,9 +27,23 @@ vi.mock('../components/ui', () => ({
   Card: ({ children }: { children: ReactNode }) => <div>{children}</div>,
 }))
 
-vi.mock('../contexts/LocaleContext', () => ({
-  useLocale: () => ({ t: (k: string) => k }),
-}))
+vi.mock('../contexts/LocaleContext', async () => {
+  // Use the real i18n dict so refactors that move literals into
+  // messages.js still produce the same rendered text (e.g. '稍后再处理').
+  const real = (await vi.importActual('../i18n/messages.js')) as {
+    MESSAGES: Record<string, unknown>
+    resolveKey: (obj: unknown, key: string) => unknown
+    formatMessage: (template: string, params?: Record<string, unknown>) => string
+  }
+  return {
+    useLocale: () => ({
+      t: (key: string, params?: Record<string, unknown>) => {
+        const v = real.resolveKey(real.MESSAGES['zh-CN'], key)
+        return typeof v === 'string' ? real.formatMessage(v, params) : key
+      },
+    }),
+  }
+})
 
 vi.mock('../hooks/useAlerts', () => ({
   useAlerts: alertsHooks.useAlerts,
@@ -126,5 +140,23 @@ describe('AlertsPage snooze UI (PRD §4.8.7 / audit #1044 B3-3)', () => {
     _setupHooks([_alert({ status: 'snoozed', snoozed_until: expiry })])
     await renderPage()
     expect(screen.getByText(/已暂缓/)).toBeInTheDocument()
+  })
+})
+
+describe('AlertsPage i18n (PR F frontend i18n cleanup)', () => {
+  it('renders page title + subtitle from i18n dict (zh-CN)', async () => {
+    _setupHooks([_alert()])
+    await renderPage()
+    expect(screen.getByText('提醒')).toBeInTheDocument()
+    expect(
+      screen.getByText(/P0 \/ P1 诊断 \+ 监测中断/),
+    ).toBeInTheDocument()
+  })
+
+  it('uses relative_time keys for "刚刚" / "分钟前"', async () => {
+    const just = new Date(Date.now() - 30_000).toISOString()
+    _setupHooks([_alert({ triggered_at: just })])
+    await renderPage()
+    expect(screen.getByText('刚刚')).toBeInTheDocument()
   })
 })
