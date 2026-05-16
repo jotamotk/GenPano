@@ -131,6 +131,10 @@ export const en: Translations = {
     copied: 'Copied',
     showMore: 'Show full details',
     requestId: 'Request ID',
+    retry: 'Retry',
+    retrying: 'Retrying...',
+    loading: 'Loading...',
+    failedToLoad: 'Failed to load',
     // Code → user-facing message. The code itself is always shown in the
     // panel header so support can search for it even when no translation
     // exists.
@@ -144,6 +148,8 @@ export const en: Translations = {
       rate_limit_exceeded: 'You are sending requests too quickly. Try again shortly.',
       internal_error: 'Server error. Please try again or contact support.',
       service_degraded: 'Service is currently degraded. Please try again later.',
+      bad_gateway: 'Upstream service is temporarily unavailable. Please retry.',
+      gateway_timeout: 'Upstream service timed out. Please retry.',
       network_error: 'Network error. Please check your connection.',
       invalid_credentials: 'Invalid email or password.',
       MCP_AUTH_REQUIRED: 'MCP API key required.',

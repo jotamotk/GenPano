@@ -116,6 +116,17 @@ interface RequestOptions extends RequestInit {
   token?: string | null
 }
 
+// Edge / gateway / upstream failures that bypass our RFC 7807 layer return
+// raw HTML or empty bodies. Map status to a stable `code` so the toast/inline
+// panel can localize and the retry layer can decide whether to retry.
+function codeFromStatus(status: number): string {
+  if (status === 502) return 'bad_gateway'
+  if (status === 503) return 'service_degraded'
+  if (status === 504) return 'gateway_timeout'
+  if (status >= 500) return 'internal_error'
+  return 'unknown_error'
+}
+
 async function parseProblem(res: Response): Promise<ProblemDetails> {
   try {
     const data = await res.json()
@@ -132,7 +143,7 @@ async function parseProblem(res: Response): Promise<ProblemDetails> {
           ? detail.title
           : (typeof detail.message === 'string' ? detail.message : res.statusText) || 'Error',
         status: typeof detail.status === 'number' ? detail.status : res.status,
-        code: typeof detail.code === 'string' ? detail.code : 'unknown_error',
+        code: typeof detail.code === 'string' ? detail.code : codeFromStatus(res.status),
         ...detail,
       }
     }
@@ -140,7 +151,7 @@ async function parseProblem(res: Response): Promise<ProblemDetails> {
       type: 'about:blank',
       title: res.statusText || 'Unknown error',
       status: res.status,
-      code: 'unknown_error',
+      code: codeFromStatus(res.status),
       detail: typeof data === 'string' ? data : JSON.stringify(data),
     }
   } catch {
@@ -148,7 +159,7 @@ async function parseProblem(res: Response): Promise<ProblemDetails> {
       type: 'about:blank',
       title: res.statusText || 'Unknown error',
       status: res.status,
-      code: 'unknown_error',
+      code: codeFromStatus(res.status),
     }
   }
 }
