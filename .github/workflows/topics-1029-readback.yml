@@ -7,10 +7,11 @@ name: Topics #1029 Readback
 #
 # This workflow only runs SELECTs inside a READ ONLY transaction. No writes.
 #
-# Poll iteration marker (forces fresh push): 2026-05-16T15:30:00Z iter=4
+# Poll iteration marker (forces fresh push): 2026-05-16T15:32:00Z iter=4b
 # Deep failure diagnostic for stuck topics 162..170: dump retry_reason,
 # sample failed query rows, system-wide 24h failure pattern, llm_accounts
-# state, llm_responses success rate.
+# state, llm_responses success rate. 4b: split into per-query psql calls
+# + drop pipefail so a single SQL/SIGPIPE error doesn't truncate output.
 
 on:
   workflow_dispatch:
@@ -70,24 +71,28 @@ jobs:
             -o StrictHostKeyChecking=accept-new \
             "${SERVER_USER}@${SERVER_HOST}" \
             "BRAND_ID='${BRAND_ID}' bash -s" <<'REMOTE' | tee /tmp/topics_1029_readback.txt
-          set -euo pipefail
+          # NOTE: deliberately not using 'set -euo pipefail' here — earlier iter4
+          # aborted at the first '| head -60' pipe (SIGPIPE -> pipefail kill).
+          # Each step uses '|| true' instead so a single failure doesn't truncate
+          # the diagnostic.
+          set +e
           cd /opt/genpano
 
           echo "=== Captured at ==="
           date -u +"%Y-%m-%dT%H:%M:%SZ"
 
           echo "=== Schema preflight: queries + llm_accounts column list ==="
-          docker compose exec -T postgres psql -U genpano -d genpano -X -c "\d queries" 2>&1 | head -60
+          docker compose exec -T postgres psql -U genpano -d genpano -X -c "\d queries" 2>&1 || true
           echo "---"
-          docker compose exec -T postgres psql -U genpano -d genpano -X -c "\d llm_accounts" 2>&1 | head -60
+          docker compose exec -T postgres psql -U genpano -d genpano -X -c "\d llm_accounts" 2>&1 || true
 
           echo
-          echo "=== Failure diagnostic (iter 4) for stuck topics 162..170 ==="
-          docker compose exec -T postgres psql -U genpano -d genpano -v ON_ERROR_STOP=1 -X <<SQL
-          \set ON_ERROR_STOP on
-          BEGIN TRANSACTION READ ONLY;
+          echo "=== Failure diagnostic (iter 4) — split into per-query psql calls so a single SQL error doesn't kill the diagnostic ==="
 
-          \echo '--- 1. retry_reason distribution (failed queries on stuck topics 162..170) ---'
+          echo
+          echo '--- 1. retry_reason distribution (failed queries on stuck topics 162..170) ---'
+          docker compose exec -T postgres psql -U genpano -d genpano -X 2>&1 <<'SQL1' || true
+          BEGIN TRANSACTION READ ONLY;
           SELECT q.target_llm, q.retry_reason, COUNT(*) AS n
           FROM queries q
           JOIN prompts p ON p.id = q.prompt_id
@@ -95,8 +100,13 @@ jobs:
             AND q.status = 'failed'
           GROUP BY q.target_llm, q.retry_reason
           ORDER BY n DESC;
+          ROLLBACK;
+          SQL1
 
-          \echo '--- 2. Sample failed queries (20 most recent on stuck topics) ---'
+          echo
+          echo '--- 2. Sample failed queries (20 most recent on stuck topics) ---'
+          docker compose exec -T postgres psql -U genpano -d genpano -X 2>&1 <<'SQL2' || true
+          BEGIN TRANSACTION READ ONLY;
           SELECT q.id, q.target_llm, q.status, q.retry_count, q.retry_reason,
                  q.scheduled_at, q.queued_at, q.started_at, q.finished_at,
                  q.account_id, q.profile_id, q.latency_ms
@@ -106,8 +116,13 @@ jobs:
             AND q.status = 'failed'
           ORDER BY q.finished_at DESC NULLS LAST
           LIMIT 20;
+          ROLLBACK;
+          SQL2
 
-          \echo '--- 3. System-wide 24h failure pattern (all brands, top 30) ---'
+          echo
+          echo '--- 3. System-wide 24h failure pattern (all brands, top 30) ---'
+          docker compose exec -T postgres psql -U genpano -d genpano -X 2>&1 <<'SQL3' || true
+          BEGIN TRANSACTION READ ONLY;
           SELECT target_llm, retry_reason, COUNT(*) AS n
           FROM queries
           WHERE status = 'failed'
@@ -115,16 +130,36 @@ jobs:
           GROUP BY target_llm, retry_reason
           ORDER BY n DESC
           LIMIT 30;
+          ROLLBACK;
+          SQL3
 
-          \echo '--- 4. llm_accounts state (try common column names; tolerate missing) ---'
-          SELECT id, target_llm, status,
-                 COALESCE(last_used_at::text, 'never') AS last_used,
-                 updated_at
+          echo
+          echo '--- 4. llm_accounts state (schema-tolerant, two attempts) ---'
+          docker compose exec -T postgres psql -U genpano -d genpano -X 2>&1 <<'SQL4A' || true
+          BEGIN TRANSACTION READ ONLY;
+          SELECT id, target_llm, status, last_used_at, updated_at
           FROM llm_accounts
           ORDER BY target_llm, id
-          LIMIT 40;
+          LIMIT 60;
+          ROLLBACK;
+          SQL4A
+          echo '--- 4b. llm_accounts fallback: SELECT * LIMIT 5 (if 4 errored) ---'
+          docker compose exec -T postgres psql -U genpano -d genpano -X 2>&1 <<'SQL4B' || true
+          BEGIN TRANSACTION READ ONLY;
+          SELECT * FROM llm_accounts LIMIT 5;
+          ROLLBACK;
+          SQL4B
+          echo '--- 4c. llm_accounts status+target_llm count ---'
+          docker compose exec -T postgres psql -U genpano -d genpano -X 2>&1 <<'SQL4C' || true
+          BEGIN TRANSACTION READ ONLY;
+          SELECT target_llm, status, COUNT(*) AS n FROM llm_accounts GROUP BY target_llm, status ORDER BY target_llm, status;
+          ROLLBACK;
+          SQL4C
 
-          \echo '--- 5. Recent llm_responses success rate per LLM (1h + 24h) ---'
+          echo
+          echo '--- 5. Recent llm_responses success rate per LLM (1h + 24h) ---'
+          docker compose exec -T postgres psql -U genpano -d genpano -X 2>&1 <<'SQL5' || true
+          BEGIN TRANSACTION READ ONLY;
           SELECT q.target_llm,
                  COUNT(*) FILTER (WHERE r.collected_at >= NOW() - INTERVAL '1 hour') AS responses_1h,
                  COUNT(*) FILTER (WHERE r.collected_at >= NOW() - INTERVAL '24 hours') AS responses_24h,
@@ -133,8 +168,13 @@ jobs:
           JOIN queries q ON r.query_id = q.id
           GROUP BY q.target_llm
           ORDER BY q.target_llm;
+          ROLLBACK;
+          SQL5
 
-          \echo '--- 6. Updated per-topic pipeline state (re-baseline after polling) ---'
+          echo
+          echo '--- 6. Updated per-topic pipeline state (re-baseline) ---'
+          docker compose exec -T postgres psql -U genpano -d genpano -X 2>&1 <<'SQL6' || true
+          BEGIN TRANSACTION READ ONLY;
           SELECT
             p.topic_id,
             COUNT(q.id) AS queries_total,
@@ -149,9 +189,8 @@ jobs:
           WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170)
           GROUP BY p.topic_id
           ORDER BY p.topic_id;
-
           ROLLBACK;
-          SQL
+          SQL6
 
           echo
           echo "=== Failed query IDs (3 representative samples for worker log grep) ==="
