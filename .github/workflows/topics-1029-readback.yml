@@ -71,133 +71,187 @@ jobs:
           echo "=== Captured at ==="
           date -u +"%Y-%m-%dT%H:%M:%SZ"
 
-          echo "=== Topics 1029 readback for brand_id=${BRAND_ID} ==="
+          echo "=== Step 2 readback: prompts/schedules/queries for 9 stuck topics vs 4 working topics ==="
           docker compose exec -T postgres psql -U genpano -d genpano -v ON_ERROR_STOP=1 -X <<SQL
           \set ON_ERROR_STOP on
           BEGIN TRANSACTION READ ONLY;
 
-          \echo '--- brand row ---'
-          SELECT id, name, name_zh, name_en
-          FROM brands
-          WHERE id = ${BRAND_ID};
+          \echo '--- S0a: prompts table schema (\\d prompts) ---'
+          \d prompts
 
-          \echo '--- per-topic readback (unfiltered: all topics with brand_id) ---'
-          WITH topic_prompts AS (
-            SELECT t.id AS topic_id, COUNT(p.id) AS prompt_count
-            FROM topics t
-            LEFT JOIN prompts p ON p.topic_id = t.id
-            WHERE t.brand_id = ${BRAND_ID}
-            GROUP BY t.id
-          ),
-          topic_queries AS (
-            SELECT t.id AS topic_id, COUNT(q.id) AS query_count
-            FROM topics t
-            LEFT JOIN prompts p ON p.topic_id = t.id
-            LEFT JOIN queries q ON q.prompt_id = p.id
-            WHERE t.brand_id = ${BRAND_ID}
-            GROUP BY t.id
-          ),
-          topic_responses AS (
-            SELECT t.id AS topic_id,
-                   COUNT(r.id) AS response_count,
-                   COUNT(r.id) FILTER (WHERE r.analysis_status = 'done') AS successful_response_count
-            FROM topics t
-            LEFT JOIN prompts p ON p.topic_id = t.id
-            LEFT JOIN queries q ON q.prompt_id = p.id
-            LEFT JOIN llm_responses r ON r.query_id = q.id
-            WHERE t.brand_id = ${BRAND_ID}
-            GROUP BY t.id
-          )
-          SELECT
-            t.id                       AS topic_id,
-            t.text                     AS topic_name,
-            t.status                   AS status,
-            t.category                 AS dimension,
-            t.generated_by             AS generated_by,
-            t.created_at               AS created_at,
-            COALESCE(tp.prompt_count, 0)                  AS prompt_count,
-            COALESCE(tq.query_count, 0)                   AS query_count,
-            COALESCE(tr.response_count, 0)                AS response_count,
-            COALESCE(tr.successful_response_count, 0)     AS successful_response_count
-          FROM topics t
-          LEFT JOIN topic_prompts   tp ON tp.topic_id = t.id
-          LEFT JOIN topic_queries   tq ON tq.topic_id = t.id
-          LEFT JOIN topic_responses tr ON tr.topic_id = t.id
-          WHERE t.brand_id = ${BRAND_ID}
-          ORDER BY successful_response_count DESC, prompt_count DESC, t.id;
+          \echo '--- S0b: query_schedules table schema (\\d query_schedules) ---'
+          \d query_schedules
 
-          \echo '--- summary cross-checks (unfiltered scope) ---'
-          WITH per_topic AS (
-            SELECT
-              t.id,
-              t.status,
-              COUNT(DISTINCT p.id) AS prompts,
-              COUNT(DISTINCT r.id) FILTER (WHERE r.analysis_status = 'done') AS done_responses,
-              COUNT(DISTINCT r.id) AS responses
-            FROM topics t
-            LEFT JOIN prompts       p ON p.topic_id  = t.id
-            LEFT JOIN queries       q ON q.prompt_id = p.id
-            LEFT JOIN llm_responses r ON r.query_id  = q.id
-            WHERE t.brand_id = ${BRAND_ID}
-            GROUP BY t.id, t.status
-          )
-          SELECT
-            COUNT(*)                                                   AS total_topics,
-            COUNT(*) FILTER (WHERE status = 'active')                  AS active_topics,
-            COUNT(*) FILTER (WHERE status = 'archived')                AS archived_topics,
-            COUNT(*) FILTER (WHERE status = 'draft')                   AS draft_topics,
-            COUNT(*) FILTER (WHERE status = 'pending')                 AS pending_topics,
-            COUNT(*) FILTER (WHERE status NOT IN ('active','archived','draft','pending') OR status IS NULL)
-                                                                      AS other_status_topics,
-            COUNT(*) FILTER (WHERE prompts >= 1 AND responses >= 1)    AS topics_with_any_response,
-            COUNT(*) FILTER (WHERE prompts >= 1 AND done_responses >= 1) AS topics_with_done_response,
-            COALESCE(SUM(done_responses), 0)::bigint                   AS sum_successful_responses
-          FROM per_topic;
+          \echo '--- S0c: queries table schema (\\d queries) ---'
+          \d queries
 
-          \echo '--- per-topic readback (status = active only, narrowed scope) ---'
-          WITH topic_prompts AS (
-            SELECT t.id AS topic_id, COUNT(p.id) AS prompt_count
-            FROM topics t
-            LEFT JOIN prompts p ON p.topic_id = t.id
-            WHERE t.brand_id = ${BRAND_ID} AND t.status = 'active'
-            GROUP BY t.id
-          ),
-          topic_queries AS (
-            SELECT t.id AS topic_id, COUNT(q.id) AS query_count
-            FROM topics t
-            LEFT JOIN prompts p ON p.topic_id = t.id
-            LEFT JOIN queries q ON q.prompt_id = p.id
-            WHERE t.brand_id = ${BRAND_ID} AND t.status = 'active'
-            GROUP BY t.id
-          ),
-          topic_responses AS (
-            SELECT t.id AS topic_id,
-                   COUNT(r.id) AS response_count,
-                   COUNT(r.id) FILTER (WHERE r.analysis_status = 'done') AS successful_response_count
-            FROM topics t
-            LEFT JOIN prompts p ON p.topic_id = t.id
-            LEFT JOIN queries q ON q.prompt_id = p.id
-            LEFT JOIN llm_responses r ON r.query_id = q.id
-            WHERE t.brand_id = ${BRAND_ID} AND t.status = 'active'
-            GROUP BY t.id
-          )
-          SELECT
-            t.id                       AS topic_id,
-            t.text                     AS topic_name,
-            t.status                   AS status,
-            t.category                 AS dimension,
-            t.generated_by             AS generated_by,
-            t.created_at               AS created_at,
-            COALESCE(tp.prompt_count, 0)              AS prompt_count,
-            COALESCE(tq.query_count, 0)               AS query_count,
-            COALESCE(tr.response_count, 0)            AS response_count,
-            COALESCE(tr.successful_response_count, 0) AS successful_response_count
-          FROM topics t
-          LEFT JOIN topic_prompts   tp ON tp.topic_id = t.id
-          LEFT JOIN topic_queries   tq ON tq.topic_id = t.id
-          LEFT JOIN topic_responses tr ON tr.topic_id = t.id
-          WHERE t.brand_id = ${BRAND_ID} AND t.status = 'active'
-          ORDER BY successful_response_count DESC, prompt_count DESC, t.id;
+          \echo '--- Q1: prompts for the 9 stuck topics (162..170) ---'
+          SELECT id AS prompt_id,
+                 topic_id,
+                 COALESCE(status, '-')        AS status,
+                 COALESCE(intent, '-')        AS intent,
+                 COALESCE(generated_by, '-')  AS generated_by,
+                 COALESCE(template_strategy, '-') AS template_strategy,
+                 created_at
+          FROM prompts
+          WHERE topic_id IN (162,163,164,165,166,167,168,169,170)
+          ORDER BY topic_id, id;
+
+          \echo '--- Q1b: prompts.status counts for 9 stuck topics ---'
+          SELECT topic_id,
+                 COUNT(*)                                                 AS prompts,
+                 COUNT(*) FILTER (WHERE status IS NULL)                   AS status_null,
+                 COUNT(*) FILTER (WHERE status = 'active')                AS status_active,
+                 COUNT(*) FILTER (WHERE status = 'approved')              AS status_approved,
+                 COUNT(*) FILTER (WHERE status = 'pending')               AS status_pending,
+                 COUNT(*) FILTER (WHERE status = 'rejected')              AS status_rejected,
+                 COUNT(*) FILTER (WHERE status NOT IN ('active','approved','pending','rejected')
+                                  AND status IS NOT NULL)                 AS status_other
+          FROM prompts
+          WHERE topic_id IN (162,163,164,165,166,167,168,169,170)
+          GROUP BY topic_id
+          ORDER BY topic_id;
+
+          \echo '--- Q2: prompts for the 4 working control topics (153,154,158,159) ---'
+          SELECT id AS prompt_id,
+                 topic_id,
+                 COALESCE(status, '-')        AS status,
+                 COALESCE(intent, '-')        AS intent,
+                 COALESCE(generated_by, '-')  AS generated_by,
+                 COALESCE(template_strategy, '-') AS template_strategy,
+                 created_at
+          FROM prompts
+          WHERE topic_id IN (153,154,158,159)
+          ORDER BY topic_id, id
+          LIMIT 60;
+
+          \echo '--- Q2b: prompts.status counts for 4 working topics ---'
+          SELECT topic_id,
+                 COUNT(*)                                                 AS prompts,
+                 COUNT(*) FILTER (WHERE status IS NULL)                   AS status_null,
+                 COUNT(*) FILTER (WHERE status = 'active')                AS status_active,
+                 COUNT(*) FILTER (WHERE status = 'approved')              AS status_approved,
+                 COUNT(*) FILTER (WHERE status = 'pending')               AS status_pending,
+                 COUNT(*) FILTER (WHERE status = 'rejected')              AS status_rejected
+          FROM prompts
+          WHERE topic_id IN (153,154,158,159)
+          GROUP BY topic_id
+          ORDER BY topic_id;
+
+          \echo '--- Q3: query_schedules for the 9 stuck topics prompts ---'
+          SELECT qs.id          AS schedule_id,
+                 qs.prompt_id,
+                 p.topic_id,
+                 qs.enabled,
+                 qs.target_llm,
+                 qs.cadence_days,
+                 qs.next_run_at,
+                 qs.last_run_at,
+                 qs.created_at,
+                 qs.updated_at
+          FROM query_schedules qs
+          JOIN prompts p ON p.id = qs.prompt_id
+          WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170)
+          ORDER BY p.topic_id, qs.prompt_id, qs.id;
+
+          \echo '--- Q3b: schedule count summary for 9 stuck topics (by topic) ---'
+          SELECT p.topic_id,
+                 COUNT(qs.id)                                AS schedules,
+                 COUNT(qs.id) FILTER (WHERE qs.enabled)      AS schedules_enabled,
+                 COUNT(qs.id) FILTER (WHERE NOT qs.enabled)  AS schedules_disabled,
+                 COUNT(qs.id) FILTER (WHERE qs.last_run_at IS NOT NULL) AS schedules_ever_run
+          FROM prompts p
+          LEFT JOIN query_schedules qs ON qs.prompt_id = p.id
+          WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170)
+          GROUP BY p.topic_id
+          ORDER BY p.topic_id;
+
+          \echo '--- Q4: query_schedules for the 4 working topics prompts (control) ---'
+          SELECT qs.id          AS schedule_id,
+                 qs.prompt_id,
+                 p.topic_id,
+                 qs.enabled,
+                 qs.target_llm,
+                 qs.cadence_days,
+                 qs.next_run_at,
+                 qs.last_run_at,
+                 qs.created_at,
+                 qs.updated_at
+          FROM query_schedules qs
+          JOIN prompts p ON p.id = qs.prompt_id
+          WHERE p.topic_id IN (153,154,158,159)
+          ORDER BY p.topic_id, qs.prompt_id, qs.id
+          LIMIT 60;
+
+          \echo '--- Q4b: schedule count summary for 4 working topics (by topic) ---'
+          SELECT p.topic_id,
+                 COUNT(qs.id)                                AS schedules,
+                 COUNT(qs.id) FILTER (WHERE qs.enabled)      AS schedules_enabled,
+                 COUNT(qs.id) FILTER (WHERE NOT qs.enabled)  AS schedules_disabled,
+                 COUNT(qs.id) FILTER (WHERE qs.last_run_at IS NOT NULL) AS schedules_ever_run
+          FROM prompts p
+          LEFT JOIN query_schedules qs ON qs.prompt_id = p.id
+          WHERE p.topic_id IN (153,154,158,159)
+          GROUP BY p.topic_id
+          ORDER BY p.topic_id;
+
+          \echo '--- Q5: any queries (even failed) for the 9 stuck topics prompts ---'
+          SELECT q.id                                AS query_id,
+                 q.prompt_id,
+                 p.topic_id,
+                 q.status,
+                 q.target_llm,
+                 q.retry_count,
+                 q.retry_reason,
+                 q.scheduled_at,
+                 q.created_at,
+                 q.started_at,
+                 q.finished_at
+          FROM queries q
+          JOIN prompts p ON p.id = q.prompt_id
+          WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170)
+          ORDER BY p.topic_id, q.prompt_id, q.id
+          LIMIT 100;
+
+          \echo '--- Q5b: queries count summary by status for 9 stuck topics ---'
+          SELECT q.status, COUNT(*) AS n
+          FROM queries q
+          JOIN prompts p ON p.id = q.prompt_id
+          WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170)
+          GROUP BY q.status
+          ORDER BY n DESC;
+
+          \echo '--- Q6: prompt_candidates for 9 stuck topics (if table exists) ---'
+          SELECT id, topic_id, status, COALESCE(approved_prompt_id::text, '-') AS approved_prompt_id,
+                 COALESCE(reviewed_by, '-') AS reviewed_by, reviewed_at, created_at
+          FROM prompt_candidates
+          WHERE topic_id IN (162,163,164,165,166,167,168,169,170)
+          ORDER BY topic_id, id
+          LIMIT 60;
+
+          \echo '--- Q6b: prompt_candidates status counts for 9 stuck topics ---'
+          SELECT topic_id,
+                 COUNT(*)                                              AS candidates,
+                 COUNT(*) FILTER (WHERE status = 'pending')            AS pending,
+                 COUNT(*) FILTER (WHERE status = 'approved')           AS approved,
+                 COUNT(*) FILTER (WHERE status = 'rejected')           AS rejected,
+                 COUNT(*) FILTER (WHERE approved_prompt_id IS NOT NULL) AS linked_to_prompt
+          FROM prompt_candidates
+          WHERE topic_id IN (162,163,164,165,166,167,168,169,170)
+          GROUP BY topic_id
+          ORDER BY topic_id;
+
+          \echo '--- Q6c: prompt_candidates status counts for 4 working topics ---'
+          SELECT topic_id,
+                 COUNT(*)                                              AS candidates,
+                 COUNT(*) FILTER (WHERE status = 'pending')            AS pending,
+                 COUNT(*) FILTER (WHERE status = 'approved')           AS approved,
+                 COUNT(*) FILTER (WHERE status = 'rejected')           AS rejected,
+                 COUNT(*) FILTER (WHERE approved_prompt_id IS NOT NULL) AS linked_to_prompt
+          FROM prompt_candidates
+          WHERE topic_id IN (153,154,158,159)
+          GROUP BY topic_id
+          ORDER BY topic_id;
 
           ROLLBACK;
           SQL
