@@ -6,6 +6,11 @@ name: Topics #1029 Readback
 # of code-inference hypotheses (see reverts in #1065).
 #
 # This workflow only runs SELECTs inside a READ ONLY transaction. No writes.
+#
+# Re-trigger: PR #1080 backfilled 108 query_schedules rows for the 9 stuck
+# topics. This re-run confirms Q3/Q3b now shows schedules > 0 per topic
+# and surfaces any queries (Q5/Q5b) the scheduler has begun dispatching
+# since the backfill landed.
 
 on:
   workflow_dispatch:
