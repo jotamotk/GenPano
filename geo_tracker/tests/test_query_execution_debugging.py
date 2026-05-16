@@ -6259,3 +6259,33 @@ def test_doubao_homepage_content_marked_as_expired_reason():
         "self-healing chain (auto_login → service_id fallback → fresh "
         "fingerprint+cookies) can replace cookies that Doubao shadow-bans."
     )
+
+
+# Refs #963 / Codex P1 review on PR #1037: adding a reason to
+# EXPIRED_ACCOUNT_REASONS without also adding it to
+# DOUBAO_REAUTH_FAILURE_REASONS removes the account from rotation but
+# never queues auto_login → the self-healing chain stalls and the
+# pool can drain to zero active. Pin that both sets agree on
+# doubao_homepage_content so a future refactor of one set without the
+# other regresses to that silent stall.
+def test_doubao_homepage_content_triggers_reauth_handoff():
+    """``DOUBAO_REAUTH_FAILURE_REASONS`` must include doubao_homepage_content."""
+    from pathlib import Path
+
+    source_path = (
+        Path(__file__).resolve().parent.parent / "tasks" / "celery_tasks.py"
+    )
+    source = source_path.read_text(encoding="utf-8")
+    # Extract the DOUBAO_REAUTH_FAILURE_REASONS frozenset literal and
+    # assert membership. We pin by source-string match so the test runs
+    # without importing celery_tasks (which pulls in Celery + Redis).
+    sig_idx = source.index("DOUBAO_REAUTH_FAILURE_REASONS = frozenset(")
+    body = source[sig_idx : source.index("\n)", sig_idx)]
+    assert '"doubao_homepage_content"' in body, (
+        "DOUBAO_REAUTH_FAILURE_REASONS must include doubao_homepage_content "
+        "so the reauth handoff queues auto_login when the account is "
+        "shadow-banned and EXPIRED_ACCOUNT_REASONS expires it. Without "
+        "this entry the self-healing chain (auto_login → service_id "
+        "fallback → fresh fingerprint+cookies) never fires for that "
+        "failure mode."
+    )

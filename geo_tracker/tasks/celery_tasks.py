@@ -272,6 +272,18 @@ DOUBAO_REAUTH_FAILURE_REASONS = frozenset(
         "cookies_expired",
         "doubao_not_logged_in",
         "doubao_auth_state_missing",
+        # Refs #963 / Codex P1 on PR #1037: ``doubao_homepage_content`` is
+        # now in EXPIRED_ACCOUNT_REASONS, so a shadow-banned account is
+        # removed from rotation. But the reauth handoff at
+        # ``_handle_doubao_account_failure_handoff`` (and the cookie
+        # keep-alive relogin gate) only queues ``auto_login.apply_async``
+        # when the reason is in THIS set. Without adding the reason here,
+        # the account is expired silently and no auto_login fires — the
+        # self-healing chain never starts and the pool can drain to zero
+        # active accounts with no recovery. Keep both sets in sync so
+        # the expired marking and the reauth queue are wired through the
+        # same failure modes.
+        "doubao_homepage_content",
     }
 )
 DOUBAO_REAUTH_RETRY_REASON_PREFIX = "doubao_reauth_retry:"
