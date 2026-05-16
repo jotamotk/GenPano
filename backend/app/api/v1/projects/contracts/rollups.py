@@ -299,6 +299,82 @@ def _rollup_pano_geo(packages: list[dict[str, Any]]) -> dict[str, Any]:
     return evidence
 
 
+def _rollup_trend_30d(packages: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Aggregate per-response `trend_30d` packages into a page-level rollup.
+
+    Issue #1031: `/api/v1/projects/<id>/products` must surface a
+    `metric_formula_evidence.trend_30d` record so the frontend
+    `canUseMetricEvidence(data, 'trend_30d')` gate
+    (BrandProductsPage.tsx:99) returns true. Without this, every
+    `p.trend = null`, the BCG matrix filter
+    (`x != null && y != null && z != null` at BrandProductsPage.tsx:134)
+    drops every row, and the page renders "暂无产品数据".
+
+    Design note: the analyzer does NOT produce a per-response
+    `trend_30d` package directly — `trend_30d` is derived at the page
+    level in `_brand_service.py:597-604` from a per-product
+    `ProductScoreDaily` sparkline (requires >= 14 daily samples per
+    product). So this rollup sources the `trend_30d` signal from a
+    per-package sub-block that `_as_v3_package` derives from the v3
+    package's existing `coverage.collected_at` + `products[]` array
+    (see `package.py` derivation, mirroring PR #1050's `topic_product`
+    pattern). Each in-scope v3 package contributes one "data point".
+
+    Returns `None` when no in-scope package carried a `trend_30d`
+    sub-block (e.g. legacy `issue_602_v1` fixtures without the key)
+    so the caller can omit the entry from `metric_formula_evidence`
+    and preserve backwards compatibility for callers that have never
+    surfaced trend evidence. This is the same omit-when-None semantics
+    `_rollup_topic_product` relies on (issue #687 regression caught by
+    `test_issue_687_bestcoffer_app_api_contract`).
+    """
+    evidence = _metric_evidence_template("trend_30d", FORMULA_NO_EVIDENCE_STATUS)
+    data_point_count = 0
+    product_data_point_count = 0
+    contributing_response_ids: list[int] = []
+    saw_trend_30d = False
+    for package in packages:
+        trend = package.get("trend_30d")
+        if not isinstance(trend, dict):
+            continue
+        saw_trend_30d = True
+        data_point_count += int(trend.get("data_point_count") or 0)
+        product_data_point_count += int(trend.get("product_data_point_count") or 0)
+        evidence["reason_codes"].extend(_package_reason_codes(package, "trend_30d"))
+        for rid in _package_response_ids(package):
+            contributing_response_ids.append(int(rid))
+
+    if not saw_trend_30d:
+        return None
+    if data_point_count == 0:
+        # Packages carried the key but no contributing data points —
+        # treat as genuinely empty (not blocked), mirroring
+        # `_rollup_topic_product`'s empty handling.
+        evidence["formula_status"] = "empty"
+        status = "empty"
+    else:
+        # Any data point is enough at the rollup layer; the page-level
+        # `>= 14 day` check still decides per-product render-ability.
+        # `ok` here means "trend evidence exists and the frontend gate
+        # should pass"; per-product nulls can still appear when a given
+        # product lacks enough sparkline samples.
+        evidence["formula_status"] = FORMULA_OK_STATUS
+        status = FORMULA_OK_STATUS
+
+    evidence.update(
+        {
+            "status": status,
+            "data_point_count": data_point_count,
+            "product_data_point_count": product_data_point_count,
+            "source_tables": _package_source_tables(packages),
+            "fact_classes": ["trend_30d"],
+        }
+    )
+    evidence["reason_codes"] = _unique_str(evidence["reason_codes"])
+    evidence["sample_response_ids"] = sorted(set(contributing_response_ids))[:5]
+    return evidence
+
+
 def _rollup_topic_product(packages: list[dict[str, Any]]) -> dict[str, Any] | None:
     """Aggregate per-response `topic_product` packages into a page-level rollup.
 

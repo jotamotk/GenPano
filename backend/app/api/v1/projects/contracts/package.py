@@ -208,6 +208,46 @@ def _as_v3_package(payload: dict[str, Any]) -> dict[str, Any] | None:
             "reason_codes": [],
         }
 
+    # Issue #1031: v3 packages never carried a per-response `trend_30d`
+    # sub-block — `trend_30d` is a page-level signal derived from
+    # `ProductScoreDaily` sparkline samples (see
+    # `_brand_service.py:597-604`). The `_rollup_trend_30d` aggregator
+    # (rollups.py) skips packages without that key, so without this
+    # derivation the products page's `canUseMetricEvidence(data,
+    # 'trend_30d')` gate (BrandProductsPage.tsx:99) always returns
+    # false, every `p.trend = null`, and the BCG matrix drops every
+    # row ("暂无产品数据"). Mirror the `topic_product` pattern above:
+    # derive a `trend_30d` sub-block whenever the v3 package carries a
+    # `collected_at` timestamp (i.e. is part of a multi-day data series)
+    # and a non-empty `products[]` array — each such package contributes
+    # one data point that the rollup aggregates page-side.
+    #
+    # IMPORTANT: only emit the sub-block when there is actual upstream
+    # trend signal (`products[]` non-empty AND `collected_at` present).
+    # Packages without trend signal must NOT receive the key so
+    # `_rollup_trend_30d` returns `None` and the contract builder omits
+    # the entry from `metric_formula_evidence`. Without this gate, a v3
+    # package with `products=[]` (e.g. a sentiment-only endpoint scope)
+    # would emit `trend_30d.formula_status="empty"` and cascade into the
+    # global `formula_status="partial"` — exactly the regression
+    # `test_issue_687_bestcoffer_app_api_contract` guards against
+    # (originally caught by PR #1043 for `topic_product`).
+    if "trend_30d" not in normalized:
+        products = normalized.get("products")
+        product_data_point_count = (
+            sum(1 for entry in products if isinstance(entry, dict) and entry.get("product_name"))
+            if isinstance(products, list)
+            else 0
+        )
+        has_collected_at = bool(normalized.get("collected_at"))
+        if has_collected_at and product_data_point_count > 0:
+            normalized["trend_30d"] = {
+                "status": FORMULA_OK_STATUS,
+                "data_point_count": 1,
+                "product_data_point_count": product_data_point_count,
+                "reason_codes": [],
+            }
+
     return normalized
 
 
