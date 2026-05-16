@@ -7,8 +7,14 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-AlertStatus = Literal["unread", "read", "ignored", "resolved"]
+AlertStatus = Literal["unread", "read", "ignored", "resolved", "snoozed"]
 AlertSeverity = Literal["P0", "P1", "P2", "P3"]
+
+# PRD §4.8.7 — explicit snooze presets. Frontend should offer these as
+# quick options; clients may pass any positive integer hours but the
+# spec-locked presets are listed for documentation + tests.
+SNOOZE_PRESET_HOURS: tuple[int, ...] = (1, 4, 24, 24 * 7)
+DEFAULT_SNOOZE_HOURS = 24
 
 
 class AlertOut(BaseModel):
@@ -27,6 +33,7 @@ class AlertOut(BaseModel):
     triggered_at: datetime
     read_at: datetime | None
     resolved_at: datetime | None
+    snoozed_until: datetime | None = None
 
 
 class AlertListOut(BaseModel):
@@ -37,6 +44,16 @@ class AlertListOut(BaseModel):
 
 class AlertPatchIn(BaseModel):
     status: AlertStatus
+
+
+class AlertSnoozeIn(BaseModel):
+    """Body for POST /v1/alerts/:id/snooze.
+
+    `hours` is clamped to [1, 24*30] server-side; default = 24h per
+    PRD §4.8.7.
+    """
+
+    hours: int = Field(default=DEFAULT_SNOOZE_HOURS, ge=1, le=24 * 30)
 
 
 class UnreadCountOut(BaseModel):
