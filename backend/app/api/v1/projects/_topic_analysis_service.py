@@ -569,7 +569,16 @@ async def get_topic_monitoring(
     # Merge in brand topics without evidence so the list matches admin's count
     # (#1029). Summary.topic_count stays as the with-evidence count; the list
     # itself shows every topic so operators can spot coverage gaps.
-    if not filters.explicit:
+    # Only skip the merge for filters that narrow the *topic set* itself
+    # (dimensions/intents/prompt_scope map to topic attributes). Response/query
+    # scope filters (date range, engines, segment, profile) still let
+    # evidence-less topics surface — follow-up to #1034 where the broader
+    # `filters.explicit` gate suppressed the merge on the default page load
+    # (90-day range + all engines preselected).
+    filters_narrow_topic_set = (
+        bool(filters.dimensions) or bool(filters.intents) or bool(filters.prompt_scope)
+    )
+    if not filters_narrow_topic_set:
         topics = _merge_missing_brand_topics(
             topics,
             await _fetch_brand_topics_listing(session, brand_id),
