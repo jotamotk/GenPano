@@ -28,6 +28,7 @@ from geo_tracker.agent.browser_fingerprint import (
     attach_fingerprint_to_login_result,
     generate_doubao_fingerprint,
 )
+from geo_tracker.agent.qg_proxy import QGProxyClient
 from geo_tracker.agent.sms_login.providers import (
     LubanSMSProvider,
     SMSNumberLease,
@@ -319,8 +320,13 @@ class BaseSMSLoginHandler(ABC):
                 phone = current_lease.phone
                 logger.info(f"[{self.platform}] 获取手机号: {mask_phone(phone)}")
 
-            # 启动浏览器
-            browser, _camoufox_ctx, _playwright, context = await self._launch_browser()
+            # 启动浏览器. qg lease is reserved BEFORE the launch so the
+            # device_env_error retry path can swap to a fresh lease without
+            # rebuilding the qg client object (Codex P2 on PR #1042).
+            qg_client, qg_lease = await self._reserve_qg_lease()
+            browser, _camoufox_ctx, _playwright, context = await self._launch_browser(
+                qg_lease=qg_lease
+            )
             # Keep CAPTCHA images available for SMS login, but drop heavier assets.
             await install_resource_blocker(context, block_images=False)
 
@@ -559,6 +565,28 @@ class BaseSMSLoginHandler(ABC):
                     )
                     await add_to_blacklist(self.platform, phone, reason="device_env_error", permanent=True)
                     last_fail_reason = f"手机号 {mask_phone(phone)} 设备环境错误"
+                    # Codex P2 on PR #1042: device_env_error means Doubao
+                    # rejected the registration from this source IP.
+                    # Reusing the same qg lease for the next phone retry
+                    # burns every fresh SMS number on the same bad IP.
+                    # Rotate the qg lease + relaunch the browser so the
+                    # next attempt uses a different residential IP.
+                    (
+                        browser,
+                        _camoufox_ctx,
+                        _playwright,
+                        context,
+                        qg_client,
+                        qg_lease,
+                    ) = await self._recycle_browser_with_fresh_qg_lease(
+                        browser=browser,
+                        camoufox_ctx=_camoufox_ctx,
+                        playwright=_playwright,
+                        context=context,
+                        qg_client=qg_client,
+                        qg_lease=qg_lease,
+                    )
+                    page = await context.new_page()
                     continue
 
                 # 可能有登录后的 CAPTCHA
@@ -574,6 +602,25 @@ class BaseSMSLoginHandler(ABC):
                     )
                     await add_to_blacklist(self.platform, phone, reason="device_env_error", permanent=True)
                     last_fail_reason = f"手机号 {mask_phone(phone)} 设备环境错误"
+                    # Same rationale as the pre-verify device_env_error
+                    # path above: rotate the qg lease + relaunch the
+                    # browser so the next attempt uses a different IP.
+                    (
+                        browser,
+                        _camoufox_ctx,
+                        _playwright,
+                        context,
+                        qg_client,
+                        qg_lease,
+                    ) = await self._recycle_browser_with_fresh_qg_lease(
+                        browser=browser,
+                        camoufox_ctx=_camoufox_ctx,
+                        playwright=_playwright,
+                        context=context,
+                        qg_client=qg_client,
+                        qg_lease=qg_lease,
+                    )
+                    page = await context.new_page()
                     continue
                 if isinstance(verify_result, str):
                     return _fail(verify_result)
@@ -788,10 +835,108 @@ class BaseSMSLoginHandler(ABC):
         except Exception:
             return False
 
-    async def _launch_browser(self) -> tuple:
+    async def _recycle_browser_with_fresh_qg_lease(
+        self,
+        *,
+        browser,
+        camoufox_ctx,
+        playwright,
+        context,
+        qg_client,
+        qg_lease,
+    ):
+        """Drop the rejected qg lease, close the browser, relaunch with a new IP.
+
+        Refs #963 follow-up to PR #1042 Codex P2 review: when a Doubao
+        registration hits ``device_env_error``, the source IP is the
+        thing Doubao rejected — retrying the next SMS number on the
+        SAME already-launched browser keeps every retry attached to the
+        same bad IP. This helper reports the failed lease back to the
+        qg pool, tears down the current browser, reserves a fresh lease,
+        and relaunches so the next iteration runs on a different
+        residential IP. Falls back gracefully when qg is not configured
+        (just keeps the existing browser as-is).
+        """
+        # No qg lease in play → nothing to rotate, keep the existing
+        # browser. (Happens when QG_PROXY_* env vars are unset.)
+        if qg_client is None or qg_lease is None:
+            return browser, camoufox_ctx, playwright, context, qg_client, qg_lease
+
+        # 1. Tell qg the IP was rejected so it's dropped from the local
+        #    pool and the next reserve() pulls a different one.
+        try:
+            await qg_client.report_failure(qg_lease.ip_port)
+        except Exception:
+            pass
+
+        # 2. Close the current browser stack. Wrapped in best-effort
+        #    cleanup so a hung close doesn't block the retry.
+        try:
+            await cleanup_browser_resources(
+                page=None,
+                context=context,
+                browser=browser,
+                camoufox_ctx=camoufox_ctx,
+                playwright=playwright,
+            )
+        except Exception as cleanup_exc:
+            logger.warning(
+                "[%s] qg-recycle cleanup raised: %s",
+                self.platform,
+                redact_sensitive_text(str(cleanup_exc))[:200],
+            )
+
+        # 3. Reserve a fresh lease and relaunch with it.
+        new_client, new_lease = await self._reserve_qg_lease()
+        new_browser, new_camoufox_ctx, new_playwright, new_context = (
+            await self._launch_browser(qg_lease=new_lease)
+        )
+        await install_resource_blocker(new_context, block_images=False)
+        return (
+            new_browser,
+            new_camoufox_ctx,
+            new_playwright,
+            new_context,
+            new_client,
+            new_lease,
+        )
+
+    async def _reserve_qg_lease(self):
+        """Reserve a qg.net rotating IP lease for Doubao, or None.
+
+        Refs #963 follow-up to PR #1042 Codex P2 review: the lease has to
+        be reservable from outside ``_launch_browser`` so the
+        device_env_error retry path can rotate to a fresh IP before
+        relaunching. Returns ``(qg_client, qg_lease)`` so the caller can
+        report the lease back as failed when Doubao rejects it.
+        """
+        if self.platform != "doubao":
+            return None, None
+        qg_client = QGProxyClient.from_env()
+        if qg_client is None:
+            return None, None
+        try:
+            qg_lease = await qg_client.reserve()
+        except Exception as exc:
+            logger.warning(
+                "[%s] auto_login qg proxy reserve failed (%s); "
+                "falling back to default proxy path",
+                self.platform,
+                redact_sensitive_text(str(exc))[:200],
+            )
+            return qg_client, None
+        return qg_client, qg_lease
+
+    async def _launch_browser(self, qg_lease=None) -> tuple:
         """
         启动浏览器，返回 (browser, camoufox_ctx, playwright, context)。
         优先用 Camoufox 反指纹，降级到 Playwright Chromium。
+
+        Refs #963 follow-up to PR #1042 Codex P2 review: ``qg_lease`` is
+        injected by the caller (was: reserved internally). This lets the
+        device_env_error retry path drop the rejected IP, reserve a
+        fresh one via ``_reserve_qg_lease``, and relaunch with the new
+        IP — instead of burning every retry on the same rejected IP.
         """
         is_domestic = self.platform in DOMESTIC_LLMS
         proxy_url = _sms_login_proxy_url()
@@ -823,7 +968,18 @@ class BaseSMSLoginHandler(ABC):
             }
             if self._launch_fingerprint is not None:
                 camoufox_kwargs["fingerprint"] = self._launch_fingerprint
-            if use_proxy:
+            if qg_lease is not None:
+                camoufox_kwargs["proxy"] = {
+                    "server": qg_lease.server_url,
+                    "username": qg_lease.auth_key,
+                    "password": qg_lease.auth_password,
+                }
+                logger.info(
+                    "[%s] auto_login using qg.net rotating proxy IP %s",
+                    self.platform,
+                    qg_lease.ip_port.split(":")[0] + ":[port-redacted]",
+                )
+            elif use_proxy:
                 camoufox_kwargs["proxy"] = {"server": proxy_url}
             ctx = AsyncCamoufox(**camoufox_kwargs)
             browser = await ctx.__aenter__()
@@ -843,7 +999,16 @@ class BaseSMSLoginHandler(ABC):
                     "--window-size=1920,1080",
                 ],
             }
-            if use_proxy:
+            if qg_lease is not None:
+                # Same qg-first ordering as the Camoufox path: prefer the
+                # rotating residential IP when available so the Playwright
+                # fallback doesn't silently leak the worker's native IP.
+                launch_kwargs["proxy"] = {
+                    "server": qg_lease.server_url,
+                    "username": qg_lease.auth_key,
+                    "password": qg_lease.auth_password,
+                }
+            elif use_proxy:
                 launch_kwargs["proxy"] = {"server": proxy_url}
             pw = await async_playwright().start()
             browser = await pw.chromium.launch(**launch_kwargs)
