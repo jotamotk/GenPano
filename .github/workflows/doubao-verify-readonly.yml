@@ -38,6 +38,12 @@ on:
 permissions:
   contents: read
   pull-requests: write
+  # Refs #963 follow-up: ``issues: write`` is needed so the fallback
+  # comment path (when no PR is associated with the trigger commit)
+  # can post the dump back to issue #963 — the GitHub Actions API
+  # rejects ``createComment`` on an issue otherwise even though both
+  # PRs and issues share the same comment endpoint.
+  issues: write
 
 jobs:
   verify:
