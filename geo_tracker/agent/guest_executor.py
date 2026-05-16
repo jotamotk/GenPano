@@ -31,6 +31,7 @@ from geo_tracker.agent.browser_fingerprint import (
     extract_fingerprint_from_account_cookies,
 )
 from geo_tracker.agent.browser_lifecycle import cleanup_browser_resources
+from geo_tracker.agent.qg_proxy import QGProxyClient
 from geo_tracker.agent.captcha import CaptchaSolver, detect_and_solve, CAPSOLVER_API_KEY
 from geo_tracker.agent.clash_api import (
     ensure_global_proxy_route,
@@ -574,6 +575,14 @@ class GuestQueryExecutor:
         # actually stuck. Latch the real stage at cancellation / exception
         # time so callers can read past the finally-block overwrite.
         self.stage_at_failure: str | None = None
+        # Refs #963: per-query rotating qg.net proxy IP for Doubao. Built
+        # from env at executor construction; None when qg credentials are
+        # not configured. The Camoufox launch path picks a fresh IP from
+        # this client's pool before each Doubao query, and report_failure
+        # is called on the lease whenever Doubao serves an IP-level block
+        # so the bad IP is dropped from the pool.
+        self.qg_proxy_client = QGProxyClient.from_env()
+        self._active_qg_lease = None
 
     def _set_execution_stage(self, stage: str) -> None:
         self.execution_stage = stage
@@ -725,7 +734,21 @@ class GuestQueryExecutor:
         try:
             # Camoufox 反指纹浏览器：海外 LLM 绕 Cloudflare，国内需登录的 LLM 绕反爬
             needs_stealth = config.get("requires_login") or bool(self.account_cookies)
-            use_camoufox = HAS_CAMOUFOX and (use_proxy or needs_stealth)
+            # Refs #963 / Codex P2 on PR #1038: when ``DOUBAO_COOKIES_JSON``
+            # is set as an env cookie (requires_login=False) and no
+            # account-pool cookie is assigned, neither use_proxy nor
+            # needs_stealth fires and the worker falls through to the
+            # plain Playwright launch path that the qg block does NOT
+            # cover. That leaves env-cookie Doubao deployments on the
+            # same by-IP 5202 path qg is meant to bypass. When the qg
+            # client is configured AND this is a Doubao query, force the
+            # Camoufox path so the qg reservation block runs unconditionally.
+            qg_active_for_doubao = (
+                llm == "doubao" and self.qg_proxy_client is not None
+            )
+            use_camoufox = HAS_CAMOUFOX and (
+                use_proxy or needs_stealth or qg_active_for_doubao
+            )
 
             if use_camoufox:
                 logger.info(f"[{llm}] 启动 Camoufox 浏览器...")
@@ -737,7 +760,39 @@ class GuestQueryExecutor:
                     "os": "windows",
                     "locale": "zh-CN" if is_domestic else "en-US",
                 }
-                if use_proxy:
+                # Refs #963: when the qg.net rotating-IP proxy is configured
+                # and the LLM is Doubao, swap out the static worker IP for
+                # a fresh residential / mobile IP per query. The worker's
+                # native egress IP has been fingerprinted by Doubao and
+                # serves 5202 captcha-denial regardless of cookies /
+                # fingerprint / SMS path — rotating the IP per query is
+                # the only path that bypasses by-IP risk-control memory.
+                # For non-Doubao LLMs or when qg is not configured, fall
+                # back to the existing proxy logic.
+                qg_lease = None
+                if llm == "doubao" and self.qg_proxy_client is not None:
+                    try:
+                        qg_lease = await self.qg_proxy_client.reserve()
+                    except Exception as exc:
+                        logger.warning(
+                            "[%s] qg proxy reserve failed (%s); "
+                            "falling back to default proxy path",
+                            llm,
+                            _redact_sensitive_text(str(exc))[:200],
+                        )
+                if qg_lease is not None:
+                    self._active_qg_lease = qg_lease
+                    camoufox_kwargs["proxy"] = {
+                        "server": qg_lease.server_url,
+                        "username": qg_lease.auth_key,
+                        "password": qg_lease.auth_password,
+                    }
+                    logger.info(
+                        "[%s] using qg.net rotating proxy IP %s",
+                        llm,
+                        qg_lease.ip_port.split(":")[0] + ":[port-redacted]",
+                    )
+                elif use_proxy:
                     camoufox_kwargs["proxy"] = {"server": self.proxy_url}
                 # Refs #963: reuse the Camoufox fingerprint that auto_login
                 # captured for this account so the query opens with the exact
@@ -1567,6 +1622,32 @@ class GuestQueryExecutor:
                 playwright=_playwright,
             )
             self.current_page = None
+            # Refs #963: drop the qg.net IP from the pool whenever the
+            # failure mode is IP-level (Doubao shadow-banned the IP, served
+            # captcha-denial, or refused to respond). On clean success the
+            # IP is left in the pool to be reused for the worker's next
+            # query (qg short-term IPs expire on their own). The trigger
+            # set is intentionally narrow so transient app errors
+            # (no_input, prompt_fill timeouts) don't churn through fresh
+            # IPs unnecessarily.
+            if self._active_qg_lease is not None and self.qg_proxy_client is not None:
+                ip_block_reasons = {
+                    "doubao_homepage_content",
+                    "doubao_visual_challenge",
+                    "doubao_image_challenge_load_failed",
+                    "doubao_page_unavailable",
+                    "doubao_not_logged_in",
+                    "doubao_auth_state_missing",
+                }
+                base_reason = (self.last_error_reason or "").split(":", 1)[0]
+                if base_reason in ip_block_reasons:
+                    try:
+                        await self.qg_proxy_client.report_failure(
+                            self._active_qg_lease.ip_port
+                        )
+                    except Exception:
+                        pass
+            self._active_qg_lease = None
 
     async def _preserve_active_page_evidence(
         self,
