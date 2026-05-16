@@ -17,17 +17,11 @@ name: Topics #1029 Enqueue Stranded Queries
 # `celery inspect active = {"celery@...": [], "celery@...": []}` for
 # both workers.
 #
-# This workflow SSHes to the live test env and invokes
-# `dispatch_many(...)` inside the backend container against the
-# specific (still-stranded) query_id + target_llm pairs for topics
-# 162..170. `LEFT JOIN llm_responses` excludes any query that's
-# already been processed, so re-runs are no-ops on already-enqueued
-# queries (double-safety against duplicate Celery tasks).
-#
-# Constraints (from the orchestrator task):
-# - NO product code changes. Pure ops fix.
-# - DO NOT trigger `run_manual_dispatch` again (would create dup queries).
-# - brand_id=24 (BestCoffer) only — topic filter is the explicit guard.
+# v2 fix: previous version's nested heredocs terminated the SSH
+# session prematurely after the pre-enqueue LLEN snapshot. This
+# revision writes the Python script to a local temp file on the
+# GitHub-hosted runner, scp's it to the live env, then runs flat
+# SSH commands (no nested heredocs).
 
 on:
   workflow_dispatch:
@@ -55,8 +49,6 @@ jobs:
       pull-requests: write
 
     env:
-      # push trigger has no inputs object; default to APPLY so the
-      # auto-trigger does the real enqueue. workflow_dispatch overrides.
       CONFIRM: ${{ github.event.inputs.confirm || 'APPLY' }}
       SERVER_HOST: ${{ secrets.SERVER_HOST }}
       SERVER_USER: ${{ secrets.SERVER_USER }}
@@ -83,67 +75,12 @@ jobs:
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H "${SERVER_HOST}" >> ~/.ssh/known_hosts 2>/dev/null
 
-      - name: Enqueue stranded queries via dispatch_many
+      - name: Write Python payload locally
         shell: bash
         run: |
           set -euo pipefail
-          ssh \
-            -i ~/.ssh/id_rsa \
-            -o StrictHostKeyChecking=accept-new \
-            "${SERVER_USER}@${SERVER_HOST}" \
-            "CONFIRM='${CONFIRM}' bash -s" <<'REMOTE' | tee /tmp/topics_1029_enqueue.txt
-          set +e
-          cd /opt/genpano
-
-          echo "=== Captured at ==="
-          date -u +"%Y-%m-%dT%H:%M:%SZ"
-          echo "=== Enqueue mode: ${CONFIRM} ==="
-
-          echo ""
-          echo "=== Docker compose status (sanity) ==="
-          docker compose ps
-
-          echo ""
-          echo "=== Pre-enqueue: still-stranded query count + status breakdown (topics 162..170) ==="
-          docker compose exec -T postgres psql -U genpano -d genpano -v ON_ERROR_STOP=1 -X <<'SQL'
-          \set ON_ERROR_STOP on
-          BEGIN TRANSACTION READ ONLY;
-
-          \echo '--- pre-enqueue: pending+stranded queries (no llm_response yet) ---'
-          SELECT COUNT(*) AS pre_stranded
-          FROM queries q
-          LEFT JOIN llm_responses r ON r.query_id = q.id
-          JOIN prompts p ON p.id = q.prompt_id
-          WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170)
-            AND q.status = 'pending'
-            AND r.id IS NULL;
-
-          \echo '--- pre-enqueue: status breakdown for the 9 stuck topics ---'
-          SELECT q.status, q.target_llm, COUNT(*) AS n
-          FROM queries q
-          JOIN prompts p ON p.id = q.prompt_id
-          WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170)
-          GROUP BY q.status, q.target_llm
-          ORDER BY q.status, q.target_llm;
-
-          ROLLBACK;
-          SQL
-
-          echo ""
-          echo "=== Pre-enqueue: Redis LLEN snapshot ==="
-          for q in llm_doubao llm_chatgpt llm_deepseek celery; do
-            depth=$(docker compose exec -T redis redis-cli LLEN "$q" 2>&1)
-            echo "PRE LLEN $q = $depth"
-          done
-
-          if [ "${CONFIRM}" = "APPLY" ]; then
-            echo ""
-            echo "=== APPLY: invoking dispatch_many on still-stranded queries ==="
-            # dispatch_many is SYNC (see backend/app/admin/queries/celery_dispatch.py:76-96)
-            # and returns a (dispatched, failed) tuple. It does NOT update
-            # queries.status — Celery is the source of truth for queue
-            # presence; verify with Redis LLEN below.
-            cat > /tmp/enqueue_stranded.py <<'PYTHON'
+          mkdir -p /tmp/payload
+          cat > /tmp/payload/enqueue_stranded.py <<'PYEOF'
           import asyncio
           import json
 
@@ -177,101 +114,98 @@ jobs:
 
           async def _main() -> None:
               dispatch_items = await _collect_stranded()
-              print(f"=== stranded query count: {len(dispatch_items)} ===")
-              # Show a small sample to confirm scope.
+              print(f"=== stranded query count: {len(dispatch_items)} ===", flush=True)
               sample = dispatch_items[:6]
-              print(f"sample: {json.dumps(sample, default=str)}")
-              # Status-by-target_llm for visibility.
+              print(f"sample: {json.dumps(sample, default=str)}", flush=True)
               by_target: dict[str, int] = {}
               for item in dispatch_items:
                   key = str(item.get("target_llm") or "<null>")
                   by_target[key] = by_target.get(key, 0) + 1
-              print(f"by target_llm: {json.dumps(by_target)}")
+              print(f"by target_llm: {json.dumps(by_target)}", flush=True)
               if not dispatch_items:
-                  print("=== nothing to enqueue (no still-stranded queries) ===")
+                  print("=== nothing to enqueue (no still-stranded queries) ===", flush=True)
                   return
               # dispatch_many is sync; do not await.
               dispatched, failed = dispatch_many(dispatch_items)
-              print(f"=== dispatch_many result: dispatched={dispatched} failed={failed} ===")
+              print(f"=== dispatch_many result: dispatched={dispatched} failed={failed} ===", flush=True)
 
 
           asyncio.run(_main())
-          PYTHON
+          PYEOF
+          wc -l /tmp/payload/enqueue_stranded.py
 
-            backend_cid="$(docker compose ps -q backend | head -n 1 || true)"
-            if [ -n "$backend_cid" ] && [ "$(docker inspect -f '{{.State.Running}}' "$backend_cid" 2>/dev/null || echo false)" = "true" ]; then
-              echo "[i] backend service is running; using docker compose exec"
-              docker compose exec -T backend python < /tmp/enqueue_stranded.py
-            else
-              echo "[i] backend service is NOT running; falling back to docker compose run --rm -T"
-              docker compose cp /tmp/enqueue_stranded.py backend:/tmp/enqueue_stranded.py 2>/dev/null \
-                || { echo "[!] docker compose cp failed; trying tar pipe"; tar -cC /tmp enqueue_stranded.py | docker compose run --rm -T --entrypoint sh backend -c 'mkdir -p /tmp && tar -xC /tmp && python /tmp/enqueue_stranded.py'; }
-              if [ -n "$backend_cid" ]; then
-                docker compose run --rm -T backend python /tmp/enqueue_stranded.py
-              else
-                docker compose run --rm -T --entrypoint python backend /tmp/enqueue_stranded.py
-              fi
-            fi
+      - name: scp Python payload to live env
+        shell: bash
+        run: |
+          set -euo pipefail
+          scp -i ~/.ssh/id_rsa \
+              -o StrictHostKeyChecking=accept-new \
+              /tmp/payload/enqueue_stranded.py \
+              "${SERVER_USER}@${SERVER_HOST}":/tmp/enqueue_stranded.py
+          echo "scp complete"
+
+      - name: Run enqueue script over SSH and capture output
+        id: run_enqueue
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Single SSH session; remote script is plain bash (no nested heredocs).
+          # Stdout is tee'd to a local log file we will upload as artifact.
+          ssh -i ~/.ssh/id_rsa \
+              -o StrictHostKeyChecking=accept-new \
+              -o ServerAliveInterval=15 \
+              -o ServerAliveCountMax=4 \
+              "${SERVER_USER}@${SERVER_HOST}" \
+              "CONFIRM='${CONFIRM}' bash -se" 2>&1 \
+              <<'REMOTE' | tee /tmp/topics_1029_enqueue.txt
+          set +e
+          cd /opt/genpano
+
+          echo "MARKER 0: entering remote script. mode=${CONFIRM}"
+          echo "=== Captured at ==="
+          date -u +"%Y-%m-%dT%H:%M:%SZ"
+
+          echo "MARKER 1: docker compose ps"
+          docker compose ps
+
+          echo "MARKER 2: pre-enqueue SQL"
+          docker compose exec -T postgres psql -U genpano -d genpano -X -c "SELECT COUNT(*) AS pre_stranded FROM queries q LEFT JOIN llm_responses r ON r.query_id = q.id JOIN prompts p ON p.id = q.prompt_id WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170) AND q.status = 'pending' AND r.id IS NULL; SELECT q.status, q.target_llm, COUNT(*) AS n FROM queries q JOIN prompts p ON p.id = q.prompt_id WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170) GROUP BY q.status, q.target_llm ORDER BY q.status, q.target_llm;"
+
+          echo "MARKER 3: pre-enqueue Redis LLEN"
+          for q in llm_doubao llm_chatgpt llm_deepseek celery; do
+            depth=$(docker compose exec -T redis redis-cli LLEN "$q" 2>&1)
+            echo "PRE LLEN $q = $depth"
+          done
+
+          echo "MARKER 4: CONFIRM='${CONFIRM}'; check payload file"
+          ls -la /tmp/enqueue_stranded.py
+
+          if [ "${CONFIRM}" = "APPLY" ]; then
+            echo "MARKER 5: APPLY branch entered; copying payload into backend container and exec'ing"
+            docker compose cp /tmp/enqueue_stranded.py backend:/tmp/enqueue_stranded.py
+            echo "MARKER 6: docker cp returned $?"
+            docker compose exec -T backend python /tmp/enqueue_stranded.py
+            rc=$?
+            echo "MARKER 7: python exec returned code=${rc}"
           else
-            echo ""
-            echo "=== DRYRUN: would have called dispatch_many on the pending+stranded rows ==="
-            echo "Skipped Python call. Verifying current state below instead."
+            echo "MARKER 5-DRYRUN: would have called dispatch_many; skipped."
           fi
 
-          echo ""
-          echo "=== Post-enqueue: Redis LLEN snapshot ==="
+          echo "MARKER 8: post-enqueue Redis LLEN"
           for q in llm_doubao llm_chatgpt llm_deepseek celery; do
             depth=$(docker compose exec -T redis redis-cli LLEN "$q" 2>&1)
             echo "POST LLEN $q = $depth"
           done
 
-          echo ""
-          echo "=== Post-enqueue: celery inspect reserved+active (worker pickup check) ==="
-          # dispatch_many doesn't update queries.status — the DB still
-          # shows status='pending'. The Celery side is the proof.
-          docker compose exec -T worker celery -A geo_tracker.tasks.celery_tasks inspect reserved --timeout=10 --json 2>&1 || true
+          echo "MARKER 9: post-enqueue celery inspect reserved+active"
+          docker compose exec -T worker celery -A geo_tracker.tasks.celery_tasks inspect reserved --timeout=10 --json 2>&1
           echo "---"
-          docker compose exec -T worker celery -A geo_tracker.tasks.celery_tasks inspect active --timeout=10 --json 2>&1 || true
+          docker compose exec -T worker celery -A geo_tracker.tasks.celery_tasks inspect active --timeout=10 --json 2>&1
 
-          echo ""
-          echo "=== Post-enqueue: SQL verification ==="
-          docker compose exec -T postgres psql -U genpano -d genpano -v ON_ERROR_STOP=1 -X <<'SQL'
-          \set ON_ERROR_STOP on
-          BEGIN TRANSACTION READ ONLY;
+          echo "MARKER 10: post-enqueue SQL verification"
+          docker compose exec -T postgres psql -U genpano -d genpano -X -c "SELECT (SELECT COUNT(*) FROM queries q JOIN prompts p ON p.id = q.prompt_id WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170) AND q.status = 'pending') AS still_pending, (SELECT COUNT(*) FROM queries q JOIN prompts p ON p.id = q.prompt_id WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170) AND q.status IN ('queued', 'running', 'done')) AS now_in_flight_or_done, (SELECT COUNT(*) FROM queries q JOIN prompts p ON p.id = q.prompt_id WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170) AND q.status = 'failed') AS failed; SELECT COUNT(*) AS responses_landed FROM llm_responses r JOIN queries q ON q.id = r.query_id JOIN prompts p ON p.id = q.prompt_id WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170);"
 
-          \echo '--- post-enqueue: still-pending+stranded count (should remain ~72 because dispatch_many does not update queries.status; pending here means "DB row exists, not yet picked up by worker") ---'
-          SELECT COUNT(*) AS post_stranded
-          FROM queries q
-          LEFT JOIN llm_responses r ON r.query_id = q.id
-          JOIN prompts p ON p.id = q.prompt_id
-          WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170)
-            AND q.status = 'pending'
-            AND r.id IS NULL;
-
-          \echo '--- post-enqueue: aggregated status counts (any transition implies a worker has picked up) ---'
-          SELECT
-            (SELECT COUNT(*) FROM queries q JOIN prompts p ON p.id = q.prompt_id
-             WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170)
-               AND q.status = 'pending') AS still_pending,
-            (SELECT COUNT(*) FROM queries q JOIN prompts p ON p.id = q.prompt_id
-             WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170)
-               AND q.status IN ('queued', 'running', 'done')) AS now_in_flight_or_done,
-            (SELECT COUNT(*) FROM queries q JOIN prompts p ON p.id = q.prompt_id
-             WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170)
-               AND q.status = 'failed') AS failed;
-
-          \echo '--- post-enqueue: any llm_responses already landing for these queries? ---'
-          SELECT COUNT(*) AS responses_landed
-          FROM llm_responses r
-          JOIN queries q ON q.id = r.query_id
-          JOIN prompts p ON p.id = q.prompt_id
-          WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170);
-
-          ROLLBACK;
-          SQL
-
-          echo ""
-          echo "=== Enqueue complete (mode=${CONFIRM}) ==="
+          echo "MARKER 11: enqueue complete, mode=${CONFIRM}"
           REMOTE
 
       - name: Upload enqueue log as artifact
@@ -283,7 +217,7 @@ jobs:
           if-no-files-found: warn
 
       - name: Post enqueue result to PR as comment
-        if: success()
+        if: always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
@@ -307,7 +241,6 @@ jobs:
             echo "**Mode**: ${CONFIRM}"
             echo ""
             echo '```'
-            # Strip ANSI and trim to keep comment under GitHub's 64KB limit.
             sed 's/\x1b\[[0-9;]*m//g' /tmp/topics_1029_enqueue.txt | head -c 55000
             echo ''
             echo '```'
