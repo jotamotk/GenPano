@@ -7,10 +7,8 @@ name: Topics #1029 Readback
 #
 # This workflow only runs SELECTs inside a READ ONLY transaction. No writes.
 #
-# Re-trigger (post manual dispatch): scheduler_runs 21+22 created 72 pending
-# queries across the 9 stuck topics (162-170). This iteration verifies the
-# worker pipeline progress: query.status -> llm_responses -> analysis_status
-# -> user-visible successful_response_count > 0.
+# Poll iteration marker (forces fresh push): 2026-05-16T14:55:49Z iter=1
+# Polling pipeline progress for stuck topics 162..170 at 3-minute intervals.
 
 on:
   workflow_dispatch:
@@ -76,42 +74,52 @@ jobs:
           echo "=== Captured at ==="
           date -u +"%Y-%m-%dT%H:%M:%SZ"
 
-          echo "=== Step 1 (worker-stall): tightened pending/done totals + earliest pending + scheduler_config ==="
+          echo "=== Pipeline progress poll (iteration 1) for stuck topics 162..170 ==="
           docker compose exec -T postgres psql -U genpano -d genpano -v ON_ERROR_STOP=1 -X <<SQL
           \set ON_ERROR_STOP on
           BEGIN TRANSACTION READ ONLY;
 
-          \echo '--- T1: aggregate totals across the 9 stuck topics (162..170) ---'
-          SELECT COUNT(*)                                              AS queries_total,
-                 COUNT(*) FILTER (WHERE q.status='pending')            AS queries_pending,
-                 COUNT(*) FILTER (WHERE q.status='running')            AS queries_running,
-                 COUNT(*) FILTER (WHERE q.status='done')               AS queries_done,
-                 COUNT(*) FILTER (WHERE q.status='failed')             AS queries_failed,
-                 MIN(q.queued_at)   FILTER (WHERE q.status='pending')  AS earliest_pending_queued_at,
-                 MAX(q.queued_at)   FILTER (WHERE q.status='pending')  AS latest_pending_queued_at,
-                 MIN(q.started_at)                                     AS earliest_started_at,
-                 MAX(q.finished_at)                                    AS latest_finished_at,
-                 NOW()                                                 AS now_utc
-          FROM queries q
-          JOIN prompts p ON p.id = q.prompt_id
-          WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170);
+          \echo '--- Per-topic metrics ---'
+          WITH topic_metrics AS (
+            SELECT
+              p.topic_id,
+              COUNT(q.id) AS queries_total,
+              COUNT(q.id) FILTER (WHERE q.status = 'pending') AS queries_pending,
+              COUNT(q.id) FILTER (WHERE q.status = 'done') AS queries_done,
+              COUNT(q.id) FILTER (WHERE q.status = 'failed') AS queries_failed,
+              COUNT(r.id) AS llm_responses,
+              COUNT(r.id) FILTER (WHERE r.analysis_status = 'done') AS successful_response_count
+            FROM prompts p
+            JOIN queries q ON q.prompt_id = p.id
+            LEFT JOIN llm_responses r ON r.query_id = q.id
+            WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170)
+            GROUP BY p.topic_id
+          )
+          SELECT * FROM topic_metrics ORDER BY topic_id;
 
-          \echo '--- T2: scheduler_config (mode/paused_engines/temp_global_cap/engine_caps) ---'
-          SELECT id, mode, daily_time, timezone, temp_global_cap, engine_caps,
-                 retry_max, paused_engines, updated_at
-          FROM scheduler_config
-          ORDER BY id
-          LIMIT 5;
-
-          \echo '--- T3: pending queries breakdown by target_llm across all topics (not just 162..170) ---'
-          SELECT q.target_llm,
-                 COUNT(*) FILTER (WHERE q.status='pending')   AS pending,
-                 COUNT(*) FILTER (WHERE q.status='running')   AS running,
-                 COUNT(*) FILTER (WHERE q.status='done' AND q.finished_at > NOW() - INTERVAL '24 hours') AS done_24h,
-                 COUNT(*) FILTER (WHERE q.status='failed' AND q.finished_at > NOW() - INTERVAL '24 hours') AS failed_24h
-          FROM queries q
-          GROUP BY q.target_llm
-          ORDER BY q.target_llm;
+          \echo '--- Aggregate totals ---'
+          WITH topic_metrics AS (
+            SELECT
+              p.topic_id,
+              COUNT(q.id) AS queries_total,
+              COUNT(q.id) FILTER (WHERE q.status = 'pending') AS queries_pending,
+              COUNT(q.id) FILTER (WHERE q.status = 'done') AS queries_done,
+              COUNT(q.id) FILTER (WHERE q.status = 'failed') AS queries_failed,
+              COUNT(r.id) AS llm_responses,
+              COUNT(r.id) FILTER (WHERE r.analysis_status = 'done') AS successful_response_count
+            FROM prompts p
+            JOIN queries q ON q.prompt_id = p.id
+            LEFT JOIN llm_responses r ON r.query_id = q.id
+            WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170)
+            GROUP BY p.topic_id
+          )
+          SELECT
+            SUM(queries_pending) AS total_pending,
+            SUM(queries_done) AS total_done,
+            SUM(queries_failed) AS total_failed,
+            SUM(llm_responses) AS total_llm_responses,
+            SUM(successful_response_count) AS total_successful
+          FROM topic_metrics;
 
           ROLLBACK;
           SQL
