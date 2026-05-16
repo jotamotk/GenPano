@@ -15,10 +15,17 @@ export function LeadDiagnosticView({
   t: TFn;
   onContactConsultant?: () => void;
 }) {
-  // 取该品牌相关诊断 (mock: 按 brandId 匹配 + industry 类全收)
+  // 该品牌相关诊断: industry 类全收 + 按品牌 ID 匹配.
+  // Mock REPORTS.brand.id 形如 'brand-estee-lauder', DIAGNOSTICS[].brandId
+  // 形如 'estee-lauder' — 比较前去掉 'brand-' 前缀做规范化.
+  // 真实 lead_diagnostic payload 应通过 backend 返回 linked_diagnostic_ids
+  // (PRD §4.7.4a, audit #1044 F4-4) — 这里先以 brand 维度做收敛, F4-3 详情
+  // 适配器落地时改为消费 payload 自带的 linked diagnostics.
   const relevantDiags = useMemo(() => {
-    return DIAGNOSTICS.filter((d) => d.type === 'industry' || d.brandId === report.brand.id || true);
-    // 当前 mock 数据全是雅诗兰黛, 简化为全选
+    const key = report.brand.id.replace(/^brand-/, '');
+    return DIAGNOSTICS.filter(
+      (d) => d.type === 'industry' || d.brandId === key,
+    );
   }, [report.brand.id]);
 
   const layers = useMemo(() => classifyDiagnosticsForLead(relevantDiags), [relevantDiags]);
