@@ -70,6 +70,16 @@ from app.api.v1.projects._topic_analysis_service import (
 
 DEFAULT_WINDOW_DAYS = 30
 
+# Issue #1031 (post-scenario-g): minimum sparkline length required to compute
+# a per-product `trend_30d` for the BCG matrix. Lowered from the legacy
+# implicit 14 (first-7 vs last-7) so early-stage brands like BestCoffer, with
+# only a few days of `product_score_daily` history, still get a trend value
+# and render in the BCG matrix. The compute path adapts the window to half
+# the sparkline length (capped at 7) so the first/last slices never overlap.
+# Below this floor, trend_30d stays None (single-day series are pure noise).
+MIN_SPARKLINE_DAYS = 3
+MAX_SPARKLINE_WINDOW = 7
+
 
 def _resolve_window(from_date: date | None, to_date: date | None) -> tuple[date, date]:
     today = date.today()
@@ -94,6 +104,31 @@ def _fact_geo_score(value: object) -> float | None:
     if score is None:
         return None
     return round(score * 100, 2) if 0 <= score <= 1 else round(score, 2)
+
+
+def _compute_trend_30d(sparkline: list[float]) -> float | None:
+    """Per-product 30-day trend as a signed decimal (e.g. +0.05 = +5%).
+
+    Uses an adaptive window so early-stage brands (few days of
+    `product_score_daily` history) still get a value. The window is
+    `min(MAX_SPARKLINE_WINDOW, len(sparkline) // 2)`, so the first and
+    last slices never overlap. For 14+ day series this preserves the
+    legacy "first week vs last week" comparison; shorter series fall back
+    to half-and-half (e.g. sparkline=6 → window=3, sparkline=3 →
+    window=1). Sparklines shorter than `MIN_SPARKLINE_DAYS` return None
+    because single-point and two-point comparisons are pure noise.
+
+    See Issue #1031: BCG matrix used to be blank for early-stage brands
+    like BestCoffer because every per-product `trend_30d` was None.
+    """
+    if len(sparkline) < MIN_SPARKLINE_DAYS:
+        return None
+    window = max(1, min(MAX_SPARKLINE_WINDOW, len(sparkline) // 2))
+    first = sum(sparkline[:window]) / window
+    last = sum(sparkline[-window:]) / window
+    if first <= 0:
+        return None
+    return round((last - first) / first, 4)
 
 
 def _normalize_competitor_row(row: CompetitorBrandRow | None) -> CompetitorBrandRow | None:
@@ -597,11 +632,7 @@ async def get_products(
 
         spark_points = sparkline_by_product.get(product_name, [])
         sparkline = [round(float(v or 0), 4) for _, v in spark_points]
-        trend_30d: float | None = None
-        if len(sparkline) >= 14:
-            first = sum(sparkline[:7]) / 7
-            last = sum(sparkline[-7:]) / 7
-            trend_30d = round((last - first) / first, 4) if first > 0 else None
+        trend_30d = _compute_trend_30d(sparkline)
 
         features = [
             ProductFeatureRow(

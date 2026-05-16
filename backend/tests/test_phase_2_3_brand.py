@@ -728,3 +728,135 @@ async def test_phase_2_3_cross_tenant_returns_404(client, db_session, project_wi
         )
         assert resp.status_code == 404, f"path {path}"
         assert resp.json()["detail"]["code"] == "not_found"
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Issue #1031 (post-scenario-g): per-product `trend_30d` adaptive window.
+#
+# `_compute_trend_30d` used to require sparkline >= 14 days (first-7 vs
+# last-7) which left early-stage brands (BestCoffer, < 14 days of
+# `product_score_daily` history) with `trend_30d=None` on every product, so
+# the BCG matrix dropped every row and showed "暂无产品数据". The window
+# now adapts to `min(7, len(sparkline) // 2)`, with a floor of
+# MIN_SPARKLINE_DAYS=3 below which the trend is too noisy to surface.
+#
+# Naive lowering to `>= 7` (without an adaptive window) would break the
+# math: first[:7] and last[-7:] would be the SAME slice when len==7,
+# producing trend == 0 every time. The half-and-half window prevents
+# overlap at every length, so movement in the underlying series always
+# resolves to a non-zero trend.
+# ────────────────────────────────────────────────────────────────────────────
+
+
+def test_compute_trend_30d_length_14_preserves_legacy_first7_last7() -> None:
+    """Regression guard: at the legacy boundary, the adaptive window picks
+    7 (= min(7, 14 // 2)) so first/last slices and the resulting trend
+    match the pre-#1031 implementation byte-for-byte.
+    """
+    from app.api.v1.projects._brand_service import _compute_trend_30d
+
+    # First 7 avg = 0.10, last 7 avg = 0.20 → +1.0 (+100%)
+    sparkline = [0.10] * 7 + [0.20] * 7
+    assert _compute_trend_30d(sparkline) == pytest.approx(1.0)
+
+
+def test_compute_trend_30d_length_7_uses_half_window_no_overlap() -> None:
+    """sparkline=7 → window = min(7, 7 // 2) = 3. first[:3] and last[-3:]
+    do NOT overlap (only the middle index 3 is excluded), so a series with
+    different first/last halves resolves to a non-zero trend (not 0 like
+    a naive `len >= 7` lowering would produce).
+    """
+    from app.api.v1.projects._brand_service import _compute_trend_30d
+
+    sparkline = [0.10, 0.10, 0.10, 0.15, 0.20, 0.20, 0.20]
+    # first 3 avg = 0.10, last 3 avg = 0.20 → +1.0
+    assert _compute_trend_30d(sparkline) == pytest.approx(1.0)
+
+
+def test_compute_trend_30d_length_6_uses_window_3() -> None:
+    """sparkline=6 → window = min(7, 6 // 2) = 3. first[:3] vs last[-3:]
+    cleanly partition the series with no overlap.
+    """
+    from app.api.v1.projects._brand_service import _compute_trend_30d
+
+    sparkline = [0.10, 0.10, 0.10, 0.20, 0.20, 0.20]
+    assert _compute_trend_30d(sparkline) == pytest.approx(1.0)
+
+
+def test_compute_trend_30d_length_4_uses_window_2() -> None:
+    """sparkline=4 → window = min(7, 4 // 2) = 2. first[:2] = [.1, .1],
+    last[-2:] = [.2, .2] → +1.0.
+    """
+    from app.api.v1.projects._brand_service import _compute_trend_30d
+
+    sparkline = [0.10, 0.10, 0.20, 0.20]
+    assert _compute_trend_30d(sparkline) == pytest.approx(1.0)
+
+
+def test_compute_trend_30d_length_3_uses_single_day_comparison() -> None:
+    """sparkline=3 → window = max(1, min(7, 3 // 2)) = 1. first=[.1],
+    last=[.2] → +1.0. This is intentionally noisy (single-day samples
+    on each end) but unblocks BCG rendering for brands at exactly the
+    MIN_SPARKLINE_DAYS floor.
+    """
+    from app.api.v1.projects._brand_service import _compute_trend_30d
+
+    sparkline = [0.10, 0.15, 0.20]
+    assert _compute_trend_30d(sparkline) == pytest.approx(1.0)
+
+
+def test_compute_trend_30d_length_2_returns_none() -> None:
+    """Below MIN_SPARKLINE_DAYS=3 → None. Two data points can't
+    distinguish trend from noise."""
+    from app.api.v1.projects._brand_service import _compute_trend_30d
+
+    assert _compute_trend_30d([0.10, 0.20]) is None
+
+
+def test_compute_trend_30d_length_1_returns_none() -> None:
+    from app.api.v1.projects._brand_service import _compute_trend_30d
+
+    assert _compute_trend_30d([0.10]) is None
+
+
+def test_compute_trend_30d_length_0_returns_none() -> None:
+    from app.api.v1.projects._brand_service import _compute_trend_30d
+
+    assert _compute_trend_30d([]) is None
+
+
+def test_compute_trend_30d_first_window_zero_returns_none() -> None:
+    """Zero-division guard: if the first window averages to 0 (or
+    negative — a sentinel value the upstream aggregator can in theory
+    emit), the trend is undefined → None, not inf or a misleading
+    huge percentage.
+    """
+    from app.api.v1.projects._brand_service import _compute_trend_30d
+
+    # length=6, window=3, first 3 = 0 → division would be by zero
+    assert _compute_trend_30d([0.0, 0.0, 0.0, 0.20, 0.20, 0.20]) is None
+
+
+def test_compute_trend_30d_negative_movement_resolves_to_negative_trend() -> None:
+    """Smoke test that the sign of the trend tracks the direction of
+    movement in the series.
+    """
+    from app.api.v1.projects._brand_service import _compute_trend_30d
+
+    sparkline = [0.40, 0.40, 0.40, 0.20, 0.20, 0.20]
+    # first 3 avg = 0.40, last 3 avg = 0.20 → -0.5
+    assert _compute_trend_30d(sparkline) == pytest.approx(-0.5)
+
+
+def test_compute_trend_30d_constants_exposed_for_callers() -> None:
+    """Pin the constants so a future refactor that changes the
+    threshold goes through the test suite (and shows up in PR review)
+    rather than silently shipping a stricter / looser gate.
+    """
+    from app.api.v1.projects._brand_service import (
+        MAX_SPARKLINE_WINDOW,
+        MIN_SPARKLINE_DAYS,
+    )
+
+    assert MIN_SPARKLINE_DAYS == 3
+    assert MAX_SPARKLINE_WINDOW == 7

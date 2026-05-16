@@ -44,6 +44,27 @@ Scenarios:
       populated. Without trend_30d evidence, the frontend
       `canUseMetricEvidence(data, 'trend_30d')` gate returns false and
       EVERY row in the BCG matrix is dropped → "暂无产品数据".
+  (g) Issue #1031 BCG row-filter repro: same v3 setup as (f), PLUS seed
+      20 days of `ProductScoreDaily` rows per product (mention_rate > 0)
+      so the per-product sparkline crosses the 14-day threshold in
+      `_brand_service.py:601` and per-product `trend_30d` is computed
+      (non-null). This is the FULL happy path:
+      - `metric_formula_evidence.trend_30d.formula_status == "ok"` (gate)
+      - per-item `trend_30d`, `mention_rate`, `mention_count` are all
+        non-null so the BCG filter (`x,y,z != null`) passes for ≥1 row
+      If (f) passes but (g) drops rows: confirms the page-level gate is
+      correct AND the per-product compute path works when given enough
+      ProductScoreDaily history — so production "暂无产品数据" means
+      BestCoffer has < 14 days of `product_score_daily` rows per product.
+  (h) Issue #1031 EARLY-STAGE BRAND repro: v3 packages PLUS only 5 days of
+      `ProductScoreDaily` per product (between the new
+      `MIN_SPARKLINE_DAYS=3` floor and the old `>= 14` threshold). After
+      lowering the threshold + switching to an adaptive half-and-half
+      window, the per-product `trend_30d` MUST still compute (non-null)
+      and the BCG filter MUST pass for ≥1 row. Pre-fix this scenario
+      would produce `trend_30d=None` on every product and render
+      "暂无产品数据" even though the brand has visible products. This is
+      the BestCoffer simulation.
 
 Usage:
   uv run python backend/scripts/inspect_products_response.py
@@ -84,6 +105,7 @@ from genpano_models import (  # noqa: E402
     BrandMention,
     GeoScoreDaily,
     ProductFeatureMention,
+    ProductScoreDaily,
     Project,
     ProjectCompetitor,
     ResponseAnalysis,
@@ -333,6 +355,12 @@ async def _seed_common_evidence(
     include_topic_product: bool,
     topic_chain_count: int = 1,
     v3_payload: bool = False,
+    product_score_daily_days: int = 0,
+    product_score_daily_names: tuple[str, ...] = (
+        "BestCoffer Filter",
+        "BestCoffer Cold Brew",
+        "BestCoffer Espresso",
+    ),
 ) -> None:
     """Seed the minimum tables the contract builder & products service read.
 
@@ -431,6 +459,44 @@ async def _seed_common_evidence(
                 created_at=now - timedelta(days=i),
             )
         )
+
+    # Scenario (g) — seed `product_score_daily` so the per-product sparkline
+    # in `_brand_service.py:598-604` crosses the 14-day threshold required
+    # for `trend_30d` to be computed (not null). Production gets these rows
+    # from the daily aggregator (`geo_tracker.analyzer.aggregator.
+    # Aggregator._aggregate_product_daily`); the inspect harness writes
+    # them directly. Per the model's UniqueConstraint
+    # (`uq_product_daily(brand_id, product_name, date, target_llm)`) we
+    # write one row per (product, day) with target_llm=None to mirror
+    # what `_aggregate_product_daily` produces.
+    if product_score_daily_days > 0:
+        for day_offset in range(product_score_daily_days):
+            d = today - timedelta(days=day_offset)
+            for j, pname in enumerate(product_score_daily_names):
+                session.add(
+                    ProductScoreDaily(
+                        brand_id=BESTCOFFER_BRAND_ID,
+                        product_name=pname,
+                        category="coffee",
+                        date=datetime.combine(d, datetime.min.time()),
+                        target_llm=None,
+                        total_queries=100,
+                        mention_count=10 + j,
+                        # Vary mention_rate by day so trend_30d resolves to
+                        # a non-zero number (avg first-7 vs last-7 differ).
+                        mention_rate=round(0.20 + 0.01 * day_offset + 0.05 * j, 4),
+                        avg_position_rank=2.0 + j * 0.5,
+                        first_place_count=2,
+                        first_place_rate=0.2,
+                        avg_sentiment_score=0.7,
+                        avg_geo_score=72.0,
+                        category_sov_pct=0.30 + 0.05 * j,
+                        category_rank=j + 1,
+                        comparison_wins=3,
+                        comparison_total=5,
+                        win_rate=0.6,
+                    )
+                )
     await session.commit()
 
 
@@ -497,6 +563,7 @@ async def _run_scenario(
     include_topic_product: bool,
     topic_chain_count: int = 1,
     v3_payload: bool = False,
+    product_score_daily_days: int = 0,
 ) -> dict[str, Any]:
     """Spin up a fresh SQLite DB, seed it, call get_products(), return dump."""
     with tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False) as tmp:
@@ -517,6 +584,7 @@ async def _run_scenario(
                 include_topic_product=include_topic_product,
                 topic_chain_count=topic_chain_count,
                 v3_payload=v3_payload,
+                product_score_daily_days=product_score_daily_days,
             )
 
         # Re-open a fresh session for the actual service call so the
@@ -701,6 +769,48 @@ async def main() -> None:
             v3_payload=True,
         )
     )
+    # Scenario (g) — Issue #1031 FULL happy-path: v3 packages PLUS 20 days
+    # of ProductScoreDaily per product so the per-product sparkline triggers
+    # the legacy first-7 vs last-7 path in `_compute_trend_30d`
+    # (`_brand_service.py`) and `trend_30d` is non-null per item. Verifies
+    # that when production has 14+ days of `product_score_daily` history
+    # for a brand, the BCG filter (`x,y,z != null`) passes for ≥1 row and
+    # the page renders. Scenario (h) covers the early-stage (< 14 days) case.
+    summaries.append(
+        await _run_scenario(
+            "(g)",
+            "Issue #1031 BCG row-filter happy path — v3 packages + 20 "
+            "days of ProductScoreDaily (>=14) so per-product trend_30d "
+            "is non-null and the BCG filter passes for >=1 row",
+            response_ids=[9000, 9001, 9002],
+            product_fact_count=3,
+            include_topic_product=False,
+            v3_payload=True,
+            product_score_daily_days=20,
+        )
+    )
+    # Scenario (h) — Issue #1031 EARLY-STAGE BRAND: v3 packages PLUS only
+    # 5 days of ProductScoreDaily per product. This sits BETWEEN the new
+    # `MIN_SPARKLINE_DAYS=3` floor and the legacy `>= 14` threshold.
+    # Pre-fix (`len(sparkline) >= 14`) this would render "暂无产品数据"
+    # because every product's `trend_30d` was None. Post-fix the adaptive
+    # window (`min(7, len // 2)` → window=2 here) computes a non-zero
+    # trend and the BCG filter passes for ≥1 row. This is the BestCoffer
+    # production simulation (brand barely a week old).
+    summaries.append(
+        await _run_scenario(
+            "(h)",
+            "Issue #1031 EARLY-STAGE BRAND — v3 packages + only 5 days "
+            "of ProductScoreDaily (between MIN_SPARKLINE_DAYS=3 and the "
+            "legacy 14-day threshold). Adaptive window should still "
+            "produce a non-null trend_30d so the BCG filter passes",
+            response_ids=[10000, 10001, 10002],
+            product_fact_count=3,
+            include_topic_product=False,
+            v3_payload=True,
+            product_score_daily_days=5,
+        )
+    )
 
     print("\n" + "=" * 78)
     print("SUMMARY")
@@ -716,9 +826,12 @@ async def main() -> None:
             f"state={s['state']!r} total={s['total']} "
             f"evidence_count={s['evidence_count']}"
         )
-        # Scenario (e) specifically inspects per-item metric nullity to
-        # confirm the BestCoffer screenshot pattern (Issue #1040).
-        if s["label"] == "(e)":
+        # Scenarios (e) and (g) inspect per-item metric nullity to confirm
+        # the BestCoffer screenshot pattern (e: Issue #1040 — all per-item
+        # metrics NULL) vs the full happy path (g: Issue #1031 — per-item
+        # mention_rate / trend_30d / mention_count all non-null so the BCG
+        # row filter passes).
+        if s["label"] in {"(e)", "(g)", "(h)"}:
             for item in s.get("items_metric_audit") or []:
                 print(
                     f"      item.product_name={item['product_name']!r} "
@@ -759,6 +872,78 @@ async def main() -> None:
         "        + mention_count, which depends on product_score_daily having\n"
         "        >= 14 days of data. Issue #1031 fixes the gate; per-product\n"
         "        rendering still needs ProductScoreDaily rows."
+    )
+
+    # Issue #1031 scenario (g) assertion — FULL happy path: with 20 days of
+    # ProductScoreDaily seeded, per-product `trend_30d` MUST be non-null on
+    # at least one item AND the BCG row filter (`x,y,z != null`) MUST pass
+    # for >=1 row. If this fails, the per-product compute path in
+    # `_brand_service.py:598-604` is broken (NOT the page-level rollup).
+    scenario_g = next((s for s in summaries if s["label"] == "(g)"), None)
+    if scenario_g is None:
+        raise AssertionError("scenario (g) result missing from summaries")
+    items_g = scenario_g.get("items_metric_audit") or []
+    items_with_trend = [it for it in items_g if it.get("trend_30d") is not None]
+    assert items_g, "scenario (g): expected >=1 product item, got 0"
+    assert items_with_trend, (
+        f"scenario (g): expected >=1 item with non-null trend_30d "
+        f"(20 days of ProductScoreDaily seeded, threshold is 14); "
+        f"got all-null. items={items_g!r}"
+    )
+    assert scenario_g["bcg_filter_pass"], (
+        f"scenario (g): BCG filter MUST pass for >=1 row when "
+        f"ProductScoreDaily has 14+ days; "
+        f"got {scenario_g['bcg_filter_passing_count']}"
+        f"/{scenario_g['bcg_filter_total']} rows passing. items={items_g!r}"
+    )
+    print(
+        "\n-- Issue #1031 scenario (g) assertion --\n"
+        "  scenario (g) per-product trend_30d compute path: PASS\n"
+        f"  items with non-null trend_30d: {len(items_with_trend)}/{len(items_g)}\n"
+        f"  BCG filter pass: {scenario_g['bcg_filter_passing_count']}"
+        f"/{scenario_g['bcg_filter_total']} rows "
+        f"({'render' if scenario_g['bcg_filter_pass'] else '暂无产品数据'})\n"
+        "  Conclusion: when product_score_daily has 14+ days/product, the\n"
+        "  BCG matrix renders. If production still shows '暂无产品数据',\n"
+        "  the brand's product_score_daily history is < 14 days."
+    )
+
+    # Issue #1031 scenario (h) — EARLY-STAGE BRAND assertion. With only 5
+    # days of ProductScoreDaily (below the legacy 14-day threshold but
+    # above the new MIN_SPARKLINE_DAYS=3 floor), the adaptive window in
+    # `_compute_trend_30d` must still resolve a non-null trend so the BCG
+    # filter passes for >=1 row. Pre-fix this would fail (BCG renders
+    # "暂无产品数据" for any brand under 14 days of history); post-fix it
+    # renders for brands at or above 3 days.
+    scenario_h = next((s for s in summaries if s["label"] == "(h)"), None)
+    if scenario_h is None:
+        raise AssertionError("scenario (h) result missing from summaries")
+    items_h = scenario_h.get("items_metric_audit") or []
+    items_h_with_trend = [it for it in items_h if it.get("trend_30d") is not None]
+    assert items_h, "scenario (h): expected >=1 product item, got 0"
+    assert items_h_with_trend, (
+        f"scenario (h): expected >=1 item with non-null trend_30d "
+        f"(5 days of ProductScoreDaily seeded, MIN_SPARKLINE_DAYS=3); "
+        f"got all-null. The adaptive window in _compute_trend_30d is "
+        f"broken. items={items_h!r}"
+    )
+    assert scenario_h["bcg_filter_pass"], (
+        f"scenario (h): BCG filter MUST pass for >=1 row at 5 days of "
+        f"ProductScoreDaily (post-#1031 adaptive window); got "
+        f"{scenario_h['bcg_filter_passing_count']}"
+        f"/{scenario_h['bcg_filter_total']} rows passing. items={items_h!r}"
+    )
+    print(
+        "\n-- Issue #1031 scenario (h) assertion (EARLY-STAGE BRAND) --\n"
+        "  scenario (h) adaptive trend_30d for short sparkline: PASS\n"
+        f"  items with non-null trend_30d: {len(items_h_with_trend)}/{len(items_h)}\n"
+        f"  BCG filter pass: {scenario_h['bcg_filter_passing_count']}"
+        f"/{scenario_h['bcg_filter_total']} rows "
+        f"({'render' if scenario_h['bcg_filter_pass'] else '暂无产品数据'})\n"
+        "  Conclusion: early-stage brands with 3-13 days of product_score_daily\n"
+        "  now render in the BCG matrix (was '暂无产品数据' pre-#1031). The\n"
+        "  adaptive half-and-half window prevents the first/last slice overlap\n"
+        "  that would otherwise zero out the trend at exactly 7 days."
     )
 
 
