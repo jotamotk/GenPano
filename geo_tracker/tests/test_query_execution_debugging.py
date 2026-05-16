@@ -6238,3 +6238,54 @@ def test_luban_service_id_env_wired_into_provider_factory():
     )
     # And the value is passed through to the provider factory.
     assert 'factory_kwargs["service_id"]' in source
+
+
+# Refs #963 production evidence (server-diagnostics run 25955749209 at
+# 2026-05-16 07:07:50 → 07:11:01): after all the fingerprint / routing /
+# persistence-gate fixes shipped, account 44 still failed with
+# retry_reason=doubao_homepage_content (cookies accepted enough to
+# submit the prompt but the response was silently suppressed by Doubao —
+# typical shadow-ban behaviour). Because doubao_homepage_content was NOT
+# in EXPIRED_ACCOUNT_REASONS, the worker kept re-picking the same broken
+# cookies forever and the auto_login → LubanSMS service_id fallback
+# never fired. Pin that the reason is now classified as expired so the
+# self-healing chain can move the account through expired → auto_login
+# → fresh fingerprint+cookies → working query.
+def test_doubao_homepage_content_marked_as_expired_reason():
+    from geo_tracker.pool.account_pool import EXPIRED_ACCOUNT_REASONS
+
+    assert "doubao_homepage_content" in EXPIRED_ACCOUNT_REASONS, (
+        "doubao_homepage_content must trigger account-expired so the "
+        "self-healing chain (auto_login → service_id fallback → fresh "
+        "fingerprint+cookies) can replace cookies that Doubao shadow-bans."
+    )
+
+
+# Refs #963 / Codex P1 review on PR #1037: adding a reason to
+# EXPIRED_ACCOUNT_REASONS without also adding it to
+# DOUBAO_REAUTH_FAILURE_REASONS removes the account from rotation but
+# never queues auto_login → the self-healing chain stalls and the
+# pool can drain to zero active. Pin that both sets agree on
+# doubao_homepage_content so a future refactor of one set without the
+# other regresses to that silent stall.
+def test_doubao_homepage_content_triggers_reauth_handoff():
+    """``DOUBAO_REAUTH_FAILURE_REASONS`` must include doubao_homepage_content."""
+    from pathlib import Path
+
+    source_path = (
+        Path(__file__).resolve().parent.parent / "tasks" / "celery_tasks.py"
+    )
+    source = source_path.read_text(encoding="utf-8")
+    # Extract the DOUBAO_REAUTH_FAILURE_REASONS frozenset literal and
+    # assert membership. We pin by source-string match so the test runs
+    # without importing celery_tasks (which pulls in Celery + Redis).
+    sig_idx = source.index("DOUBAO_REAUTH_FAILURE_REASONS = frozenset(")
+    body = source[sig_idx : source.index("\n)", sig_idx)]
+    assert '"doubao_homepage_content"' in body, (
+        "DOUBAO_REAUTH_FAILURE_REASONS must include doubao_homepage_content "
+        "so the reauth handoff queues auto_login when the account is "
+        "shadow-banned and EXPIRED_ACCOUNT_REASONS expires it. Without "
+        "this entry the self-healing chain (auto_login → service_id "
+        "fallback → fresh fingerprint+cookies) never fires for that "
+        "failure mode."
+    )
