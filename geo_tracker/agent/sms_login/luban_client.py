@@ -136,5 +136,122 @@ class LubanSMSClient:
                 f"释放号码失败 ({mask_phone(phone)}): {redact_sensitive_text(e)}"
             )
 
+    # ── 验证码接收 API (service_id-based fallback) ─────────────────────
+    # Refs #963 / #973: the Keyword API ("通用短信接收") is currently
+    # returning {"code":400,"msg":"未知错误"} for Doubao number requests
+    # — LubanSMS's keyword-number pool is intermittently empty / offline
+    # for this account. The verification-code API ("验证码接收") draws
+    # from a different inventory keyed by service_id and is the
+    # documented fallback path for this exact situation. We keep the
+    # Keyword API as the primary path (one fewer API call when it works,
+    # and supports phone reuse for re-login) and fall back to the
+    # service-id API only when keyword allocation fails.
+
+    async def get_service_number(self, service_id: str) -> tuple[str, str]:
+        """Reserve a verification-code phone for ``service_id``.
+
+        Returns (phone, request_id). Both are needed: phone is used for
+        the actual registration/login on the LLM site; request_id is the
+        handle passed to ``get_service_sms`` and
+        ``set_service_status_reject``.
+        """
+        resp = await self.client.get(
+            f"{LUBANSMS_BASE}/getNumber",
+            params={"apikey": self.token, "service_id": service_id},
+        )
+        data = resp.json()
+        if data.get("code") != 0:
+            raise RuntimeError(f"getNumber failed: {data}")
+        phone = str(data.get("number") or "")
+        request_id = str(data.get("request_id") or "")
+        if not phone or not request_id:
+            raise RuntimeError(
+                f"getNumber returned incomplete payload (phone/request_id missing): {data}"
+            )
+        logger.info(
+            "获取手机号 (service_id=%s): %s, request_id=%s",
+            service_id,
+            mask_phone(phone),
+            request_id,
+        )
+        return phone, request_id
+
+    async def get_service_sms(
+        self, request_id: str, *, timeout: int = 120
+    ) -> str:
+        """Poll for SMS code by request_id (验证码接收 API).
+
+        The verification-code API returns the parsed sms_code directly
+        when the SMS arrives, so we do not need a keyword filter here —
+        the service_id at reservation time already constrained which
+        SMS is delivered.
+        """
+        waited = 0
+        interval = 3
+        while waited < timeout:
+            resp = await self.client.get(
+                f"{LUBANSMS_BASE}/getSms",
+                params={"apikey": self.token, "request_id": request_id},
+            )
+            data = resp.json()
+            if data.get("code") == 0 and data.get("msg") == "success":
+                sms_code = str(data.get("sms_code") or "")
+                if sms_code:
+                    logger.info(
+                        "收到验证码 (request_id=%s): [sms-code-redacted]",
+                        request_id,
+                    )
+                    return sms_code
+                raise RuntimeError(
+                    f"getSms success but missing sms_code: {data}"
+                )
+            if (
+                data.get("code") == 400
+                and "apikey" in str(data.get("msg", "")).lower()
+            ):
+                raise RuntimeError(f"getSms 认证失败: {data}")
+            # ``{"code":0,"msg":"wait", ...}`` → still waiting, keep polling
+            # ``{"code":400,"msg":"wrong_status"}`` → request expired
+            # before SMS arrived; treat as timeout so the caller can retry.
+            await asyncio.sleep(interval)
+            waited += interval
+            if waited % 15 == 0:
+                logger.info(
+                    f"等待验证码中 (service)... ({waited}s/{timeout}s, "
+                    f"request_id={request_id})"
+                )
+        raise TimeoutError(
+            f"等待验证码超时 (service, {timeout}s, request_id={request_id})"
+        )
+
+    async def set_service_status_reject(self, request_id: str) -> None:
+        """Release a service-API request via setStatus(status=reject).
+
+        Best-effort — a failure here just means the number stays reserved
+        on LubanSMS's side until it auto-expires; it does not block the
+        login flow itself, so we log and swallow exceptions.
+        """
+        try:
+            resp = await self.client.get(
+                f"{LUBANSMS_BASE}/setStatus",
+                params={
+                    "apikey": self.token,
+                    "request_id": request_id,
+                    "status": "reject",
+                },
+            )
+            data = resp.json()
+            logger.info(
+                "释放请求 (service, request_id=%s): %s",
+                request_id,
+                redact_sensitive_text(data),
+            )
+        except Exception as e:
+            logger.warning(
+                "释放请求失败 (service, request_id=%s): %s",
+                request_id,
+                redact_sensitive_text(e),
+            )
+
     async def close(self) -> None:
         await self.client.aclose()

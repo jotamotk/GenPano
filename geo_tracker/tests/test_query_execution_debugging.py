@@ -6002,3 +6002,239 @@ def test_camoufox_fingerprint_persistence_wired_into_executor_launch():
     assert "camoufox_kwargs[\"fingerprint\"]" in source, (
         "saved fingerprint must be wired into camoufox_kwargs['fingerprint']"
     )
+
+
+# Refs #963 / #973 production evidence (server-diagnostics run
+# 25951168887): LubanSMS Keyword API ("通用短信接收") is returning
+# {"code":400,"msg":"未知错误"} for Doubao number allocation. The
+# verification-code API ("验证码接收") draws from a separate pool keyed
+# by service_id and is the documented fallback. These tests pin the
+# LubanSMSProvider fallback chain so a future regression that drops the
+# service-id branch silently re-introduces the production outage:
+# - Keyword success: still returns a keyword-API lease (provider_ref=None)
+# - Keyword failure + service_id set: falls back to verification-code API
+#   and returns a service-API lease (provider_ref=request_id)
+# - Keyword failure + no service_id: propagates the keyword error
+# - Phone-specific re-login keyword failure: propagates so the handler's
+#   "降级为随机取号" path can retry without phone
+# - poll_sms_code / release_number branch on lease.provider_ref so service
+#   leases poll via getSms / release via setStatus
+@pytest.mark.asyncio
+async def test_luban_provider_uses_keyword_api_when_healthy():
+    """Keyword success path is unchanged — lease has no provider_ref."""
+    from geo_tracker.agent.sms_login.providers import (
+        LubanSMSProvider,
+        SMSNumberLease,
+    )
+
+    class FakeClient:
+        async def get_keyword_number(self, *, phone=None):
+            return "13800000001"
+
+        async def get_keyword_sms(self, phone, keyword, *, timeout=120):
+            return "123456"
+
+        async def release_keyword_number(self, phone):
+            self.released_phone = phone
+
+        async def close(self):
+            pass
+
+    fake = FakeClient()
+    provider = LubanSMSProvider(client=fake, service_id="666056")
+
+    lease = await provider.reserve_number()
+    assert isinstance(lease, SMSNumberLease)
+    assert lease.phone == "13800000001"
+    assert lease.provider_ref is None  # keyword path, no request_id
+    assert lease.provider_name == "luban"
+
+    # Polling and release use the keyword API for keyword leases.
+    code = await provider.poll_sms_code(lease, keyword="豆包", timeout=10)
+    assert code == "123456"
+    await provider.release_number(lease)
+    assert fake.released_phone == "13800000001"
+
+
+@pytest.mark.asyncio
+async def test_luban_provider_falls_back_to_service_id_when_keyword_fails():
+    """Keyword 400 + service_id configured → verification-code API used."""
+    from geo_tracker.agent.sms_login.providers import (
+        LubanSMSProvider,
+        SMSNumberLease,
+    )
+
+    class FakeClient:
+        def __init__(self):
+            self.keyword_called_with: list = []
+            self.service_called_with: list = []
+            self.poll_calls: list = []
+            self.release_calls: list = []
+
+        async def get_keyword_number(self, *, phone=None):
+            self.keyword_called_with.append(phone)
+            raise RuntimeError(
+                "getKeywordNumber failed: {'code': 400, 'msg': '未知错误'}"
+            )
+
+        async def get_service_number(self, service_id):
+            self.service_called_with.append(service_id)
+            return ("13900000002", "req_12345")
+
+        async def get_service_sms(self, request_id, *, timeout=120):
+            self.poll_calls.append(("service", request_id, timeout))
+            return "654321"
+
+        async def get_keyword_sms(self, phone, keyword, *, timeout=120):
+            # Must NOT be called for service-API leases.
+            self.poll_calls.append(("keyword", phone, keyword))
+            raise AssertionError(
+                "keyword SMS poll must not run for service-API leases"
+            )
+
+        async def set_service_status_reject(self, request_id):
+            self.release_calls.append(("service", request_id))
+
+        async def release_keyword_number(self, phone):
+            self.release_calls.append(("keyword", phone))
+            raise AssertionError(
+                "keyword release must not run for service-API leases"
+            )
+
+        async def close(self):
+            pass
+
+    fake = FakeClient()
+    provider = LubanSMSProvider(client=fake, service_id="666056")
+
+    lease = await provider.reserve_number()  # no phone → random path
+    assert isinstance(lease, SMSNumberLease)
+    assert lease.phone == "13900000002"
+    assert lease.provider_ref == "req_12345"  # service path keeps request_id
+    assert lease.provider_name == "luban_service"
+
+    # Keyword was tried first, then service kicked in.
+    assert fake.keyword_called_with == [None]
+    assert fake.service_called_with == ["666056"]
+
+    # SMS poll dispatches to the service API by request_id.
+    code = await provider.poll_sms_code(lease, keyword="豆包", timeout=10)
+    assert code == "654321"
+    assert fake.poll_calls == [("service", "req_12345", 10)]
+
+    # Release dispatches to setStatus by request_id, never delKeywordNumber.
+    await provider.release_number(lease)
+    assert fake.release_calls == [("service", "req_12345")]
+
+
+@pytest.mark.asyncio
+async def test_luban_provider_propagates_keyword_failure_when_no_service_id():
+    """Keyword 400 + service_id NOT set → keyword error propagates."""
+    from geo_tracker.agent.sms_login.providers import LubanSMSProvider
+
+    class FakeClient:
+        async def get_keyword_number(self, *, phone=None):
+            raise RuntimeError(
+                "getKeywordNumber failed: {'code': 400, 'msg': '未知错误'}"
+            )
+
+        async def close(self):
+            pass
+
+    fake = FakeClient()
+    provider = LubanSMSProvider(client=fake, service_id=None)
+
+    import pytest as _pytest
+    with _pytest.raises(RuntimeError, match="未知错误"):
+        await provider.reserve_number()
+
+
+@pytest.mark.asyncio
+async def test_luban_provider_phone_reuse_failure_does_not_fall_to_service():
+    """Phone-specific reuse failure must propagate so handler can call again.
+
+    The service API allocates a brand-new number per request — there is
+    no way to re-reserve a specific historical phone via service_id.
+    Falling back to service on a phone-specific call would silently
+    abandon the account's old number; instead propagate the error so the
+    handler's "降级为随机取号" path can call us again with phone=None.
+    """
+    from geo_tracker.agent.sms_login.providers import LubanSMSProvider
+
+    class FakeClient:
+        def __init__(self):
+            self.service_calls = 0
+
+        async def get_keyword_number(self, *, phone=None):
+            raise RuntimeError(
+                "getKeywordNumber failed: {'code': 400, 'msg': '当前通道此号码不在线'}"
+            )
+
+        async def get_service_number(self, service_id):
+            self.service_calls += 1
+            return ("13900000003", "req_99999")
+
+        async def close(self):
+            pass
+
+    fake = FakeClient()
+    provider = LubanSMSProvider(client=fake, service_id="666056")
+
+    import pytest as _pytest
+    with _pytest.raises(RuntimeError, match="当前通道此号码不在线"):
+        await provider.reserve_number(phone="13800000004")
+    assert fake.service_calls == 0, (
+        "service API must NOT be used for phone-specific reuse; the "
+        "handler will retry without phone, and that call gets the "
+        "service fallback."
+    )
+
+
+@pytest.mark.asyncio
+async def test_luban_provider_surfaces_both_errors_when_both_paths_fail():
+    """Keyword AND service both fail → combined error message."""
+    from geo_tracker.agent.sms_login.providers import LubanSMSProvider
+
+    class FakeClient:
+        async def get_keyword_number(self, *, phone=None):
+            raise RuntimeError(
+                "getKeywordNumber failed: {'code': 400, 'msg': '未知错误'}"
+            )
+
+        async def get_service_number(self, service_id):
+            raise RuntimeError(
+                "getNumber failed: {'code': 400, 'msg': 'no service_id available'}"
+            )
+
+        async def close(self):
+            pass
+
+    provider = LubanSMSProvider(client=FakeClient(), service_id="666056")
+
+    import pytest as _pytest
+    with _pytest.raises(RuntimeError) as excinfo:
+        await provider.reserve_number()
+    # Both error texts must be in the combined message so operators can
+    # see at a glance that BOTH paths failed (not just one).
+    msg = str(excinfo.value)
+    assert "未知错误" in msg
+    assert "service_id=666056" in msg
+    assert "no service_id available" in msg
+
+
+def test_luban_service_id_env_wired_into_provider_factory():
+    """``LUBANSMS_<PLATFORM>_SERVICE_ID`` env var is read at handler init."""
+    from pathlib import Path
+
+    source_path = (
+        Path(__file__).resolve().parent.parent / "agent" / "sms_login" / "base.py"
+    )
+    source = source_path.read_text(encoding="utf-8")
+    # The env-var lookup uses an f-string with the uppercased platform.
+    assert 'LUBANSMS_{self.platform.upper()}_SERVICE_ID' in source, (
+        "BaseSMSLoginHandler must read the platform-specific service_id "
+        "env var (LUBANSMS_<PLATFORM>_SERVICE_ID) so doubao picks up "
+        "666056 without affecting other platforms."
+    )
+    # And the value is passed through to the provider factory.
+    assert 'factory_kwargs["service_id"]' in source
