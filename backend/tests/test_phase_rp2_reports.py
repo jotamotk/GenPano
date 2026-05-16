@@ -277,9 +277,7 @@ async def test_public_unknown_token_404(client) -> None:
 
 
 @pytest.mark.asyncio
-async def test_on_demand_report_period_persists_across_reads(
-    client, user, project
-) -> None:
+async def test_on_demand_report_period_persists_across_reads(client, user, project) -> None:
     """On-demand report stores from_date/to_date and re-reads use them.
 
     Regression: previously scope.from_date / to_date were written but

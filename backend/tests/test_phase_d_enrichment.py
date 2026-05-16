@@ -322,9 +322,7 @@ async def test_evaluator_populates_enrichment_fields(db_session, project_for_eva
         assert "hypothesizedMechanism" in d.causal_chain
         mech = d.causal_chain["hypothesizedMechanism"]
         if d.evidence and "current_value" in d.evidence:
-            assert "—" not in mech, (
-                f"causal_chain placeholder substitution failed: {mech}"
-            )
+            assert "—" not in mech, f"causal_chain placeholder substitution failed: {mech}"
         if d.reader_hints:
             assert d.anchor_questions is not None
             for reader, questions in d.anchor_questions.items():

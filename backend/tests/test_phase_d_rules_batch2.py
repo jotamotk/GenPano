@@ -344,9 +344,7 @@ async def test_industry_lag_no_trigger_when_close(db_session, project):
 
 
 @pytest.mark.asyncio
-async def test_industry_lag_no_trigger_when_project_has_no_industry(
-    db_session, user
-):
+async def test_industry_lag_no_trigger_when_project_has_no_industry(db_session, user):
     """A project without industry_id has no peer scope — rule must abstain."""
     p_no_industry = Project(
         id=_new_id(),
@@ -370,9 +368,7 @@ async def test_industry_lag_ignores_brands_in_other_industries(db_session, proje
     await _seed_kg_brands(db_session, in_industry_ids, industry_id=project.industry_id)
     # Out-of-industry peers: high scores (~95) — must NOT be included
     out_of_industry_ids = [910 + i for i in range(10)]
-    await _seed_kg_brands(
-        db_session, out_of_industry_ids, industry_id=project.industry_id + 100
-    )
+    await _seed_kg_brands(db_session, out_of_industry_ids, industry_id=project.industry_id + 100)
     for bid in in_industry_ids:
         for i in range(30):
             d = today - timedelta(days=29 - i)
