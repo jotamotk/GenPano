@@ -32,6 +32,7 @@ import {
   adaptPositionDistribution,
   adaptHeatmap,
 } from '../../adapters/chartAdapters';
+import QueryStateView from '../../components/QueryStateView';
 import {
   BRANDS,
   MENTION_TREND_BY_ENGINE,
@@ -335,16 +336,19 @@ export default function BrandVisibilityPage() {
             {trendIsMock && <MockDataBadge />}
           </h3>
         </div>
-        {isLive && trendsQ.isLoading ? (
-          <div className="h-[200px] flex items-center justify-center text-xs text-themed-muted">
-            Loading analytics
-          </div>
+        {isLive ? (
+          <QueryStateView
+            query={trendsQ}
+            isEmpty={() => trendData.length === 0 || trendLines.length === 0}
+            emptyLabel="PANO trend unavailable"
+            minHeight={200}
+          >
+            {() => (
+              <TrendChart data={trendData} lines={trendLines} height={200} />
+            )}
+          </QueryStateView>
         ) : trendData.length > 0 && trendLines.length > 0 ? (
-          <TrendChart
-            data={trendData}
-            lines={trendLines}
-            height={200}
-          />
+          <TrendChart data={trendData} lines={trendLines} height={200} />
         ) : (
           <div className="h-[200px] flex items-center justify-center text-xs text-themed-muted">
             PANO trend unavailable

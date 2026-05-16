@@ -24,6 +24,5 @@ export function useBrandOverview(
     queryFn: () => brandOverviewApi.get(projectId as string, brandIdOverride),
     enabled: isLiveProjectId(projectId),
     staleTime: 60_000,
-    retry: false,
   })
 }

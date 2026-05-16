@@ -13,6 +13,7 @@ import { canUseMetricEvidence } from '../../api/analyticsContract';
 import { useBrandProducts } from '../../hooks/useBrandMetrics';
 import { useProductRelations } from '../../hooks/useCharts';
 import { adaptProductRelations } from '../../adapters/chartAdapters';
+import QueryStateView from '../../components/QueryStateView';
 import {
   BRANDS,
   PRODUCTS,
@@ -203,15 +204,8 @@ export default function BrandProductsPage() {
       <BrandAnalysisFilterBar />
 
       {/* ① BCG 气泡矩阵 */}
-      <Card className="p-3">
-        <div className="flex items-baseline justify-between mb-1">
-          <h3 className="text-[13px] font-semibold text-themed-primary">
-            <MetricLabel helpText={t('brand_products.section_bcg_hint')}>
-              {t('brand_products.section_bcg', 'BCG 矩阵')}
-            </MetricLabel>
-          </h3>
-        </div>
-        {bcgData.length > 0 ? (
+      {(() => {
+        const renderBcgChart = () => (
           <div className="mt-2">
             <CompetitorQuadrantChart
               data={bcgData}
@@ -232,12 +226,36 @@ export default function BrandProductsPage() {
               height={360}
             />
           </div>
-        ) : (
-          <div className="h-60 flex items-center justify-center text-themed-muted text-sm">
-            {t('brand_products.no_data', '暂无产品数据')}
-          </div>
-        )}
-      </Card>
+        );
+        const emptyLabel = t('brand_products.no_data', '暂无产品数据');
+        return (
+          <Card className="p-3">
+            <div className="flex items-baseline justify-between mb-1">
+              <h3 className="text-[13px] font-semibold text-themed-primary">
+                <MetricLabel helpText={t('brand_products.section_bcg_hint')}>
+                  {t('brand_products.section_bcg', 'BCG 矩阵')}
+                </MetricLabel>
+              </h3>
+            </div>
+            {isLive ? (
+              <QueryStateView
+                query={productsQ}
+                isEmpty={() => bcgData.length === 0}
+                emptyLabel={emptyLabel}
+                minHeight={240}
+              >
+                {renderBcgChart}
+              </QueryStateView>
+            ) : bcgData.length > 0 ? (
+              renderBcgChart()
+            ) : (
+              <div className="h-60 flex items-center justify-center text-themed-muted text-sm">
+                {emptyLabel}
+              </div>
+            )}
+          </Card>
+        );
+      })()}
 
       {/* ③ 产品趋势 Sparkline Grid */}
       {products.length > 0 && (

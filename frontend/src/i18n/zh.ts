@@ -129,6 +129,10 @@ export const zh = {
     copied: '已复制',
     showMore: '显示完整诊断',
     requestId: '请求 ID',
+    retry: '重试',
+    retrying: '重试中...',
+    loading: '加载中...',
+    failedToLoad: '加载失败',
     // 错误码 → 用户文案。code 本身始终展示在错误面板顶部，便于支持检索；
     // 未翻译的 code 会回退到 problem.title。
     codes: {
@@ -141,6 +145,8 @@ export const zh = {
       rate_limit_exceeded: '请求过于频繁，请稍后再试。',
       internal_error: '服务端错误，请稍后重试或联系支持。',
       service_degraded: '服务当前不可用，请稍后再试。',
+      bad_gateway: '上游服务暂时不可用，请重试。',
+      gateway_timeout: '上游服务响应超时，请重试。',
       network_error: '网络异常，请检查网络后重试。',
       invalid_credentials: '邮箱或密码错误。',
       MCP_AUTH_REQUIRED: '需要 MCP API key。',

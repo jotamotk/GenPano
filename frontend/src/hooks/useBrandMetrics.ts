@@ -41,7 +41,6 @@ export function useBrandMetrics(
     queryFn: () => brandMetricsApi.metrics(projectId as string, series, brandIdOverride, filters),
     enabled: isLiveProjectId(projectId),
     staleTime: 60_000,
-    retry: false,
   })
 }
 
@@ -54,7 +53,6 @@ export function useBrandSentiment(
     queryFn: () => brandMetricsApi.sentiment(projectId as string, filters),
     enabled: isLiveProjectId(projectId),
     staleTime: 60_000,
-    retry: false,
   })
 }
 
@@ -68,7 +66,6 @@ export function useBrandCitations(
     queryFn: () => brandMetricsApi.citations(projectId as string, pageSize, filters),
     enabled: isLiveProjectId(projectId),
     staleTime: 60_000,
-    retry: false,
   })
 }
 
@@ -78,7 +75,6 @@ export function useBrandTopics(projectId: string | null | undefined) {
     queryFn: () => brandMetricsApi.topics(projectId as string),
     enabled: isLiveProjectId(projectId),
     staleTime: 60_000,
-    retry: false,
   })
 }
 
@@ -88,7 +84,6 @@ export function useBrandProducts(projectId: string | null | undefined) {
     queryFn: () => brandMetricsApi.products(projectId as string),
     enabled: isLiveProjectId(projectId),
     staleTime: 60_000,
-    retry: false,
   })
 }
 
@@ -112,7 +107,6 @@ export function useCompetitorMetrics(
     ),
     enabled: isLiveProjectId(projectId),
     staleTime: 60_000,
-    retry: false,
   })
 }
 
@@ -145,6 +139,5 @@ export function useCompetitorTrends(
     ),
     enabled: isLiveProjectId(projectId),
     staleTime: 60_000,
-    retry: false,
   })
 }

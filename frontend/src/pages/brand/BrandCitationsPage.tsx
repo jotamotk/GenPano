@@ -30,6 +30,7 @@ import {
   adaptSimulatorBaseline,
   adaptTopCitedPages,
 } from '../../adapters/chartAdapters';
+import QueryStateView from '../../components/QueryStateView';
 import {
   BRANDS,
   AUTHORITY_SHARE_SERIES,
@@ -209,15 +210,31 @@ export default function BrandCitationsPage() {
                 {authorityIsMock && <MockDataBadge />}
               </h3>
             </div>
-            <TrendChart
-              data={authoritySeries.map((d: any) => ({ name: d.date, ...d }))}
-              lines={[
-                { key: 'official_domain_pct', label: t('brand_citations.official_domain'), color: 'var(--color-accent)', area: true },
-                { key: 'co_occurrence_pct', label: t('brand_citations.co_occurrence'), color: 'var(--color-chart-3)', area: false },
-                { key: 'text_match_pct', label: t('brand_citations.text_match'), color: 'var(--color-chart-axis-text)', area: false, dashed: true },
-              ]}
-              height={260}
-            />
+            {(() => {
+              const renderTrend = () => (
+                <TrendChart
+                  data={authoritySeries.map((d: any) => ({ name: d.date, ...d }))}
+                  lines={[
+                    { key: 'official_domain_pct', label: t('brand_citations.official_domain'), color: 'var(--color-accent)', area: true },
+                    { key: 'co_occurrence_pct', label: t('brand_citations.co_occurrence'), color: 'var(--color-chart-3)', area: false },
+                    { key: 'text_match_pct', label: t('brand_citations.text_match'), color: 'var(--color-chart-axis-text)', area: false, dashed: true },
+                  ]}
+                  height={260}
+                />
+              );
+              return isLive ? (
+                <QueryStateView
+                  query={authorityTrendQ}
+                  isEmpty={() => authoritySeries.length === 0}
+                  emptyLabel={t('brand_citations.no_authority_trend', { default: '暂无引用趋势数据' })}
+                  minHeight={260}
+                >
+                  {renderTrend}
+                </QueryStateView>
+              ) : (
+                renderTrend()
+              );
+            })()}
           </Card>
 
           {/* Source composition + top domains */}

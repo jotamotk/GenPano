@@ -28,6 +28,7 @@ import {
   adaptTopicAttribution,
   adaptMentionSamples,
 } from '../../adapters/chartAdapters';
+import QueryStateView from '../../components/QueryStateView';
 import {
   BRANDS,
   SENTIMENT_DISTRIBUTION,
@@ -254,18 +255,34 @@ export default function BrandSentimentPage() {
               {distributionIsMock && <MockDataBadge />}
             </h3>
           </div>
-          <div className="flex items-center justify-center gap-6 mt-2">
-            <DonutChart segments={distributionSegments} size={180} />
-            <div className="flex flex-col gap-2.5">
-              {distributionSegments.map((s) => (
-                <div key={s.name} className="flex items-center gap-2">
-                  <span className="w-2.5 h-2.5 rounded-sm" style={{ background: s.color }} />
-                  <span className="text-xs text-themed-muted w-8">{s.name}</span>
-                  <span className="text-sm font-semibold text-themed-primary tabular-nums">{s.value}%</span>
+          {(() => {
+            const renderDonut = () => (
+              <div className="flex items-center justify-center gap-6 mt-2">
+                <DonutChart segments={distributionSegments} size={180} />
+                <div className="flex flex-col gap-2.5">
+                  {distributionSegments.map((s) => (
+                    <div key={s.name} className="flex items-center gap-2">
+                      <span className="w-2.5 h-2.5 rounded-sm" style={{ background: s.color }} />
+                      <span className="text-xs text-themed-muted w-8">{s.name}</span>
+                      <span className="text-sm font-semibold text-themed-primary tabular-nums">{s.value}%</span>
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
-          </div>
+              </div>
+            );
+            return isLive ? (
+              <QueryStateView
+                query={sentimentQ}
+                isEmpty={() => distributionSegments.length === 0 || positivePct == null}
+                emptyLabel={t('brand_sentiment.no_samples', { default: '暂无数据' })}
+                minHeight={200}
+              >
+                {renderDonut}
+              </QueryStateView>
+            ) : (
+              renderDonut()
+            );
+          })()}
         </Card>
 
         <Card className="p-4">

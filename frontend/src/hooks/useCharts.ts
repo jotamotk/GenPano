@@ -34,7 +34,6 @@ export function useEngineMetrics(
     queryFn: () => projectChartsApi.engineMetrics(projectId as string, filters),
     enabled: isLiveProjectId(projectId),
     staleTime: STALE,
-    retry: false,
   })
 }
 
@@ -47,7 +46,6 @@ export function usePositionDistribution(
     queryFn: () => projectChartsApi.positionDistribution(projectId as string, filters),
     enabled: isLiveProjectId(projectId),
     staleTime: STALE,
-    retry: false,
   })
 }
 
@@ -73,7 +71,6 @@ export function useTopicHeatmap(
     queryFn: () => projectChartsApi.topicHeatmap(projectId as string, opts),
     enabled: isLiveProjectId(projectId),
     staleTime: STALE,
-    retry: false,
   })
 }
 
@@ -86,7 +83,6 @@ export function useSentimentByEngine(
     queryFn: () => projectChartsApi.sentimentByEngine(projectId as string, filters),
     enabled: isLiveProjectId(projectId),
     staleTime: STALE,
-    retry: false,
   })
 }
 
@@ -99,7 +95,6 @@ export function useSentimentTrendByEngine(
     queryFn: () => projectChartsApi.sentimentTrendByEngine(projectId as string, filters),
     enabled: isLiveProjectId(projectId),
     staleTime: STALE,
-    retry: false,
   })
 }
 
@@ -113,7 +108,6 @@ export function useTopicAttribution(
     queryFn: () => projectChartsApi.topicAttribution(projectId as string, limit, filters),
     enabled: isLiveProjectId(projectId),
     staleTime: STALE,
-    retry: false,
   })
 }
 
@@ -133,7 +127,6 @@ export function useMentionSamples(
     queryFn: () => projectChartsApi.mentionSamples(projectId as string, opts),
     enabled: isLiveProjectId(projectId),
     staleTime: STALE,
-    retry: false,
   })
 }
 
@@ -146,7 +139,6 @@ export function useAuthorityTrend(
     queryFn: () => projectChartsApi.authorityTrend(projectId as string, filters),
     enabled: isLiveProjectId(projectId),
     staleTime: STALE,
-    retry: false,
   })
 }
 
@@ -159,7 +151,6 @@ export function useCitationComposition(
     queryFn: () => projectChartsApi.citationComposition(projectId as string, filters),
     enabled: isLiveProjectId(projectId),
     staleTime: STALE,
-    retry: false,
   })
 }
 
@@ -175,7 +166,6 @@ export function useTopCitedPages(
     queryFn: () => projectChartsApi.topCitedPages(projectId as string, limit, filters),
     enabled: isLiveProjectId(projectId),
     staleTime: STALE,
-    retry: false,
   })
 }
 
@@ -189,7 +179,6 @@ export function useContentGap(
     queryFn: () => projectChartsApi.contentGap(projectId as string, limit, filters),
     enabled: isLiveProjectId(projectId),
     staleTime: STALE,
-    retry: false,
   })
 }
 
@@ -199,7 +188,6 @@ export function usePrTargets(projectId: string | null | undefined) {
     queryFn: () => projectChartsApi.prTargets(projectId as string),
     enabled: isLiveProjectId(projectId),
     staleTime: STALE,
-    retry: false,
   })
 }
 
@@ -209,7 +197,6 @@ export function useSimulatorBaseline(projectId: string | null | undefined) {
     queryFn: () => projectChartsApi.simulatorBaseline(projectId as string),
     enabled: isLiveProjectId(projectId),
     staleTime: STALE,
-    retry: false,
   })
 }
 
@@ -219,7 +206,6 @@ export function useAuthorityRadar(projectId: string | null | undefined) {
     queryFn: () => projectChartsApi.authorityRadar(projectId as string),
     enabled: isLiveProjectId(projectId),
     staleTime: STALE,
-    retry: false,
   })
 }
 
@@ -229,7 +215,6 @@ export function useGroupSharedDomains(projectId: string | null | undefined) {
     queryFn: () => projectChartsApi.groupSharedDomains(projectId as string),
     enabled: isLiveProjectId(projectId),
     staleTime: STALE,
-    retry: false,
   })
 }
 
@@ -239,6 +224,5 @@ export function useProductRelations(projectId: string | null | undefined) {
     queryFn: () => projectChartsApi.productRelations(projectId as string),
     enabled: isLiveProjectId(projectId),
     staleTime: STALE,
-    retry: false,
   })
 }
