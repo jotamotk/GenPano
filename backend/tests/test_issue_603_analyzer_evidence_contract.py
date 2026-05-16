@@ -1618,3 +1618,102 @@ async def test_top_cited_pages_honors_limit_param(
     body = resp.json()
     assert len(body["items"]) == 2
     assert body["total"] == 5
+
+
+@pytest.mark.asyncio
+async def test_top_cited_pages_aggregates_by_url_title_not_domain(
+    client,
+    user: User,
+    db_session: AsyncSession,
+) -> None:
+    """Issue #1019 / PR #1026 Codex review: the contract says pages aggregate
+    by ``(url, title)``. When the same URL/title is stored with inconsistent
+    domain values (parser miss, www-prefix, etc.) the previous implementation
+    grouped by ``(url, title, domain)`` and produced duplicate rows with split
+    counts. Pin the deduplication: 4 rows for the same URL with mixed domain
+    values must collapse to a single Top Pages row whose ``count`` is the sum.
+    """
+    project = await _project(db_session, user)
+    await _seed_admin_chain_tables(db_session)
+    await db_session.execute(
+        text("INSERT INTO brands (id, name, industry) VALUES (12, 'Estee Lauder', 'Beauty')")
+    )
+    await _seed_chain_response(
+        db_session,
+        topic_id=10391,
+        prompt_id=10392,
+        query_id=10393,
+        response_id=10394,
+    )
+    mention = BrandMention(
+        response_id=10394,
+        brand_id=12,
+        brand_name="Estee Lauder",
+        mention_count=1,
+        sentiment="positive",
+        sentiment_score=0.8,
+        created_at=DAY,
+    )
+    db_session.add(mention)
+    await db_session.flush()
+    db_session.add_all(
+        [
+            # Same (url, title), different / missing domain values.
+            CitationSource(
+                response_id=10394,
+                mention_id=mention.id,
+                url="https://example.com/shared-page",
+                domain="example.com",
+                title="Shared Page",
+                source_type="publisher",
+                created_at=DAY,
+            ),
+            CitationSource(
+                response_id=10394,
+                mention_id=mention.id,
+                url="https://example.com/shared-page",
+                domain="www.example.com",
+                title="Shared Page",
+                source_type="publisher",
+                created_at=DAY,
+            ),
+            CitationSource(
+                response_id=10394,
+                mention_id=mention.id,
+                url="https://example.com/shared-page",
+                domain=None,
+                title="Shared Page",
+                source_type="publisher",
+                created_at=DAY,
+            ),
+            CitationSource(
+                response_id=10394,
+                mention_id=mention.id,
+                url="https://example.com/shared-page",
+                domain="example.com",
+                title="Shared Page",
+                source_type="publisher",
+                created_at=DAY,
+            ),
+            _analysis(10394, _base_packages(response_id=10394)),
+        ]
+    )
+    await db_session.commit()
+
+    resp = await client.get(
+        f"/api/v1/projects/{project.id}/citations/top-pages",
+        headers=_bearer(user),
+        params={"from": DAY.date().isoformat(), "to": DAY.date().isoformat()},
+    )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    shared_rows = [it for it in body["items"] if it["url"] == "https://example.com/shared-page"]
+    # Single row — not 2 (example.com / www.example.com) or 3 (also NULL).
+    assert len(shared_rows) == 1, body
+    assert shared_rows[0]["count"] == 4
+    assert shared_rows[0]["title"] == "Shared Page"
+    # Representative domain is a populated value (MAX(domain) — NULL loses).
+    assert shared_rows[0]["domain"] in {"example.com", "www.example.com"}
+    # `total` counts distinct pages: just 1 in this fixture.
+    assert body["total"] == 1

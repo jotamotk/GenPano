@@ -136,11 +136,20 @@ async def _target_top_cited_pages_rows(
         if to_dt is not None:
             predicates.append(CitationSource.created_at <= to_dt)
 
+    # Issue #1019 / PR #1026 Codex review: group ONLY by (url, title) per the
+    # endpoint contract. Including ``CitationSource.domain`` in the GROUP BY
+    # would split the same cited page into duplicate rows whenever the same
+    # URL was stored with inconsistent domain values (``example.com`` vs.
+    # ``www.example.com`` vs. ``NULL`` from a parser miss), each row carrying
+    # a lower count. The aggregated count would also no longer match the
+    # frontend's "showing N of M" summary. Use ``MAX(domain)`` as a stable
+    # representative (NULLs lose to non-NULL strings under SQL MAX, so a
+    # populated value wins when present).
     base = (
         select(
             CitationSource.url.label("url"),
             CitationSource.title.label("title"),
-            CitationSource.domain.label("domain"),
+            func.max(CitationSource.domain).label("domain"),
             func.count().label("cnt"),
             func.min(CitationSource.created_at).label("first_seen"),
             func.max(CitationSource.created_at).label("last_seen"),
@@ -150,7 +159,7 @@ async def _target_top_cited_pages_rows(
         .join(BrandMention, BrandMention.id == CitationSource.mention_id)
         .outerjoin(DomainAuthority, DomainAuthority.domain == CitationSource.domain)
         .where(and_(*predicates))
-        .group_by(CitationSource.url, CitationSource.title, CitationSource.domain)
+        .group_by(CitationSource.url, CitationSource.title)
     )
 
     total_distinct = int(
