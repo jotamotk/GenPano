@@ -1,0 +1,213 @@
+name: Topics #1029 Account Status Test
+
+# Last-resort ops experiment for issue #1029.
+# Hypothesis: llm_accounts.status='expired' for accounts 16 (chatgpt) and 20
+# (deepseek) might be a stale label set days ago. The cookies_json blobs are
+# still present and large; if the underlying cookies are still valid, forcing
+# status='active' would let workers pick them up and try them.
+#
+# Single-shot, reversible: workers re-mark dead accounts back to expired on
+# failure, so this is not poisoning the system. If queries succeed we unblock;
+# if they fail with auth errors we have stronger evidence cookies are dead.
+#
+# Only touches accounts 16 and 20 — guarded by status='expired'. Then
+# dispatches just 6 stranded queries (2 deepseek + 4 chatgpt) and waits 2
+# minutes for workers to act, then runs a read-only post-readback.
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches:
+      - claude/fix-issue-1029-account-status-test-Ny8TZ
+    paths:
+      - '.github/workflows/topics-1029-account-status-test.yml'
+
+concurrency:
+  group: topics-1029-account-status-test
+  cancel-in-progress: false
+
+jobs:
+  account-status-test:
+    name: Force-reactivate accounts 16 + 20 and dispatch 6 test queries
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    env:
+      SERVER_HOST: ${{ secrets.SERVER_HOST }}
+      SERVER_USER: ${{ secrets.SERVER_USER }}
+      SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+
+    steps:
+      - name: Set up SSH
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "${SERVER_SSH_KEY}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H "${SERVER_HOST}" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Step 1 — UPDATE accounts + dispatch_many + post-readback
+        shell: bash
+        run: |
+          set -euo pipefail
+          ssh \
+            -i ~/.ssh/id_rsa \
+            -o StrictHostKeyChecking=accept-new \
+            "${SERVER_USER}@${SERVER_HOST}" \
+            "bash -s" <<'REMOTE' | tee /tmp/topics_1029_acct_test.txt
+          # Don't fail-fast on any single SQL error so we always emit the full
+          # diagnostic trail to the artifact + PR comment. Each step uses
+          # '|| true' instead so a single failure doesn't truncate evidence.
+          set +e
+          cd /opt/genpano
+
+          echo "=== Captured at ==="
+          date -u +"%Y-%m-%dT%H:%M:%SZ"
+
+          echo
+          echo "=== Step 1a. UPDATE: force-reactivate accounts 16 + 20 ==="
+          # Single transaction with explicit COMMIT. Snapshot pre-state,
+          # apply UPDATE guarded by status='expired', show post-state.
+          printf '%s\n' \
+            "\\pset pager off" \
+            "\\set ON_ERROR_STOP on" \
+            "BEGIN;" \
+            "\\echo '--- pre-state snapshot ---'" \
+            "SELECT id, llm_name, status, last_used_at, cookies_updated_at, consecutive_fails FROM llm_accounts WHERE id IN (20, 16) ORDER BY id;" \
+            "\\echo '--- applying UPDATE (guard: status=expired only) ---'" \
+            "UPDATE llm_accounts SET status = 'active', consecutive_fails = 0, cooldown_until = NULL, updated_at = NOW() WHERE id IN (20, 16) AND status = 'expired';" \
+            "\\echo '--- post-state snapshot ---'" \
+            "SELECT id, llm_name, status, consecutive_fails, cooldown_until, updated_at FROM llm_accounts WHERE id IN (20, 16) ORDER BY id;" \
+            "COMMIT;" \
+            > /tmp/acct_update.sql
+          docker cp /tmp/acct_update.sql genpano-postgres-1:/tmp/acct_update.sql 2>&1 || true
+          docker compose exec -T postgres psql -U genpano -d genpano -X -f /tmp/acct_update.sql 2>&1
+          update_rc=$?
+          echo "UPDATE_RC=${update_rc}"
+
+          if [ "${update_rc}" != "0" ]; then
+            echo "ERROR: UPDATE transaction failed (rc=${update_rc}); STOPPING per AGENTS.md rule 3."
+            echo "=== Account-status test aborted (BLOCKED) ==="
+            exit "${update_rc}"
+          fi
+
+          echo
+          echo "=== Step 1b. dispatch_many for 6 stranded queries ==="
+          # Pick 6 stranded queries (2 deepseek + 4 chatgpt) for topics
+          # 162..170 that are pending with no llm_response and target_llm in
+          # ('deepseek','chatgpt'). Cap chatgpt+deepseek mix at 6 total.
+          # The Python code is built via printf to avoid nesting heredocs
+          # inside the outer 'REMOTE' SSH heredoc (which would never close).
+          printf '%s\n' \
+            "import asyncio" \
+            "from app.db.session import AsyncSessionLocal" \
+            "from sqlalchemy import text" \
+            "from app.admin.queries.celery_dispatch import dispatch_many" \
+            "" \
+            "async def main():" \
+            "    async with AsyncSessionLocal() as session:" \
+            "        rows = await session.execute(text(\"\"\"" \
+            "            SELECT q.id, q.target_llm" \
+            "            FROM queries q" \
+            "            JOIN prompts p ON p.id = q.prompt_id" \
+            "            LEFT JOIN llm_responses r ON r.query_id = q.id" \
+            "            WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170)" \
+            "              AND q.status = 'pending'" \
+            "              AND r.id IS NULL" \
+            "              AND q.target_llm IN ('deepseek', 'chatgpt')" \
+            "            ORDER BY q.target_llm, q.id" \
+            "            LIMIT 6" \
+            "        \"\"\"))" \
+            "        items = [{'id': r[0], 'target_llm': r[1]} for r in rows]" \
+            "        print(f'test-dispatching {len(items)} queries:')" \
+            "        for it in items:" \
+            "            print(f'  q={it[\"id\"]} llm={it[\"target_llm\"]}')" \
+            "        with open('/tmp/test_query_ids.txt', 'w') as fh:" \
+            "            for it in items:" \
+            "                fh.write(f'{it[\"id\"]}\\n')" \
+            "        dispatched, failed = dispatch_many(items)" \
+            "        print(f'dispatch_many result: dispatched={dispatched} failed={failed}')" \
+            "" \
+            "asyncio.run(main())" \
+            > /tmp/dispatch_acct_test.py
+          docker cp /tmp/dispatch_acct_test.py genpano-backend-1:/tmp/dispatch_acct_test.py 2>&1 || true
+          docker compose exec -T backend python /tmp/dispatch_acct_test.py 2>&1
+          dispatch_rc=$?
+          echo "DISPATCH_RC=${dispatch_rc}"
+
+          # Pull the captured IDs back from the backend container for the
+          # post-readback SQL parameterization.
+          docker compose exec -T backend cat /tmp/test_query_ids.txt 2>/dev/null > /tmp/test_query_ids.txt || true
+          TEST_QUERY_IDS=$(tr '\n' ',' < /tmp/test_query_ids.txt | sed 's/,$//')
+          if [ -z "${TEST_QUERY_IDS}" ]; then
+            TEST_QUERY_IDS="-1"  # safe sentinel so SQL doesn't blow up
+          fi
+          echo "TEST_QUERY_IDS=${TEST_QUERY_IDS}"
+
+          echo
+          echo "=== Step 1c. Sleep 120s to give workers a chance to pick up ==="
+          sleep 120
+
+          echo
+          echo "=== Step 1d. Post-readback (READ ONLY) ==="
+          printf '%s\n' \
+            "\\pset pager off" \
+            "\\set ON_ERROR_STOP off" \
+            "BEGIN TRANSACTION READ ONLY;" \
+            "\\echo '--- the 6 test queries: post-2min status ---'" \
+            "SELECT id, target_llm, status, retry_reason, account_id, latency_ms, started_at, finished_at FROM queries WHERE id IN (${TEST_QUERY_IDS}) ORDER BY id;" \
+            "\\echo '--- accounts 16, 20, 17 (17 included for comparison) ---'" \
+            "SELECT id, llm_name, status, consecutive_fails, last_used_at, cooldown_until FROM llm_accounts WHERE id IN (16, 20, 17) ORDER BY id;" \
+            "\\echo '--- new_llm_responses count for the 6 test queries ---'" \
+            "SELECT COUNT(*) AS new_llm_responses FROM llm_responses r WHERE r.query_id IN (${TEST_QUERY_IDS});" \
+            "ROLLBACK;" \
+            > /tmp/acct_postreadback.sql
+          docker cp /tmp/acct_postreadback.sql genpano-postgres-1:/tmp/acct_postreadback.sql 2>&1 || true
+          docker compose exec -T postgres psql -U genpano -d genpano -X -f /tmp/acct_postreadback.sql 2>&1 || true
+
+          echo
+          echo "=== Account-status test complete ==="
+          REMOTE
+
+      - name: Upload run log as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: topics-1029-account-status-test
+          path: /tmp/topics_1029_acct_test.txt
+          if-no-files-found: warn
+
+      - name: Post account-status test result to PR #1077 as comment
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: 1077
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -s /tmp/topics_1029_acct_test.txt ]; then
+            echo "log file missing or empty; skipping PR comment"
+            exit 0
+          fi
+          {
+            echo "## Account-status test (issue #1029) — force-reactivate accounts 16 + 20"
+            echo ""
+            echo "**Run**: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo "**Branch**: \`${{ github.ref_name }}\`"
+            echo ""
+            echo "<details><summary>Raw UPDATE + dispatch + post-readback output (click)</summary>"
+            echo ""
+            echo '```'
+            # Strip ANSI; cap to ~55KB to stay under GitHub's 64KB comment limit.
+            sed 's/\x1b\[[0-9;]*m//g' /tmp/topics_1029_acct_test.txt | head -c 55000
+            echo ''
+            echo '```'
+            echo ""
+            echo "</details>"
+          } > /tmp/acct-test-comment.md
+          gh pr comment "$PR_NUMBER" --repo "$REPO" --body-file /tmp/acct-test-comment.md
