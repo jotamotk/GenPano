@@ -9,37 +9,51 @@ from genpano_models import Project, ProjectCompetitor
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.reports.sections.anchor_actions import AnchorActionsSection
 from app.reports.sections.base import BaseSection, ReportContext, SectionData
 from app.reports.sections.competitor_comparison import CompetitorComparisonSection
+from app.reports.sections.cta import CtaSection
 from app.reports.sections.diagnostic_summary import DiagnosticSummarySection
 from app.reports.sections.executive_summary import ExecutiveSummarySection
 from app.reports.sections.pano_score import PanoScoreSection
 
-# PRD §4.7.2 — variants: 'full' | 'simple' | 'p01_only' | 'optional'
-# Each cell is the chosen variant for (report_type, section_type).
+# PRD §4.7.2 — variants: 'full' | 'simple' | 'p01_only' | 'optional' |
+# 'strengthened' | 'all'. Each cell is the chosen variant for
+# (report_type, section_type). `null` (absent key) means the section is
+# not part of that report type.
 SECTION_MATRIX: dict[str, dict[str, str]] = {
     "weekly": {
         "executive_summary": "full",
         "pano_score": "full",
         "competitor_comparison": "full",
         "diagnostic_summary": "p01_only",
+        "anchor_actions": "p01_only",
+        "cta": "full",
     },
     "monthly": {
         "executive_summary": "full",
         "pano_score": "full",
         "competitor_comparison": "full",
         "diagnostic_summary": "full",
+        "anchor_actions": "all",
+        "cta": "full",
     },
     "on_demand": {
         "executive_summary": "simple",
         "pano_score": "simple",
         "competitor_comparison": "optional",
         "diagnostic_summary": "full",
+        "anchor_actions": "all",
+        # Codex #1061 review: FE mock matrix has on_demand.cta=full; the
+        # consulting CTA is part of the spec's conversion surface for
+        # API/MCP-generated on-demand reports too.
+        "cta": "full",
     },
     # lead_diagnostic uses dedicated lead_view; full SECTION_MATRIX bypassed
     "lead_diagnostic": {
         "executive_summary": "simple",
         "diagnostic_summary": "full",
+        "cta": "strengthened",
     },
 }
 
@@ -48,6 +62,8 @@ SECTION_ORDER: list[str] = [
     "pano_score",
     "competitor_comparison",
     "diagnostic_summary",
+    "anchor_actions",
+    "cta",
 ]
 
 _REGISTRY: dict[str, type[BaseSection]] = {
@@ -55,6 +71,8 @@ _REGISTRY: dict[str, type[BaseSection]] = {
     "pano_score": PanoScoreSection,
     "competitor_comparison": CompetitorComparisonSection,
     "diagnostic_summary": DiagnosticSummarySection,
+    "anchor_actions": AnchorActionsSection,
+    "cta": CtaSection,
 }
 
 
