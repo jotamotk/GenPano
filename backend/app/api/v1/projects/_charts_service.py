@@ -1786,11 +1786,7 @@ async def get_authority_trend(
         value = int(cnt or 0)
         if value <= 0:
             continue
-        tier = (
-            int(db_tier)
-            if db_tier is not None
-            else _classify_untiered_domain(domain, aliases)
-        )
+        tier = int(db_tier) if db_tier is not None else _classify_untiered_domain(domain, aliases)
         authority_by_day.setdefault(d_iso, defaultdict(int))[tier] += value
 
     authority_points: list[AuthorityTrendPoint] = []
@@ -1984,11 +1980,7 @@ async def get_citation_composition(
         count = int(cnt or 0)
         if count <= 0:
             continue
-        tier = (
-            int(db_tier)
-            if db_tier is not None
-            else _classify_untiered_domain(domain, aliases)
-        )
+        tier = int(db_tier) if db_tier is not None else _classify_untiered_domain(domain, aliases)
         rows_by_tier[tier] = rows_by_tier.get(tier, 0) + count
         total += count
     label_for = {

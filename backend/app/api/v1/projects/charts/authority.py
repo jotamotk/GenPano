@@ -87,9 +87,7 @@ async def _target_authority_points_from_facts(
                     brand_filter,
                 )
             )
-            .group_by(
-                CitationSource.response_id, CitationSource.domain, DomainAuthority.tier
-            )
+            .group_by(CitationSource.response_id, CitationSource.domain, DomainAuthority.tier)
         )
     ).all()
     aliases = sorted(await brand_mention_names(session, brand_id))
