@@ -34,6 +34,19 @@ export function useReports(projectId: string | null | undefined, limit = 50) {
   })
 }
 
+export function useReport(
+  projectId: string | null | undefined,
+  reportId: string | null | undefined,
+) {
+  const enabled = isLiveProjectId(projectId) && !!reportId
+  return useQuery<ReportDetailOut>({
+    queryKey: [...REPORTS_QUERY_KEY, projectId, 'detail', reportId],
+    queryFn: () => reportsApi.get(projectId as string, reportId as string),
+    enabled,
+    staleTime: 60 * 1000,
+  })
+}
+
 export function useCreateReport(projectId: string | null | undefined) {
   const qc = useQueryClient()
   return useMutation<ReportDetailOut, Error, ReportCreateIn>({
