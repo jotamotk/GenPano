@@ -154,14 +154,9 @@ async def _target_top_cited_pages_rows(
     )
 
     total_distinct = int(
-        (
-            await session.execute(select(func.count()).select_from(base.subquery()))
-        ).scalar_one()
-        or 0
+        (await session.execute(select(func.count()).select_from(base.subquery()))).scalar_one() or 0
     )
-    rows = (
-        await session.execute(base.order_by(desc("cnt"), desc("last_seen")).limit(limit))
-    ).all()
+    rows = (await session.execute(base.order_by(desc("cnt"), desc("last_seen")).limit(limit))).all()
     items = [
         TopCitedPageRow(
             url=row.url,

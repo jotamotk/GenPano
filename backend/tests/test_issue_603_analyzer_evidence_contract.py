@@ -1551,9 +1551,7 @@ async def test_top_cited_pages_uses_lenient_brand_match_for_alias_only_mentions(
     assert body["state"] in {"ok", "partial"}
     assert "citation_sources" in body["source_provenance"]
     # Per-page page-level metadata exposed.
-    popular = next(
-        item for item in body["items"] if item["url"] == "https://example.com/popular"
-    )
+    popular = next(item for item in body["items"] if item["url"] == "https://example.com/popular")
     assert popular["title"] == "Popular FK-bound page"
     assert popular["domain"] == "example.com"
     assert popular["first_seen_at"] is not None
