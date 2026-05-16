@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from genpano_models import (
@@ -13,7 +13,7 @@ from genpano_models import (
     User,
     UserNotificationPreferences,
 )
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import not_found
@@ -61,22 +61,37 @@ async def list_user_alerts(
     if project_id:
         stmt = stmt.where(Alert.project_id == project_id)
     stmt = stmt.order_by(Alert.triggered_at.desc()).limit(limit)
-    return list((await session.execute(stmt)).scalars().all())
+    rows = list((await session.execute(stmt)).scalars().all())
+    # PRD §4.8.7: when no explicit status filter, lazy-expire snoozed alerts
+    # whose snoozed_until has passed — flip them back to 'unread' so the
+    # caller never sees a stale snooze.
+    if status is None:
+        await _expire_snoozed_alerts(session, rows, user=user)
+    return rows
 
 
 async def unread_count(session: AsyncSession, *, user: User) -> dict[str, Any]:
-    """Bell badge count + breakdown by severity."""
+    """Bell badge count + breakdown by severity.
+
+    PRD §4.8.7 / AC-4.8-15: snoozed alerts are NOT counted as unread, even
+    when their `status` column hasn't been flipped back yet (lazy expiry).
+    Concretely we count `unread` plus `snoozed AND snoozed_until <= now`.
+    """
     user_projects = (
         select(Project.id).where(and_(Project.user_id == user.id, Project.deleted_at.is_(None)))
     ).scalar_subquery()
+    now = _now()
 
     stmt = (
         select(Alert.severity, func.count())
         .where(
             and_(
                 Alert.scope == "user",
-                Alert.status == "unread",
                 Alert.project_id.in_(user_projects),
+                or_(
+                    Alert.status == "unread",
+                    and_(Alert.status == "snoozed", Alert.snoozed_until <= now),
+                ),
             )
         )
         .group_by(Alert.severity)
@@ -95,9 +110,16 @@ async def patch_alert_status(
     user: User,
     alert_id: str,
     new_status: str,
+    snoozed_until: datetime | None = None,
 ) -> Alert:
     """Update an alert's status. Multi-tenant guard: alert.project must be
-    owned by user."""
+    owned by user.
+
+    When `new_status='snoozed'`, `snoozed_until` MUST be a future
+    timestamp — callers should use the `snooze_alert` helper which
+    centralizes the duration logic. For all other transitions, leaving
+    `snoozed_until` untouched preserves any prior snooze window history.
+    """
     user_projects = (
         select(Project.id).where(and_(Project.user_id == user.id, Project.deleted_at.is_(None)))
     ).scalar_subquery()
@@ -118,9 +140,51 @@ async def patch_alert_status(
         alert.read_by = user.id
     elif new_status == "resolved" and alert.resolved_at is None:
         alert.resolved_at = _now()
+    elif new_status == "snoozed":
+        alert.snoozed_until = snoozed_until
     await session.commit()
     await session.refresh(alert)
     return alert
+
+
+async def snooze_alert(
+    session: AsyncSession,
+    *,
+    user: User,
+    alert_id: str,
+    hours: int,
+) -> Alert:
+    """Snooze an alert for `hours`. Multi-tenant guard same as
+    `patch_alert_status`. Default hours come from
+    `_dto.DEFAULT_SNOOZE_HOURS` (24). PRD §4.8.7 / AC-4.8-15."""
+    snoozed_until = _now() + timedelta(hours=hours)
+    return await patch_alert_status(
+        session,
+        user=user,
+        alert_id=alert_id,
+        new_status="snoozed",
+        snoozed_until=snoozed_until,
+    )
+
+
+async def _expire_snoozed_alerts(session: AsyncSession, rows: list[Alert], *, user: User) -> None:
+    """Flip rows whose `snoozed_until` has passed back to 'unread' in
+    place. Caller passes the in-memory list so we don't issue extra
+    queries — we mutate the loaded objects and commit. Idempotent."""
+    now = _now()
+    flipped = 0
+    for a in rows:
+        if a.status == "snoozed" and a.snoozed_until is not None and a.snoozed_until <= now:
+            a.status = "unread"
+            flipped += 1
+    if flipped:
+        await session.commit()
+        # Refresh the affected rows so the caller sees the new status.
+        for a in rows:
+            if a.status == "unread" and a.snoozed_until is not None:
+                # Only refresh those we just changed; cheap because they're
+                # already in the session.
+                await session.refresh(a)
 
 
 async def mark_all_read(session: AsyncSession, *, user: User) -> int:
