@@ -106,31 +106,40 @@ def build_causal_chain(
     """Return a causal_chain dict for a diagnostic.
 
     `evidence` is the rule's evidence dict (per Diagnostic.evidence). It
-    can contain keys like `previousValue`, `currentValue`, `changePercent`.
-    Templates use these to fill in placeholders.
+    carries snake_case keys (`previous_value`, `current_value`,
+    `change_percent`, `affected_queries`) — matching the producer in
+    `rules.py`. Templates fill in placeholders from these keys.
     """
     tpl = RULE_TEMPLATES.get(rule_id, _GENERIC_TEMPLATE)
     mechanism = tpl["mechanism"]
 
     fill = {
         "brand": brand_name or "品牌",
-        "value": _fmt_value(evidence.get("currentValue")),
-        "prev_value": _fmt_value(evidence.get("previousValue")),
-        "pct": _fmt_pct(evidence.get("changePercent")),
+        "value": _fmt_value(_pick(evidence, "current_value", "currentValue")),
+        "prev_value": _fmt_value(_pick(evidence, "previous_value", "previousValue")),
+        "pct": _fmt_pct(_pick(evidence, "change_percent", "changePercent")),
         "category": evidence.get("metric", "indicator"),
     }
     try:
         mechanism = mechanism.format(**fill)
     except (KeyError, IndexError):
-        pass  # template missing keys — ship as-is
+        pass
 
+    supporting = _pick(evidence, "affected_queries", "affectedQueries") or []
     return {
         "hypothesizedMechanism": mechanism,
         "alternativeHypotheses": tpl["alternatives"],
-        "supportingEvidence": evidence.get("affectedQueries", [])[:3],
+        "supportingEvidence": supporting[:3],
         "confidenceLevel": tpl["confidence"],
-        "source": "deterministic_v1",  # LLM swap-in marker
+        "source": "deterministic_v1",
     }
+
+
+def _pick(d: dict[str, Any], *keys: str) -> Any:
+    for k in keys:
+        if k in d and d[k] is not None:
+            return d[k]
+    return None
 
 
 def _fmt_value(v: Any) -> str:

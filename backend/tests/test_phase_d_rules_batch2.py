@@ -19,6 +19,7 @@ from genpano_models import (
     BrandMention,
     CitationSource,
     GeoScoreDaily,
+    KgBrand,
     Project,
     User,
 )
@@ -58,10 +59,34 @@ async def user(db_session: AsyncSession) -> User:
 
 @pytest_asyncio.fixture
 async def project(db_session: AsyncSession, user: User) -> Project:
-    p = Project(id=_new_id(), user_id=user.id, name="P", primary_brand_id=410)
+    # industry_id required so IndustryLagTop10Rule has a peer scope.
+    p = Project(
+        id=_new_id(),
+        user_id=user.id,
+        name="P",
+        primary_brand_id=410,
+        industry_id=1,
+    )
     db_session.add(p)
     await db_session.commit()
     return p
+
+
+async def _seed_kg_brands(
+    db_session: AsyncSession, brand_ids: list[int], *, industry_id: int
+) -> None:
+    """Map brand_ids → industry_id via KgBrand so IndustryLagTop10Rule can
+    scope its top-10 peer set to the project's industry."""
+    for bid in brand_ids:
+        db_session.add(
+            KgBrand(
+                brand_id=bid,
+                industry_id=industry_id,
+                primary_name=f"brand-{bid}",
+                status="approved",
+            )
+        )
+    await db_session.commit()
 
 
 # ── SentimentDropRule ────────────────────────────────────────────
@@ -211,13 +236,14 @@ async def test_share_of_voice_minor_no_trigger_when_above_5pct(db_session, proje
 async def test_industry_lag_p1_when_lag_geq_20(db_session, project):
     """Top-10 avg=85, my=60, lag=25 → P1."""
     today = datetime.now().date()
-    # Seed 10 high-scoring brands → average will be ~85
-    for bid_offset in range(10):
+    peer_ids = [500 + i for i in range(10)]
+    await _seed_kg_brands(db_session, peer_ids, industry_id=project.industry_id)
+    for bid in peer_ids:
         for i in range(30):
             d = today - timedelta(days=29 - i)
             db_session.add(
                 GeoScoreDaily(
-                    brand_id=500 + bid_offset,
+                    brand_id=bid,
                     date=datetime.combine(d, datetime.min.time()),
                     target_llm="chatgpt",
                     avg_geo_score=85.0,
@@ -225,7 +251,6 @@ async def test_industry_lag_p1_when_lag_geq_20(db_session, project):
                     total_queries=100,
                 )
             )
-    # My brand at 60
     for i in range(30):
         d = today - timedelta(days=29 - i)
         db_session.add(
@@ -249,12 +274,14 @@ async def test_industry_lag_p1_when_lag_geq_20(db_session, project):
 async def test_industry_lag_p2_when_lag_10_to_20(db_session, project):
     """Top-10 avg=85, my=72, lag=13 → P2."""
     today = datetime.now().date()
-    for bid_offset in range(10):
+    peer_ids = [600 + i for i in range(10)]
+    await _seed_kg_brands(db_session, peer_ids, industry_id=project.industry_id)
+    for bid in peer_ids:
         for i in range(30):
             d = today - timedelta(days=29 - i)
             db_session.add(
                 GeoScoreDaily(
-                    brand_id=600 + bid_offset,
+                    brand_id=bid,
                     date=datetime.combine(d, datetime.min.time()),
                     target_llm="chatgpt",
                     avg_geo_score=85.0,
@@ -284,12 +311,14 @@ async def test_industry_lag_p2_when_lag_10_to_20(db_session, project):
 async def test_industry_lag_no_trigger_when_close(db_session, project):
     """My score very close to top-10 → no trigger."""
     today = datetime.now().date()
-    for bid_offset in range(10):
+    peer_ids = [700 + i for i in range(10)]
+    await _seed_kg_brands(db_session, peer_ids, industry_id=project.industry_id)
+    for bid in peer_ids:
         for i in range(30):
             d = today - timedelta(days=29 - i)
             db_session.add(
                 GeoScoreDaily(
-                    brand_id=700 + bid_offset,
+                    brand_id=bid,
                     date=datetime.combine(d, datetime.min.time()),
                     target_llm="chatgpt",
                     avg_geo_score=85.0,
@@ -311,6 +340,78 @@ async def test_industry_lag_no_trigger_when_close(db_session, project):
         )
     await db_session.commit()
     out = await IndustryLagTop10Rule().evaluate(db_session, project)
+    assert out == []
+
+
+@pytest.mark.asyncio
+async def test_industry_lag_no_trigger_when_project_has_no_industry(db_session, user):
+    """A project without industry_id has no peer scope — rule must abstain."""
+    p_no_industry = Project(
+        id=_new_id(),
+        user_id=user.id,
+        name="P-no-industry",
+        primary_brand_id=410,
+        industry_id=None,
+    )
+    db_session.add(p_no_industry)
+    await db_session.commit()
+    out = await IndustryLagTop10Rule().evaluate(db_session, p_no_industry)
+    assert out == []
+
+
+@pytest.mark.asyncio
+async def test_industry_lag_ignores_brands_in_other_industries(db_session, project):
+    """Peers in a different industry must be excluded from the top-10."""
+    today = datetime.now().date()
+    # In-industry peers: low scores (~60) so my 65 wouldn't lag
+    in_industry_ids = [810 + i for i in range(10)]
+    await _seed_kg_brands(db_session, in_industry_ids, industry_id=project.industry_id)
+    # Out-of-industry peers: high scores (~95) — must NOT be included
+    out_of_industry_ids = [910 + i for i in range(10)]
+    await _seed_kg_brands(db_session, out_of_industry_ids, industry_id=project.industry_id + 100)
+    for bid in in_industry_ids:
+        for i in range(30):
+            d = today - timedelta(days=29 - i)
+            db_session.add(
+                GeoScoreDaily(
+                    brand_id=bid,
+                    date=datetime.combine(d, datetime.min.time()),
+                    target_llm="chatgpt",
+                    avg_geo_score=60.0,
+                    avg_sov=0.1,
+                    total_queries=100,
+                )
+            )
+    for bid in out_of_industry_ids:
+        for i in range(30):
+            d = today - timedelta(days=29 - i)
+            db_session.add(
+                GeoScoreDaily(
+                    brand_id=bid,
+                    date=datetime.combine(d, datetime.min.time()),
+                    target_llm="chatgpt",
+                    avg_geo_score=95.0,
+                    avg_sov=0.1,
+                    total_queries=100,
+                )
+            )
+    for i in range(30):
+        d = today - timedelta(days=29 - i)
+        db_session.add(
+            GeoScoreDaily(
+                brand_id=410,
+                date=datetime.combine(d, datetime.min.time()),
+                target_llm="chatgpt",
+                avg_geo_score=65.0,
+                avg_sov=0.1,
+                total_queries=100,
+            )
+        )
+    await db_session.commit()
+    out = await IndustryLagTop10Rule().evaluate(db_session, project)
+    # My 65 vs in-industry top-10 avg=60 → lag negative → no trigger.
+    # Without the fix, the 95-scoring out-of-industry peers would force a
+    # spurious P1.
     assert out == []
 
 

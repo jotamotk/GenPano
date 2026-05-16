@@ -29,7 +29,32 @@ def _new_id() -> str:
 # ── unit: causal chain ───────────────────────────────────
 
 
-def test_causal_chain_known_rule_substitutes_placeholders():
+def test_causal_chain_snake_case_evidence_substitutes_placeholders():
+    """Producer (rules.py) writes snake_case — consumer must read it."""
+    from app.diagnostics.causal_chain import build_causal_chain
+
+    out = build_causal_chain(
+        rule_id="visibility_decline_v1",
+        evidence={
+            "previous_value": 0.62,
+            "current_value": 0.41,
+            "change_percent": -33.9,
+            "affected_queries": ["q1", "q2", "q3", "q4"],
+        },
+    )
+    assert "0.41" in out["hypothesizedMechanism"]
+    assert "0.62" in out["hypothesizedMechanism"]
+    assert "33" in out["hypothesizedMechanism"]
+    assert "—" not in out["hypothesizedMechanism"]
+    assert "?" not in out["hypothesizedMechanism"]
+    assert len(out["alternativeHypotheses"]) == 3
+    assert len(out["supportingEvidence"]) == 3
+    assert out["confidenceLevel"] == "med"
+    assert out["source"] == "deterministic_v1"
+
+
+def test_causal_chain_camelcase_evidence_still_works():
+    """Legacy callers using camelCase keys still substitute correctly."""
     from app.diagnostics.causal_chain import build_causal_chain
 
     out = build_causal_chain(
@@ -38,16 +63,11 @@ def test_causal_chain_known_rule_substitutes_placeholders():
             "previousValue": 0.62,
             "currentValue": 0.41,
             "changePercent": -33.9,
-            "affectedQueries": ["q1", "q2", "q3", "q4"],
+            "affectedQueries": ["q1"],
         },
     )
     assert "0.41" in out["hypothesizedMechanism"]
     assert "0.62" in out["hypothesizedMechanism"]
-    assert "33" in out["hypothesizedMechanism"]
-    assert len(out["alternativeHypotheses"]) == 3
-    assert len(out["supportingEvidence"]) == 3  # capped at 3
-    assert out["confidenceLevel"] == "med"
-    assert out["source"] == "deterministic_v1"
 
 
 def test_causal_chain_unknown_rule_uses_generic():
@@ -79,15 +99,15 @@ def test_anchor_questions_returns_per_reader():
     out = build_anchor_questions(
         category="visibility_decline",
         reader_hints=["manager", "branding"],
-        evidence={"changePercent": -25.0},
+        evidence={"change_percent": -25.0},
         brand_name="Acme",
     )
     assert "manager" in out
     assert "branding" in out
-    # operator not requested → not in output
     assert "operator" not in out
-    # Substitution worked
     assert any("Acme" in q for q in out["manager"])
+    assert not any("?%" in q for q in out["manager"]), "pct placeholder must substitute"
+    assert any("25" in q for q in out["manager"])
 
 
 def test_anchor_questions_unknown_category_falls_back():
@@ -298,9 +318,15 @@ async def test_evaluator_populates_enrichment_fields(db_session, project_for_eva
     )
     assert rows
     for d in rows:
-        # causal_chain is always populated (deterministic fallback)
         assert d.causal_chain is not None
         assert "hypothesizedMechanism" in d.causal_chain
-        # anchor_questions populated for any reader_hints
+        mech = d.causal_chain["hypothesizedMechanism"]
+        if d.evidence and "current_value" in d.evidence:
+            assert "—" not in mech, f"causal_chain placeholder substitution failed: {mech}"
         if d.reader_hints:
             assert d.anchor_questions is not None
+            for reader, questions in d.anchor_questions.items():
+                for q in questions:
+                    assert "?%" not in q, (
+                        f"anchor_questions pct placeholder failed for {reader}: {q}"
+                    )

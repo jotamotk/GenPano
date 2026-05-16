@@ -271,3 +271,55 @@ async def test_share_token_expired_returns_410(client, user, project, db_session
 async def test_public_unknown_token_404(client) -> None:
     pub = await client.get("/reports/public/totally_invalid_xyz")
     assert pub.status_code == 404
+
+
+# ── B2-1: from_date/to_date must round-trip through scope ───────
+
+
+@pytest.mark.asyncio
+async def test_on_demand_report_period_persists_across_reads(client, user, project) -> None:
+    """On-demand report stores from_date/to_date and re-reads use them.
+
+    Regression: previously scope.from_date / to_date were written but
+    discarded on read — every detail / public view rebuilt with today's
+    default window.
+    """
+    create = await client.post(
+        f"/api/v1/projects/{project.id}/reports",
+        headers=_bearer(user),
+        json={
+            "report_type": "on_demand",
+            "from_date": "2026-01-01",
+            "to_date": "2026-01-31",
+        },
+    )
+    assert create.status_code == 201
+    body = create.json()
+    rid = body["id"]
+    assert body["payload"]["period"] == {"from": "2026-01-01", "to": "2026-01-31"}
+
+    # Detail re-read
+    detail = await client.get(
+        f"/api/v1/projects/{project.id}/reports/{rid}",
+        headers=_bearer(user),
+    )
+    assert detail.status_code == 200
+    assert detail.json()["payload"]["period"] == {
+        "from": "2026-01-01",
+        "to": "2026-01-31",
+    }
+
+    # Public share read
+    share = (
+        await client.post(
+            f"/api/v1/projects/{project.id}/reports/{rid}/share",
+            headers=_bearer(user),
+            json={"expires_in_hours": 24},
+        )
+    ).json()
+    pub = await client.get(f"/reports/public/{share['token']}")
+    assert pub.status_code == 200
+    assert pub.json()["payload"]["period"] == {
+        "from": "2026-01-01",
+        "to": "2026-01-31",
+    }

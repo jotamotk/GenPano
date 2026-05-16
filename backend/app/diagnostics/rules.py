@@ -39,7 +39,7 @@ PLANNED_CATEGORIES is now empty — all PRD §4.7.1.1 categories shipped.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from genpano_models import (
@@ -48,6 +48,7 @@ from genpano_models import (
     BrandMention,
     CitationSource,
     GeoScoreDaily,
+    KgBrand,
     ProductFeatureMention,
     Project,
     ProjectCompetitor,
@@ -362,8 +363,11 @@ class MonitoringOutageRule(BaseRule):
             return []
         # Did we see any data in the last 14 days at all? If never seeded,
         # don't fire — that's an onboarding state, not an outage.
-        cutoff_window = datetime.now() - timedelta(days=14)
-        cutoff_24h = datetime.now() - timedelta(hours=24)
+        # BrandMention.created_at is server-side UTC; align comparison to UTC
+        # so non-UTC servers don't shift the window by the TZ offset.
+        _utc_now = datetime.now(UTC).replace(tzinfo=None)
+        cutoff_window = _utc_now - timedelta(days=14)
+        cutoff_24h = _utc_now - timedelta(hours=24)
         recent_window_stmt = select(func.count(BrandMention.id)).where(
             and_(
                 BrandMention.brand_id == project.primary_brand_id,
@@ -640,6 +644,10 @@ class IndustryLagTop10Rule(BaseRule):
     async def evaluate(self, session: AsyncSession, project: Project) -> list[DiagnosticPayload]:
         if project.primary_brand_id is None:
             return []
+        # Industry comparison only makes sense when we know the project's
+        # industry. Without it, "industry top-10" is meaningless.
+        if project.industry_id is None:
+            return []
         today = date.today()
         from_d = today - timedelta(days=29)
         my_stmt = select(func.avg(GeoScoreDaily.avg_geo_score)).where(
@@ -655,11 +663,20 @@ class IndustryLagTop10Rule(BaseRule):
         if my_score is None:
             return []
 
-        # Industry top-10 avg from geo_score_daily aggregation
-        # (industry_benchmark_daily lacks the top-10 cut directly).
+        # Industry top-10 avg from geo_score_daily aggregation, scoped to
+        # the project's industry via KgBrand.industry_id and excluding the
+        # project's own brand (it can't be in its own peer set).
         top_stmt = (
             select(func.avg(GeoScoreDaily.avg_geo_score).label("g"))
-            .where(GeoScoreDaily.date >= datetime.combine(from_d, datetime.min.time()))
+            .select_from(GeoScoreDaily)
+            .join(KgBrand, KgBrand.brand_id == GeoScoreDaily.brand_id)
+            .where(
+                and_(
+                    GeoScoreDaily.date >= datetime.combine(from_d, datetime.min.time()),
+                    KgBrand.industry_id == project.industry_id,
+                    GeoScoreDaily.brand_id != project.primary_brand_id,
+                )
+            )
             .group_by(GeoScoreDaily.brand_id)
             .order_by(func.avg(GeoScoreDaily.avg_geo_score).desc())
             .limit(10)

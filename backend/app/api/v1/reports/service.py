@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import secrets
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from genpano_models import Project, ReportJob, ReportShareToken, User
@@ -130,6 +130,8 @@ async def get_job_with_payload(
                 report_type=rt,
                 locale=scope.get("locale", "zh-CN"),
                 reader_perspective=scope.get("reader_perspective", "manager"),
+                from_date=_parse_date(scope.get("from_date")),
+                to_date=_parse_date(scope.get("to_date")),
             )
     return job, payload
 
@@ -221,6 +223,8 @@ async def read_public_report(
             report_type=rt,
             locale=scope.get("locale", "zh-CN"),
             reader_perspective=scope.get("reader_perspective", "manager"),
+            from_date=_parse_date(scope.get("from_date")),
+            to_date=_parse_date(scope.get("to_date")),
         )
 
     row.view_count = (row.view_count or 0) + 1
@@ -239,3 +243,18 @@ def _decode_scope(raw: Any) -> dict[str, Any]:
             return {}
         return decoded if isinstance(decoded, dict) else {}
     return {}
+
+
+def _parse_date(raw: Any) -> date | None:
+    if raw is None:
+        return None
+    if isinstance(raw, date) and not isinstance(raw, datetime):
+        return raw
+    if isinstance(raw, datetime):
+        return raw.date()
+    if isinstance(raw, str):
+        try:
+            return date.fromisoformat(raw)
+        except ValueError:
+            return None
+    return None

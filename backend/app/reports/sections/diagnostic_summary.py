@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime, time, timedelta
+
 from genpano_models import Diagnostic
 from sqlalchemy import select
 
@@ -12,11 +14,18 @@ class DiagnosticSummarySection(BaseSection):
     section_type = "diagnostic_summary"
 
     async def render(self, ctx: ReportContext, *, variant: str) -> SectionData:
+        # Scope to diagnostics detected within the report's period — without
+        # this filter a monthly report viewed months later leaks current
+        # diagnostics into a historical window.
+        window_start = datetime.combine(ctx.from_date, time.min)
+        window_end = datetime.combine(ctx.to_date + timedelta(days=1), time.min)
         stmt = (
             select(Diagnostic)
             .where(
                 Diagnostic.project_id == ctx.project.id,
                 Diagnostic.status == "open",
+                Diagnostic.detected_at >= window_start,
+                Diagnostic.detected_at < window_end,
             )
             .order_by(Diagnostic.detected_at.desc())
             .limit(10 if variant == "full" else 3)
