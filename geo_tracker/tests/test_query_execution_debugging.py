@@ -1107,6 +1107,32 @@ def test_doubao_persistence_gate_rejects_js_state_without_answer():
     )
 
 
+# Refs Codex P1 on PR #1076: the substantive-answer override must NOT
+# trigger on raw_text length alone. ``raw_text`` can come from the JS
+# ``document.body.innerText`` fallback (when the .flow-markdown-body
+# selector misses) and a session-expired chrome with ``会话过期，请重新
+# 登录...`` is easily >20 visible chars. If that body-text were treated
+# as a substantive answer it would bypass HARD markers and persist a
+# logged-out page as success.
+def test_doubao_persistence_gate_blocks_jsfallback_logout_text_lacking_markdown_body():
+    """raw_text containing logout chrome (no .flow-markdown-body) must NOT bypass HARD."""
+    from geo_tracker.agent.response_validation import doubao_persistence_auth_reason
+
+    # Body-text style payload — what a JS document.body.innerText
+    # fallback would scrape on a session-expired page. No
+    # ``.flow-markdown-body`` selector match in the HTML.
+    raw_text = (
+        "会话过期，请重新登录。请扫码登录使用豆包。"
+        "这里有一些其他文本占位以确保长度超过 20 字符。"
+    )
+    response_html = "<div>some non-markdown chrome</div>"
+
+    assert (
+        doubao_persistence_auth_reason("doubao", raw_text, response_html)
+        == "doubao_not_logged_in"
+    )
+
+
 def test_doubao_persistence_gate_visible_login_dialog_overrides_answer():
     """A visible login dialog must still reject even with a real answer."""
     from geo_tracker.agent.response_validation import doubao_persistence_auth_reason

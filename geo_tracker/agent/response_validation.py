@@ -293,7 +293,17 @@ def doubao_persistence_auth_reason(
         return "doubao_not_logged_in"
     if response_html and DOUBAO_AUTH_OK_MARKER in response_html:
         return None
-    if _doubao_has_substantive_answer(raw_text, response_html):
+    # Refs Codex P1 on PR #1076: the override that lets a substantive
+    # answer bypass HARD logout markers must be tied to the proven
+    # ``.flow-markdown-body`` selector match, NOT raw_text length.
+    # ``raw_text`` can come from the JS ``document.body.innerText``
+    # fallback when the response selector misses, in which case >= 20
+    # visible chars can include logout chrome text like
+    # ``会话过期，请重新登录...`` — and bypassing HARD on THAT would
+    # persist a logged-out page as a successful response. The
+    # ``.flow-markdown-body`` HTML match is unforgeable: Doubao only
+    # populates that node when a real model answer has streamed in.
+    if _doubao_has_substantive_answer_html(response_html):
         return None
     hard_auth_reason = _doubao_hard_persistence_auth_reason(
         raw_text, response_html
