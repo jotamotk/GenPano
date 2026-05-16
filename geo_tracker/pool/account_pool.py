@@ -526,7 +526,31 @@ class AccountPool:
     async def create_account(
         self, llm_name: str, phone: str, cookies_json: str
     ) -> LLMAccount:
-        """注册新账号后创建 DB 记录"""
+        """注册新账号后创建 DB 记录.
+
+        Refs #963: ``phone`` MUST be the raw number from the SMS provider
+        (e.g. ``"14712340231"`` or ``"+8614712340231"``) — never the
+        masked form emitted by :func:`mask_phone` (e.g. ``"147****0231"``).
+        ``auto_login``'s re-login path validates ``phone_number`` against
+        ``\\d{11}`` before re-reserving an SMS lease; storing a masked
+        value here breaks that regex and forces every subsequent re-login
+        attempt to refuse the SMS reuse and fall through to "降级为新注册流程",
+        which then aborts because ``existing_cookies`` is also set. The
+        result is a Doubao account permanently stuck on a bot-flagged
+        cookie set with no recovery path. Reject the masked form
+        explicitly so any future regression that re-introduces the bug
+        surfaces at write time instead of later, in production, when an
+        account is already corrupted.
+        """
+        if phone and "*" in phone:
+            # ``mask_phone`` is the only producer of ``*`` in our codebase
+            # for phone-like strings; surfacing as ValueError makes the
+            # caller's stack trace point at the offending site.
+            raise ValueError(
+                f"create_account refused masked phone for {llm_name!r}: "
+                f"phone must be the raw SMS-provider value, not the "
+                f"mask_phone() output (got {mask_phone(phone)!r})"
+            )
         account = LLMAccount(
             llm_name=llm_name,
             phone_number=phone,
