@@ -255,24 +255,51 @@ def doubao_persistence_auth_reason(
     # expired. That cycle is what production tagged as
     # ``doubao_post_reauth_doubao_not_logged_in``.
     #
-    # Gate order is now: hard logout (state-level + visible-dialog +
-    # session-expired) → AUTH_OK_MARKER → substantive answer → soft promo
-    # banners. Soft markers ("7天免登录" / "登录以解锁更多功能") are
-    # tier-up promos Doubao overlays even on authenticated answers, so a
-    # substantive ``.flow-markdown-body`` body wins over them. Hard
-    # signals (``is_login:false`` / ``error_code:13`` / ``user_id:0`` /
-    # ``from_logout=1`` / ``login-btn-header`` chrome / visible login
-    # dialog) still block persistence regardless of any answer-like text
-    # on the page, because they prove the session is actually logged out.
+    # Refs #963 follow-up evidence (Q-184971 retry 2026-05-16 13:20:33,
+    # worker SHA 847cd9e): even with the timezone/WebRTC/qg fixes shipped,
+    # an authenticated chat page that streamed a real 1727-char bestCoffer
+    # answer into ``.flow-markdown-body`` STILL got rejected as
+    # ``doubao_not_logged_in``. The page was on
+    # ``/chat/38426272185416450`` with user 527070 visible in the
+    # sidebar; the responseSelectors snapshot confirmed
+    # ``.flow-markdown-body`` matched count=1, visibleCount=1 with the
+    # real answer text. Root cause: one of the HARD markers (most likely
+    # a JS state object remnant like ``is_login:false`` for a logged-out
+    # template panel, or the literal string ``会话过期`` baked into an
+    # i18n string bundle) appears in the page HTML even on the
+    # logged-in shell. The previous gate ran HARD before substantive
+    # answer, so the JS-state remnant won.
+    #
+    # New gate order:
+    #   1. Actively-visible login dialog: absolute block (user can't
+    #      interact with the chat anyway).
+    #   2. AUTH_OK explicit marker: pass.
+    #   3. Substantive ``.flow-markdown-body`` answer: pass — overrides
+    #      JS-state remnants and i18n string matches because the page
+    #      already rendered a real, streamed answer.
+    #   4. HARD markers (``是会话过期``/``from_logout=1``/JS state):
+    #      block only when no substantive answer is present.
+    #   5. Strong markers (SOFT + HARD via STRONG): block in the
+    #      remaining no-answer case.
+    #   6. Generic auth_state_reason fallback.
+    #
+    # Visible login dialog stays absolute because it's the only HARD
+    # signal that an actively-rendered login UI is interrupting the
+    # session right now — at that point the answer below is stale and
+    # the user is logged out for the purposes of any future call.
+    if _doubao_has_visible_login_dialog(
+        "\n".join(part for part in (raw_text or "", _strip_hidden_doubao_auth_chrome(response_html)) if part)
+    ):
+        return "doubao_not_logged_in"
+    if response_html and DOUBAO_AUTH_OK_MARKER in response_html:
+        return None
+    if _doubao_has_substantive_answer(raw_text, response_html):
+        return None
     hard_auth_reason = _doubao_hard_persistence_auth_reason(
         raw_text, response_html
     )
     if hard_auth_reason:
         return hard_auth_reason
-    if response_html and DOUBAO_AUTH_OK_MARKER in response_html:
-        return None
-    if _doubao_has_substantive_answer(raw_text, response_html):
-        return None
     strong_auth_reason = _doubao_strong_persistence_auth_reason(
         raw_text, response_html
     )
