@@ -332,11 +332,14 @@ jobs:
           ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
           CLASH_API_SECRET: ${{ secrets.CLASH_API_SECRET || vars.CLASH_API_SECRET }}
           HERO_SMS_API_KEY: ${{ secrets.HERO_SMS_API_KEY }}
+          QG_PROXY_EXTRACT_URL: ${{ secrets.QG_PROXY_EXTRACT_URL }}
+          QG_PROXY_AUTH_KEY: ${{ secrets.QG_PROXY_AUTH_KEY }}
+          QG_PROXY_AUTH_PASSWORD: ${{ secrets.QG_PROXY_AUTH_PASSWORD }}
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
-          envs: GEMINI_COOKIES_JSON,DOUBAO_COOKIES_JSON,ACR_REGISTRY_SECRET,ACR_USERNAME,ACR_PASSWORD,CLASH_API_SECRET,HERO_SMS_API_KEY
+          envs: GEMINI_COOKIES_JSON,DOUBAO_COOKIES_JSON,ACR_REGISTRY_SECRET,ACR_USERNAME,ACR_PASSWORD,CLASH_API_SECRET,HERO_SMS_API_KEY,QG_PROXY_EXTRACT_URL,QG_PROXY_AUTH_KEY,QG_PROXY_AUTH_PASSWORD
           script_stop: false
           command_timeout: 45m
           script: |
@@ -395,9 +398,6 @@ jobs:
             CLASH_FORCE_GLOBAL_PROXY_ROUTE=${{ vars.CLASH_FORCE_GLOBAL_PROXY_ROUTE || '1' }}
             DOUBAO_USE_PROXY=${{ vars.DOUBAO_USE_PROXY || '0' }}
             LUBANSMS_DOUBAO_SERVICE_ID=${{ secrets.LUBANSMS_DOUBAO_SERVICE_ID || vars.LUBANSMS_DOUBAO_SERVICE_ID }}
-            QG_PROXY_EXTRACT_URL=${{ secrets.QG_PROXY_EXTRACT_URL }}
-            QG_PROXY_AUTH_KEY=${{ secrets.QG_PROXY_AUTH_KEY }}
-            QG_PROXY_AUTH_PASSWORD=${{ secrets.QG_PROXY_AUTH_PASSWORD }}
             PORT=4000
             ZHIPU_API_KEY=${{ secrets.ZHIPU_API_KEY }}
             GLM_MODEL=glm-4
@@ -433,6 +433,25 @@ jobs:
 
             value = os.getenv("HERO_SMS_API_KEY", "")
             print('HERO_SMS_API_KEY=' + value.replace('$', '$$'))
+            PY
+
+            # Refs #963 / Codex P2 on PR #1038: docker-compose's env_file
+            # default format applies ``$`` interpolation to unquoted values,
+            # so a qg AuthPwd containing ``$abc`` would be substituted by
+            # compose before the worker container starts. Write the qg
+            # secrets through the same ``replace('$', '$$')`` escape that
+            # HERO_SMS_API_KEY uses so any ``$`` in the password / key /
+            # extract URL survives into the container env.
+            python3 - <<'PY' >> .env
+            import os
+
+            for name in (
+                "QG_PROXY_EXTRACT_URL",
+                "QG_PROXY_AUTH_KEY",
+                "QG_PROXY_AUTH_PASSWORD",
+            ):
+                value = os.getenv(name, "")
+                print(f"{name}=" + value.replace("$", "$$"))
             PY
 
             cp /opt/genpano/clash/vninja-allow-lan.sh /usr/local/bin/vninja-allow-lan.sh

@@ -734,7 +734,21 @@ class GuestQueryExecutor:
         try:
             # Camoufox 反指纹浏览器：海外 LLM 绕 Cloudflare，国内需登录的 LLM 绕反爬
             needs_stealth = config.get("requires_login") or bool(self.account_cookies)
-            use_camoufox = HAS_CAMOUFOX and (use_proxy or needs_stealth)
+            # Refs #963 / Codex P2 on PR #1038: when ``DOUBAO_COOKIES_JSON``
+            # is set as an env cookie (requires_login=False) and no
+            # account-pool cookie is assigned, neither use_proxy nor
+            # needs_stealth fires and the worker falls through to the
+            # plain Playwright launch path that the qg block does NOT
+            # cover. That leaves env-cookie Doubao deployments on the
+            # same by-IP 5202 path qg is meant to bypass. When the qg
+            # client is configured AND this is a Doubao query, force the
+            # Camoufox path so the qg reservation block runs unconditionally.
+            qg_active_for_doubao = (
+                llm == "doubao" and self.qg_proxy_client is not None
+            )
+            use_camoufox = HAS_CAMOUFOX and (
+                use_proxy or needs_stealth or qg_active_for_doubao
+            )
 
             if use_camoufox:
                 logger.info(f"[{llm}] 启动 Camoufox 浏览器...")

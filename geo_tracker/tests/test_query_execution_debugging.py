@@ -6432,7 +6432,17 @@ async def test_qg_proxy_client_report_failure_drops_ip():
 
 
 def test_qg_proxy_env_vars_wired_into_deploy_yaml():
-    """deploy.yml must forward all 3 qg env vars into the worker container."""
+    """deploy.yml must forward all 3 qg env vars with $-escaping.
+
+    Refs #963 / Codex P2 on PR #1038: docker-compose's env_file default
+    format applies ``$`` interpolation to unquoted values, so a qg
+    AuthPwd containing ``$abc`` would be substituted by compose before
+    the worker container starts. The fix runs the qg secrets through
+    the same ``replace('$', '$$')`` escape that HERO_SMS_API_KEY uses.
+    Pin both the env-var declarations AND the $-escape so a future
+    refactor that puts them back inside the unescaped heredoc gets
+    caught.
+    """
     from pathlib import Path
 
     source_path = (
@@ -6440,12 +6450,29 @@ def test_qg_proxy_env_vars_wired_into_deploy_yaml():
         / ".github" / "workflows" / "deploy.yml"
     )
     source = source_path.read_text(encoding="utf-8")
+    envs_line = source.split("envs:", 1)[1].split("\n", 1)[0]
+    # Locate the $-escape python heredoc block that owns QG vars.
+    escape_block_idx = source.index('"QG_PROXY_EXTRACT_URL"')
+    escape_block_end = source.index("PY", escape_block_idx)
+    escape_block = source[escape_block_idx:escape_block_end]
     for env_name in (
         "QG_PROXY_EXTRACT_URL",
         "QG_PROXY_AUTH_KEY",
         "QG_PROXY_AUTH_PASSWORD",
     ):
-        assert f"{env_name}=" in source, (
-            f"{env_name} must be wired into deploy.yml so the worker "
-            f"container picks it up from GitHub secrets/vars."
+        # 1. Secret must be exposed to the ssh-action step env.
+        assert f"{env_name}: " in source, (
+            f"{env_name} must be exposed in the Deploy step env block."
+        )
+        # 2. Secret must be in the envs: allowlist so ssh-action
+        #    forwards it into the remote shell.
+        assert env_name in envs_line, (
+            f"{env_name} must be in the ssh-action envs: list so the "
+            f"remote shell sees it."
+        )
+        # 3. Secret must be written to .env via the $-escape block (not
+        #    via the unescaped heredoc, which corrupts $-bearing values).
+        assert env_name in escape_block, (
+            f"{env_name} must be written to .env through the $-escape "
+            f"python3 heredoc, not the unescaped ENVEOF block."
         )
