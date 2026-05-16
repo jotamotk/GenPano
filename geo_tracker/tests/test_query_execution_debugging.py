@@ -1154,6 +1154,148 @@ def test_doubao_persistence_gate_visible_login_dialog_overrides_answer():
     )
 
 
+# Refs #963 Q-184971 retry on worker SHA ``9e9b1e0``, 2026-05-16 16:15-16:18
+# UTC (GitHub Actions verify-readonly run 25967204514 →
+# https://github.com/jotamotk/trash_test/issues/963#issuecomment-4467456937).
+# Doubao streamed a real 1023-char answer into ``.flow-markdown-body``;
+# the scraper extracted it via ``query_selector('.flow-markdown-body')``;
+# 21ms later the persistence gate still rejected it as
+# ``doubao_not_logged_in``. Phase 1 evidence capture proved the dialog
+# probe alone returned True — no hard string markers and no JS-state
+# RE matches existed. The two triggering substrings were:
+#   * ``passport`` matched the Bytedance SSO asset host
+#     ``p9-passport.byteacctimg.com`` embedded in the LOGGED-IN user's
+#     ``accountInfo.app_user_info.avatar_url`` JSON state at offset
+#     428251 (this JSON only exists when the account is authenticated).
+#   * ``手机号`` matched the LLM-generated answer bullet
+#     ``客户资料：身份证、手机号、银行卡号识别准确率99.7%``
+#     at offset 365248 in the body about financial-industry data masking.
+# Bind a regression test to these exact captured values so a future
+# iteration cannot reintroduce the regression by sneaking ``passport``
+# back as a bare dialog marker or ``手机号`` back as a bare
+# login-action marker.
+def test_doubao_persistence_gate_q184971_passport_avatar_url_does_not_flag_logout():
+    """Regression: Bytedance SSO avatar URL + LLM 手机号 bullet must NOT trip the dialog gate."""
+    from geo_tracker.agent.response_validation import (
+        doubao_persistence_auth_reason,
+        _doubao_has_visible_login_dialog,
+        _doubao_hard_persistence_auth_reason,
+        _doubao_has_substantive_answer_html,
+    )
+
+    # Literal substring captured from the production Q-184971 saved HTML
+    # ``/data/screenshots/query_184971_doubao_not_logged_in_1778948280.html``
+    # at offset 428251 — the LOGGED-IN user's avatar URL inside the
+    # ``accountInfo`` JSON state. ``app_user_info`` is only populated
+    # for authenticated sessions, so this substring PROVES the account
+    # is logged in.
+    captured_passport_avatar_json = (
+        '"app_user_info":{},'
+        '"avatar_url":"https:\\u002F\\u002Fp9-passport.byteacctimg.com'
+        '\\u002Fimg\\u002Fuser-avatar\\u002Fassets'
+        '\\u002Fe7b19241fb224cea967dfaea35448102_1080_10"'
+    )
+
+    # Literal substring captured from the same saved HTML at offset
+    # 365248 — a bullet inside the LLM-generated answer about
+    # financial-industry data masking. ``手机号`` (phone-number) is
+    # part of the natural-language answer, NOT login chrome.
+    captured_answer_with_phone_bullet = (
+        "<ul class=\"auto-hide-last-sibling-br\">"
+        "<li>客户资料：身份证、手机号、银行卡号识别准确率"
+        "<strong>99.7%</strong>，支持 15/18 位身份证区分。</li>"
+        "<li>信贷合同：批量处理扫描件 / PDF，精准脱敏手写签名、"
+        "金额，保留格式不可还原。</li>"
+        "</ul>"
+    )
+
+    # The real .flow-markdown-body answer body extracted by the
+    # upstream Playwright ``query_selector`` call (worker log:
+    # ``[doubao] 通过 selector 提取响应: .flow-markdown-body
+    # (1023 chars)``).
+    flow_markdown_body = (
+        "<div class=\"flow-markdown-body\">"
+        "非常适合，bestCoffer 企业级 AI 数据脱敏工具专为金融行业高合规、"
+        "高敏感、多场景需求设计，已在银行、券商、基金等机构落地验证 bestCoffer。"
+        + captured_answer_with_phone_bullet
+        + "</div>"
+    )
+
+    response_html = (
+        "<main>"
+        + flow_markdown_body
+        + "</main>"
+        # The avatar URL lives in an embedded JSON state block in the
+        # SPA shell.
+        "<script id=\"INITIAL_STATE\">"
+        '{"accountInfo":{"data":{"app_id":497858,'
+        + captured_passport_avatar_json
+        + '}}}'
+        "</script>"
+    )
+
+    raw_text = (
+        "非常适合，bestCoffer 企业级 AI 数据脱敏工具专为金融行业高合规、"
+        "高敏感、多场景需求设计，已在银行、券商、基金等机构落地验证。"
+    )
+
+    # Sanity: the captured triggering substrings really are in the HTML.
+    assert "passport" in response_html
+    assert "手机号" in response_html
+    # And there is no real login chrome anywhere.
+    assert "role=\"dialog\"" not in response_html
+    assert "role='dialog'" not in response_html
+    assert "login-dialog" not in response_html
+    assert "login-button" not in response_html
+    assert "扫码登录" not in response_html
+    assert "手机号登录" not in response_html
+    assert "短信验证码" not in response_html
+    assert "请输入手机号" not in response_html
+
+    # Sub-gate assertions.
+    assert _doubao_has_substantive_answer_html(response_html) is True, (
+        "the .flow-markdown-body body is the proven Q-184971 selector match"
+    )
+    assert _doubao_has_visible_login_dialog(response_html) is False, (
+        "bare 'passport' (SSO asset host) + bare '手机号' (LLM answer bullet)"
+        " must not trip the dialog probe — that was the Q-184971 false positive"
+    )
+    assert _doubao_hard_persistence_auth_reason(raw_text, response_html) is None, (
+        "no hard logout signals exist in the captured HTML"
+    )
+
+    # Full gate verdict: the answer must persist.
+    assert (
+        doubao_persistence_auth_reason("doubao", raw_text, response_html) is None
+    )
+
+
+def test_doubao_persistence_gate_q184971_real_login_dialog_still_blocks():
+    """Counterpart: when a real login dialog markup IS present, the gate still blocks."""
+    from geo_tracker.agent.response_validation import (
+        doubao_persistence_auth_reason,
+        _doubao_has_visible_login_dialog,
+    )
+
+    # Same flow-markdown answer as above, but now the page actually carries
+    # ``role="dialog"`` + ``login-button`` (the strict pair the tightened
+    # gate looks for).
+    response_html = (
+        "<main><div class=\"flow-markdown-body\">"
+        "bestCoffer 企业级 AI 数据脱敏工具相关回答内容超过 20 个字符。"
+        "</div></main>"
+        "<div role=\"dialog\">"
+        "  <button class=\"login-button\">登录</button>"
+        "</div>"
+    )
+
+    assert _doubao_has_visible_login_dialog(response_html) is True
+    assert (
+        doubao_persistence_auth_reason("doubao", "", response_html)
+        == "doubao_not_logged_in"
+    )
+
+
 @pytest.mark.asyncio
 async def test_doubao_no_response_login_dialog_sets_auth_failure_reason(monkeypatch):
     _install_fake_playwright(monkeypatch)
