@@ -68,7 +68,11 @@ def _should_use_proxy_for_sms_login(platform: str, proxy_url: str | None) -> boo
         return False
     normalized_platform = (platform or "").lower()
     if normalized_platform == "doubao":
-        return _env_flag("DOUBAO_USE_PROXY", True)
+        # Refs #963: Doubao SMS login defaults to direct connect — see
+        # ``geo_tracker.agent.guest_executor._doubao_proxy_enabled`` for
+        # the China-hosted-worker rationale. Using the same env flag as
+        # the query executor so login + query routing stay consistent.
+        return _env_flag("DOUBAO_USE_PROXY", False)
     if normalized_platform == "chatgpt":
         return _env_flag("CHATGPT_SMS_USE_PROXY", True)
     return False

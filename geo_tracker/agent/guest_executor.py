@@ -269,7 +269,18 @@ def _force_global_proxy_route() -> bool:
 
 
 def _doubao_proxy_enabled() -> bool:
-    return _env_flag("DOUBAO_USE_PROXY", True)
+    # Refs #963: Doubao is a domestic Chinese service (ByteDance). When the
+    # worker host is in China the correct route is direct-connect — routing
+    # through Clash to an overseas exit IP creates a fingerprint mismatch
+    # (zh-CN locale + Asia/Shanghai timezone + Chinese SMS phone + overseas
+    # egress) that Doubao risk control treats as high-risk: visual challenges,
+    # silent rate-limit, cookie invalidation, and account bans. Production
+    # evidence (3 accounts banned, 20 expired, account 44 also failing while
+    # Deepseek — which bypasses proxy via DOMESTIC_LLMS — succeeds on the
+    # same scraper code) traces directly to this misroute. Default to direct
+    # connect; deployments that genuinely need the proxy (overseas worker,
+    # dev sandbox without direct China connectivity) can opt in explicitly.
+    return _env_flag("DOUBAO_USE_PROXY", False)
 
 
 def _should_use_proxy_for_llm(llm_name: str, proxy_url: str | None) -> bool:
@@ -281,7 +292,20 @@ def _should_use_proxy_for_llm(llm_name: str, proxy_url: str | None) -> bool:
 
 
 def _requires_global_proxy_route(llm_name: str) -> bool:
-    return llm_name in {"chatgpt", "doubao"} and _force_global_proxy_route()
+    # Refs #963: previously this coerced Doubao onto the Clash global route
+    # whenever ``CLASH_FORCE_GLOBAL_PROXY_ROUTE`` was on, which silently
+    # overrode ``DOUBAO_USE_PROXY=False`` — ``execute()`` runs
+    # ``ensure_global_proxy_route`` BEFORE per-LLM proxy choice is consulted.
+    # Gate Doubao's preflight on the same flag the per-LLM check uses so the
+    # direct-connect path is genuinely direct and the opt-in proxy path still
+    # gets the global route preflight it needs.
+    if not _force_global_proxy_route():
+        return False
+    if llm_name == "chatgpt":
+        return True
+    if llm_name == "doubao":
+        return _doubao_proxy_enabled()
+    return False
 
 
 def _proxy_runtime_diagnostic(llm_name: str, proxy_url: str | None, use_proxy: bool) -> dict:

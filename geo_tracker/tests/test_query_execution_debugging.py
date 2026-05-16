@@ -1892,6 +1892,11 @@ async def test_proxied_attempt_exhaustion_without_proxy_error_is_no_response(
 @pytest.mark.asyncio
 async def test_doubao_account_mode_uses_proxy_and_global_route(monkeypatch):
     _install_fake_playwright(monkeypatch)
+    # Refs #963: DOUBAO_USE_PROXY now defaults to False (direct connect from
+    # the China-hosted worker). This test exercises the opt-in proxy path, so
+    # enable it explicitly to verify the routing wiring still works when an
+    # operator chooses to route Doubao through the proxy.
+    monkeypatch.setenv("DOUBAO_USE_PROXY", "1")
 
     import geo_tracker.agent.guest_executor as guest_executor_module
     from geo_tracker.agent.guest_executor import GuestQueryExecutor
@@ -1941,6 +1946,9 @@ async def test_doubao_account_mode_uses_proxy_and_global_route(monkeypatch):
 @pytest.mark.asyncio
 async def test_doubao_proxy_route_failure_blocks_before_page_open(monkeypatch):
     _install_fake_playwright(monkeypatch)
+    # Refs #963: this test exercises the opt-in proxy path; enable it
+    # explicitly since DOUBAO_USE_PROXY now defaults to direct connect.
+    monkeypatch.setenv("DOUBAO_USE_PROXY", "1")
 
     import geo_tracker.agent.guest_executor as guest_executor_module
     from geo_tracker.agent.guest_executor import GuestQueryExecutor
@@ -5401,3 +5409,114 @@ def test_execute_once_resets_last_error_reason_at_entry():
         "stale reasons from a prior retry attempt leaking through "
         "resolve_execution_failure_reason."
     )
+
+
+# Refs #963: Doubao is a domestic Chinese service (ByteDance). When the
+# worker host is in China the correct route is direct-connect — routing
+# through Clash to an overseas exit IP creates a fingerprint mismatch
+# (zh-CN locale + Asia/Shanghai timezone + Chinese SMS phone + overseas
+# egress) that Doubao risk control treats as high-risk: visual challenges,
+# silent rate-limit, cookie invalidation, and account bans. The production
+# evidence trail (3 banned, 20 expired, account 44 also failing while
+# Deepseek — bypassed via DOMESTIC_LLMS — succeeds on the same scraper
+# code) traces directly to this misroute. These tests pin that all three
+# Doubao proxy gates default to False (direct connect) so any future
+# regression that flips the default back to True is caught immediately.
+def test_doubao_proxy_defaults_to_direct_connect_in_guest_executor(monkeypatch):
+    """``_doubao_proxy_enabled`` must default to direct connect (False)."""
+    _install_fake_playwright(monkeypatch)
+    monkeypatch.delenv("DOUBAO_USE_PROXY", raising=False)
+
+    from geo_tracker.agent.guest_executor import _doubao_proxy_enabled
+
+    assert _doubao_proxy_enabled() is False, (
+        "Doubao must default to direct connect when DOUBAO_USE_PROXY is unset. "
+        "Routing a China-hosted worker through an overseas Clash exit IP is the "
+        "root cause of the Doubao account ban storm tracked in #963."
+    )
+
+
+def test_doubao_proxy_defaults_to_direct_connect_in_celery_tasks(monkeypatch):
+    """``_doubao_uses_proxy_route`` (celery_tasks) must default to False too."""
+    monkeypatch.delenv("DOUBAO_USE_PROXY", raising=False)
+
+    # celery_tasks imports trigger Celery + Redis chain; assert on source instead
+    # to avoid the heavy import path in the unit test layer.
+    source_path = (
+        Path(__file__).resolve().parent.parent / "tasks" / "celery_tasks.py"
+    )
+    source = source_path.read_text(encoding="utf-8")
+    sig_idx = source.index("def _doubao_uses_proxy_route()")
+    body = source[sig_idx : source.index("\n\n", sig_idx)]
+    assert '_env_flag("DOUBAO_USE_PROXY", False)' in body, (
+        "celery_tasks._doubao_uses_proxy_route must default DOUBAO_USE_PROXY=False "
+        "to keep cookie keep-alive routing consistent with the query executor."
+    )
+
+
+def test_doubao_proxy_defaults_to_direct_connect_in_sms_login(monkeypatch):
+    """SMS login layer must default Doubao to direct connect too."""
+    monkeypatch.delenv("DOUBAO_USE_PROXY", raising=False)
+
+    from geo_tracker.agent.sms_login.base import _should_use_proxy_for_sms_login
+
+    # With a proxy URL configured but DOUBAO_USE_PROXY unset, Doubao SMS
+    # login must NOT pick up the proxy.
+    assert _should_use_proxy_for_sms_login("doubao", "http://clash:6789") is False, (
+        "Doubao SMS login must default to direct connect when DOUBAO_USE_PROXY "
+        "is unset. Routing SMS login through the overseas proxy creates a "
+        "fingerprint mismatch with the Chinese phone number that triggers "
+        "Doubao risk control before the account is even usable."
+    )
+
+
+def test_doubao_global_proxy_route_gated_on_doubao_use_proxy(monkeypatch):
+    """``_requires_global_proxy_route('doubao')`` must follow DOUBAO_USE_PROXY.
+
+    Previously the function returned True for doubao whenever
+    ``CLASH_FORCE_GLOBAL_PROXY_ROUTE`` was on, which coerced Doubao onto the
+    Clash global route via ``ensure_global_proxy_route`` BEFORE per-LLM proxy
+    choice was consulted — silently overriding any ``DOUBAO_USE_PROXY=False``.
+    Pin that Doubao's preflight gate is now tied to the same env flag the
+    per-LLM check uses so the direct-connect path is genuinely direct.
+    """
+    _install_fake_playwright(monkeypatch)
+    monkeypatch.setenv("CLASH_FORCE_GLOBAL_PROXY_ROUTE", "1")
+
+    from geo_tracker.agent.guest_executor import _requires_global_proxy_route
+
+    monkeypatch.delenv("DOUBAO_USE_PROXY", raising=False)
+    assert _requires_global_proxy_route("doubao") is False, (
+        "Doubao must NOT be coerced onto the global proxy route when "
+        "DOUBAO_USE_PROXY is unset (default direct connect). The previous "
+        "coercion silently overrode the per-LLM proxy choice."
+    )
+
+    monkeypatch.setenv("DOUBAO_USE_PROXY", "1")
+    assert _requires_global_proxy_route("doubao") is True, (
+        "When the operator explicitly opts Doubao into the proxy path, the "
+        "global route preflight must still run so the request actually reaches "
+        "the configured exit node."
+    )
+
+    # ChatGPT path is unchanged regardless of DOUBAO_USE_PROXY.
+    monkeypatch.delenv("DOUBAO_USE_PROXY", raising=False)
+    assert _requires_global_proxy_route("chatgpt") is True
+
+
+def test_doubao_should_use_proxy_respects_direct_connect_default(monkeypatch):
+    """``_should_use_proxy_for_llm`` must return False for Doubao by default."""
+    _install_fake_playwright(monkeypatch)
+    monkeypatch.delenv("DOUBAO_USE_PROXY", raising=False)
+
+    from geo_tracker.agent.guest_executor import _should_use_proxy_for_llm
+
+    # Even with a proxy_url configured, Doubao must skip it by default.
+    assert _should_use_proxy_for_llm("doubao", "http://clash:6789") is False, (
+        "_should_use_proxy_for_llm must return False for Doubao when "
+        "DOUBAO_USE_PROXY is unset, even when a proxy_url is configured."
+    )
+    # Sanity: deepseek (also DOMESTIC_LLMS) still bypasses proxy.
+    assert _should_use_proxy_for_llm("deepseek", "http://clash:6789") is False
+    # Sanity: chatgpt (not domestic) still uses the proxy.
+    assert _should_use_proxy_for_llm("chatgpt", "http://clash:6789") is True

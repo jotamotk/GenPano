@@ -949,11 +949,15 @@ async def test_doubao_already_logged_in_accepts_stable_selector_chat_input_witho
 
 
 def test_doubao_sms_login_uses_configured_proxy(monkeypatch) -> None:
+    # Refs #963: DOUBAO_USE_PROXY now defaults to False (direct connect from
+    # the China-hosted worker). This test exercises the opt-in proxy path,
+    # so enable it explicitly to verify the SMS login wiring still picks up
+    # the configured proxy when an operator chooses to route through it.
     from geo_tracker.agent.sms_login.base import _sms_login_proxy_url
     from geo_tracker.agent.sms_login.base import _should_use_proxy_for_sms_login
 
     monkeypatch.setenv("CLASH_PROXY_URL", "http://proxy.internal:6789")
-    monkeypatch.delenv("DOUBAO_USE_PROXY", raising=False)
+    monkeypatch.setenv("DOUBAO_USE_PROXY", "1")
 
     proxy_url = _sms_login_proxy_url()
 
