@@ -494,6 +494,98 @@ async def get_products(
             ResponseAnalysis.id == ProductFeatureMention.analysis_id,
         ).where(ResponseAnalysis.response_id.in_(scoped_response_ids))
 
+    # ── Batched per-product rollups (issue #1031) ──
+    # Previously the loop below issued 3 queries per product (sparkline +
+    # features + scenarios). With up to 50 products that's ~150 round-trips
+    # and exceeds the gateway's response budget, surfacing as 502 in the
+    # browser. Fetch each rollup once with a `WHERE product_name IN (...)`,
+    # then bucket in Python.
+    product_names: list[str] = [str(r[0]) for r in product_rows if r[0]]
+    sparkline_by_product: dict[str, list[tuple[date, float | None]]] = {
+        n: [] for n in product_names
+    }
+    features_by_product: dict[str, list[tuple[str | None, str | None, int]]] = {
+        n: [] for n in product_names
+    }
+    scenarios_by_product: dict[str, list[tuple[str, int]]] = {n: [] for n in product_names}
+
+    if product_names:
+        # Sparkline + trend source — grouped by (product_name, date).
+        spark_stmt = (
+            select(
+                ProductScoreDaily.product_name,
+                ProductScoreDaily.date,
+                func.avg(ProductScoreDaily.mention_rate),
+            )
+            .where(
+                and_(
+                    ProductScoreDaily.brand_id == primary_id,
+                    ProductScoreDaily.product_name.in_(product_names),
+                    ProductScoreDaily.date >= from_dt,
+                    ProductScoreDaily.date <= to_dt,
+                )
+            )
+            .group_by(ProductScoreDaily.product_name, ProductScoreDaily.date)
+            .order_by(ProductScoreDaily.product_name, ProductScoreDaily.date)
+        )
+        try:
+            for pname, sdate, mrate in (await session.execute(spark_stmt)).all():
+                if pname in sparkline_by_product:
+                    sparkline_by_product[pname].append((sdate, mrate))
+        except Exception:
+            pass
+
+        # Features — grouped by (product_name, feature_name, feature_sentiment),
+        # ordered so top-N per product can be sliced in Python without window
+        # functions (portable across SQLite test fixtures + production Postgres).
+        feat_stmt = _product_feature_scope(
+            select(
+                ProductFeatureMention.product_name,
+                ProductFeatureMention.feature_name,
+                ProductFeatureMention.feature_sentiment,
+                func.count().label("cnt"),
+            ).where(ProductFeatureMention.product_name.in_(product_names))
+        )
+        feat_stmt = feat_stmt.group_by(
+            ProductFeatureMention.product_name,
+            ProductFeatureMention.feature_name,
+            ProductFeatureMention.feature_sentiment,
+        ).order_by(ProductFeatureMention.product_name, desc("cnt"))
+        try:
+            for pname, fname, fsent, cnt in (await session.execute(feat_stmt)).all():
+                feat_bucket = features_by_product.get(pname)
+                if feat_bucket is not None and len(feat_bucket) < 5:
+                    feat_bucket.append((fname, fsent, int(cnt or 0)))
+        except Exception:
+            pass
+
+        # Scenarios — same batching pattern.
+        sc_stmt = _product_feature_scope(
+            select(
+                ProductFeatureMention.product_name,
+                ProductFeatureMention.scenario,
+                func.count().label("cnt"),
+            ).where(
+                and_(
+                    ProductFeatureMention.product_name.in_(product_names),
+                    ProductFeatureMention.scenario.isnot(None),
+                )
+            )
+        )
+        sc_stmt = sc_stmt.group_by(
+            ProductFeatureMention.product_name,
+            ProductFeatureMention.scenario,
+        ).order_by(ProductFeatureMention.product_name, desc("cnt"))
+        try:
+            for pname, scenario, cnt in (await session.execute(sc_stmt)).all():
+                if scenario is None:
+                    continue  # WHERE clause already filters, defensive for SQLite shim
+                sc_bucket = scenarios_by_product.get(pname)
+                if sc_bucket is not None and len(sc_bucket) < 5:
+                    sc_bucket.append((str(scenario), int(cnt or 0)))
+        except Exception:
+            pass
+
     items: list[ProductRow] = []
     for row in product_rows:
         product_name = row[0]
@@ -503,75 +595,25 @@ async def get_products(
 
         synth_id = int(hashlib.sha256(f"{primary_id}|{product_name}".encode()).hexdigest()[:8], 16)
 
-        # 30d sparkline and trend (last7 vs first7).
-        spark_stmt = (
-            select(
-                ProductScoreDaily.date,
-                func.avg(ProductScoreDaily.mention_rate),
-            )
-            .where(
-                and_(
-                    ProductScoreDaily.brand_id == primary_id,
-                    ProductScoreDaily.product_name == product_name,
-                    ProductScoreDaily.date >= from_dt,
-                    ProductScoreDaily.date <= to_dt,
-                )
-            )
-            .group_by(ProductScoreDaily.date)
-            .order_by(ProductScoreDaily.date)
-        )
-        spark_rows = (await session.execute(spark_stmt)).all()
-        sparkline = [round(float(p[1] or 0), 4) for p in spark_rows]
+        spark_points = sparkline_by_product.get(product_name, [])
+        sparkline = [round(float(v or 0), 4) for _, v in spark_points]
         trend_30d: float | None = None
         if len(sparkline) >= 14:
             first = sum(sparkline[:7]) / 7
             last = sum(sparkline[-7:]) / 7
             trend_30d = round((last - first) / first, 4) if first > 0 else None
 
-        # Top features (from product_feature_mentions).
-        feat_stmt = _product_feature_scope(
-            select(
-                ProductFeatureMention.feature_name,
-                ProductFeatureMention.feature_sentiment,
-                func.count().label("cnt"),
-            ).where(ProductFeatureMention.product_name == product_name)
-        )
-        feat_stmt = (
-            feat_stmt.group_by(
-                ProductFeatureMention.feature_name,
-                ProductFeatureMention.feature_sentiment,
-            )
-            .order_by(desc("cnt"))
-            .limit(5)
-        )
-        try:
-            feat_rows = (await session.execute(feat_stmt)).all()
-        except Exception:
-            feat_rows = []
         features = [
             ProductFeatureRow(
-                feature_name=fr[0] or "(unspecified)",
-                feature_sentiment=fr[1],
-                mention_count=int(fr[2] or 0),
+                feature_name=fname or "(unspecified)",
+                feature_sentiment=fsent,
+                mention_count=cnt,
             )
-            for fr in feat_rows
+            for fname, fsent, cnt in features_by_product.get(product_name, [])
         ]
-
-        sc_stmt = _product_feature_scope(
-            select(ProductFeatureMention.scenario, func.count().label("cnt")).where(
-                and_(
-                    ProductFeatureMention.product_name == product_name,
-                    ProductFeatureMention.scenario.isnot(None),
-                )
-            )
-        )
-        sc_stmt = sc_stmt.group_by(ProductFeatureMention.scenario).order_by(desc("cnt")).limit(5)
-        try:
-            sc_rows = (await session.execute(sc_stmt)).all()
-        except Exception:
-            sc_rows = []
         scenarios = [
-            ProductScenarioRow(scenario=sr[0], mention_count=int(sr[1] or 0)) for sr in sc_rows
+            ProductScenarioRow(scenario=scenario, mention_count=cnt)
+            for scenario, cnt in scenarios_by_product.get(product_name, [])
         ]
 
         items.append(

@@ -157,6 +157,31 @@ async def test_products_returns_aggregated(client, user, project_with_data):
 
 
 @pytest.mark.asyncio
+async def test_products_batches_per_product_rollups(client, user, project_with_data):
+    """Issue #1031: top_features / top_scenarios used to be fetched in a loop
+    (3 queries per product → 502 timeouts on 50-product brands). They are now
+    batched. Guard the output so a regression to per-row fetch is visible.
+    """
+    resp = await client.get(
+        f"/api/v1/projects/{project_with_data.id}/products",
+        headers=_bearer(user),
+    )
+    assert resp.status_code == 200
+    items_by_name = {p["product_name"]: p for p in resp.json()["items"]}
+
+    # ProductA: features "taste" (2x) > "price" (1x); scenarios "morning" (2x).
+    a = items_by_name["ProductA"]
+    feat_names_a = [f["feature_name"] for f in a["top_features"]]
+    assert "taste" in feat_names_a
+    assert "morning" in [s["scenario"] for s in a["top_scenarios"]]
+
+    # ProductB: feature "design" (2x), no scenarios (all NULL).
+    b = items_by_name["ProductB"]
+    assert "design" in [f["feature_name"] for f in b["top_features"]]
+    assert b["top_scenarios"] == []
+
+
+@pytest.mark.asyncio
 async def test_products_empty_for_no_brand(client, user, db_session):
     p = Project(user_id=user.id, name="No Primary", primary_brand_id=None)
     db_session.add(p)
