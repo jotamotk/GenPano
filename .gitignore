@@ -10,7 +10,19 @@ __pycache__/
 venv/
 *.egg-info/
 .pytest_cache/
-.claude/
+# `.claude/` holds two kinds of content: tracked agent automation (hooks +
+# settings — ships with the repo so every contributor's Claude Code session
+# injects the AGENTS.md rules digest at startup) and transient session
+# state (worktrees, cache, etc.) that must NOT be tracked. We ignore the
+# contents by default and re-include only the tracked paths.
+#
+# NOTE: we deliberately ignore `.claude/*` (children) rather than `.claude/`
+# (the directory itself). Once a directory is excluded via `dir/`, git
+# cannot re-include children even with `!` rules — see gitignore(5).
+.claude/*
+!.claude/hooks/
+!.claude/hooks/**
+!.claude/settings.json
 
 # Agent/session artifacts
 # Note: top-level CLAUDE.md is a tracked pointer file to AGENTS.md (the canonical
