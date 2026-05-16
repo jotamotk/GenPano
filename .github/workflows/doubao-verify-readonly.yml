@@ -223,6 +223,108 @@ jobs:
           PYEND
 
           echo ""
+          echo "=== Phase 1 evidence capture: run each persistence_auth_reason gate against the failing HTML ==="
+          # Refs #963 / 3rd iteration on persistence_auth_reason (#1047, #1076, Codex P1 on #1076).
+          # Q-184971 retry on worker SHA 9e9b1e0 streamed a real 1178-char answer
+          # via .flow-markdown-body but persistence_auth_reason still returned
+          # doubao_not_logged_in. AGENTS.md "Evidence-First Debugging" demands the
+          # literal triggering string from the production HTML before editing any
+          # gate. This block runs every gate function (visible_login_dialog,
+          # substantive_answer_html, hard/strong persistence) against the most
+          # recent doubao_not_logged_in HTML and prints the marker/regex that
+          # tripped, with 200-char context around it.
+          docker compose exec -T worker python3 - <<'PYEND'
+          import glob, os, re, sys
+          sys.path.insert(0, '/app')
+          from geo_tracker.agent.response_validation import (
+              doubao_persistence_auth_reason,
+              _doubao_has_visible_login_dialog,
+              _doubao_has_substantive_answer_html,
+              _doubao_hard_persistence_auth_reason,
+              _doubao_strong_persistence_auth_reason,
+              doubao_auth_state_reason,
+              _strip_hidden_doubao_auth_chrome,
+              _DOUBAO_FLOW_MARKDOWN_BODY_RE,
+              _DOUBAO_PERSISTENCE_HARD_UNAUTH_MARKERS,
+              _DOUBAO_PERSISTENCE_STATE_LOGOUT_RE,
+          )
+
+          # Prefer the Q-184971 HTML if still present, otherwise the most
+          # recent doubao_not_logged_in HTML.
+          preferred = sorted(
+              glob.glob('/data/screenshots/query_184971_doubao_not_logged_in_*.html'),
+              key=os.path.getmtime, reverse=True,
+          )
+          files = preferred or sorted(
+              glob.glob('/data/screenshots/query_*_doubao_not_logged_in_*.html'),
+              key=os.path.getmtime, reverse=True,
+          )
+          if not files:
+              print('(no doubao_not_logged_in HTML files in /data/screenshots)')
+              raise SystemExit(0)
+          path = files[0]
+          print(f'FILE: {path}')
+          with open(path, 'r', encoding='utf-8', errors='replace') as f:
+              html = f.read()
+          print(f'size={len(html)}')
+
+          # Strip hidden chrome to mimic what the gate actually inspects.
+          visible = _strip_hidden_doubao_auth_chrome(html)
+          print(f'visible_size_after_strip_hidden={len(visible)}')
+
+          # Run each gate stage independently.
+          print(f'visible_login_dialog          = {_doubao_has_visible_login_dialog(visible)}')
+          print(f'substantive_answer_html       = {_doubao_has_substantive_answer_html(html)}')
+          hard = _doubao_hard_persistence_auth_reason(None, html)
+          print(f'hard_persistence_auth_reason  = {hard}')
+          strong = _doubao_strong_persistence_auth_reason(None, html)
+          print(f'strong_persistence_auth_reason= {strong}')
+          auth_state = doubao_auth_state_reason(None, html)
+          print(f'doubao_auth_state_reason      = {auth_state}')
+
+          # Grep all HARD markers + STATE_LOGOUT_RE with 200-char context.
+          print('--- HARD markers in visible html (with 200-char context) ---')
+          for marker in _DOUBAO_PERSISTENCE_HARD_UNAUTH_MARKERS:
+              idx = visible.find(marker)
+              if idx >= 0:
+                  ctx = visible[max(0, idx-100):idx+len(marker)+100]
+                  print(f'MARKER {marker!r} at offset {idx}: ...{ctx!r}...')
+          for m in _DOUBAO_PERSISTENCE_STATE_LOGOUT_RE.finditer(visible):
+              ctx = visible[max(0, m.start()-100):m.end()+100]
+              print(f'STATE_LOGOUT_RE match {m.group(0)!r} at offset {m.start()}: ...{ctx!r}...')
+
+          # Visible-login-dialog candidate markers with 200-char context.
+          print('--- visible_login_dialog candidates ---')
+          for needle in (
+              'passport', 'role="dialog"', "role='dialog'",
+              'login-dialog', 'login-button',
+              '扫码登录',     # 扫码登录
+              '手机号',           # 手机号
+              '手机号登录', # 手机号登录
+              '短信验证码', # 短信验证码
+              '请输入手机号', # 请输入手机号
+          ):
+              idx = visible.find(needle)
+              if idx >= 0:
+                  ctx = visible[max(0, idx-100):idx+len(needle)+100]
+                  print(f'DIALOG-CANDIDATE {needle!r} at offset {idx}: ...{ctx!r}...')
+              else:
+                  print(f'DIALOG-CANDIDATE {needle!r}: not found in visible html')
+
+          # .flow-markdown-body match details — proves the gate has the answer.
+          matches = list(_DOUBAO_FLOW_MARKDOWN_BODY_RE.finditer(visible))
+          print(f'flow-markdown-body matches in visible: {len(matches)}')
+          for i, m in enumerate(matches[:3]):
+              stripped = re.sub(r'<[^>]+>', ' ', m.group('body')).strip()
+              print(f'  match {i}: body_raw_len={len(m.group("body"))} body_stripped_len={len(stripped)} first 200 stripped: {stripped[:200]!r}')
+
+          # Final gate verdict.
+          print('--- final gate verdict ---')
+          verdict = doubao_persistence_auth_reason('doubao', None, html)
+          print(f'doubao_persistence_auth_reason(doubao, None, html) = {verdict}')
+          PYEND
+
+          echo ""
           echo "=== Doubao worker log tail (last 50 lines mentioning doubao) ==="
           docker compose logs --tail 500 worker 2>&1 | grep -iE "doubao|qg|timezone" | tail -50 || true
           REMOTE
