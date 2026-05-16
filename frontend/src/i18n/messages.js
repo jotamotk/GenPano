@@ -358,6 +358,7 @@ export const MESSAGES = {
         view_markdown: 'Markdown',
         view_json: 'JSON',
         back: '← 返回报告列表',
+        pdf_disabled_tooltip: '示例数据无可下载文件,请在上方 LIVE 区生成真实报告',
       },
       card: {
         pano_short: 'PANO Score',
@@ -1406,6 +1407,7 @@ export const MESSAGES = {
         view_markdown: 'Markdown',
         view_json: 'JSON',
         back: '← Back to report list',
+        pdf_disabled_tooltip: 'Demo data has no downloadable file — generate a real report in the LIVE area above',
       },
       card: {
         pano_short: 'PANO Score',
