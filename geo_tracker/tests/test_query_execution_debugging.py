@@ -5469,6 +5469,122 @@ def test_doubao_auto_login_valid_phone_still_uses_relogin_branch(
     assert result["status"] == "success"
 
 
+# Refs #963 / PR #1088 Codex P2 review: the masked-phone guard must validate
+# the stored ``phone_number`` against the SELECTED handler's
+# ``phone_relogin_pattern`` — not a hardcoded ``\d{11}``. ChatGPT accounts
+# carry US numbers like ``+17000007065`` which match
+# ``ChatGPTLoginHandler.phone_relogin_pattern = r"\+?1\d{10}"`` but fail the
+# old ``\d{11}`` literal. A regression where the literal sneaks back in would
+# discard reusable cookies and trigger an unnecessary SMS purchase for every
+# ChatGPT re-login. Pin: when the stored phone matches the handler's own
+# pattern, auto_login MUST take the re-login branch with
+# ``existing_cookies=<cookies>, phone=<stored>`` and MUST NOT pass
+# ``phone=None``.
+def test_chatgpt_auto_login_us_phone_preserves_relogin_branch(
+    monkeypatch,
+    tmp_path,
+):
+    _install_fake_playwright(monkeypatch)
+
+    from geo_tracker.tasks import celery_tasks
+    import geo_tracker.agent.sms_login as sms_login
+
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'chatgpt-us-phone-relogin.db'}"
+    query_id = 185002
+    account_id = 47
+    stored_cookies = '[{"name":"chatgpt_session","value":"reusable"}]'
+    stored_phone = "+17000007065"  # matches r"\+?1\d{10}" but NOT r"\d{11}"
+
+    async def seed_database():
+        engine = create_async_engine(db_url, future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        maker = async_sessionmaker(engine, expire_on_commit=False)
+        async with maker() as session:
+            session.add_all(
+                [
+                    LLMAccount(
+                        id=account_id,
+                        llm_name="chatgpt",
+                        status=AccountStatus.EXPIRED.value,
+                        cookies_json=stored_cookies,
+                        query_count_today=1,
+                        daily_limit=20,
+                        phone_number=stored_phone,
+                    ),
+                    Query(
+                        id=query_id,
+                        account_id=account_id,
+                        target_llm="chatgpt",
+                        query_text="coffee brand advantages",
+                        status=QueryStatus.FAILED.value,
+                        retry_count=0,
+                        retry_reason="chatgpt_not_logged_in",
+                    ),
+                ]
+            )
+            await session.commit()
+        await engine.dispose()
+
+    asyncio.run(seed_database())
+
+    def create_engine():
+        return create_async_engine(db_url, future=True)
+
+    def get_session(engine):
+        return _TaskSessionContext(async_sessionmaker(engine, expire_on_commit=False))
+
+    login_or_register_calls: list[dict] = []
+
+    class FakeChatGPTHandler:
+        # Mirror ChatGPTLoginHandler.phone_relogin_pattern verbatim so the
+        # guard's ``getattr(handler, "phone_relogin_pattern", ...)`` resolves
+        # to the platform-specific regex, not the Doubao default.
+        phone_relogin_pattern = r"\+?1\d{10}"
+
+        async def login_or_register(self, *, existing_cookies=None, phone=None):
+            login_or_register_calls.append(
+                {"existing_cookies": existing_cookies, "phone": phone}
+            )
+            return {
+                "cookies": [{"name": "chatgpt_session", "value": "refreshed"}],
+                "phone": phone,
+            }
+
+    class FakeExecuteQuery:
+        @staticmethod
+        def apply_async(*, args, queue):
+            pass
+
+    async def fake_release_relogin_lock(_account_id):
+        return None
+
+    monkeypatch.setattr(celery_tasks, "create_task_engine", create_engine)
+    monkeypatch.setattr(celery_tasks, "get_task_async_session", get_session)
+    monkeypatch.setattr(
+        sms_login, "get_handler", lambda _platform: FakeChatGPTHandler()
+    )
+    monkeypatch.setattr(celery_tasks, "execute_query", FakeExecuteQuery)
+    monkeypatch.setattr(celery_tasks, "release_relogin_lock", fake_release_relogin_lock)
+
+    result = celery_tasks.auto_login.run(account_id=account_id, query_id=query_id)
+
+    # Contract pin: a stored ChatGPT US number that matches the handler's own
+    # ``phone_relogin_pattern`` MUST take the re-login branch — both the
+    # stored cookies and the phone get forwarded. The masked-phone fallback
+    # must NOT fire (would have been called with phone=None,
+    # existing_cookies=None and burned a fresh SMS purchase).
+    assert login_or_register_calls == [
+        {"existing_cookies": stored_cookies, "phone": stored_phone}
+    ], (
+        "auto_login should preserve the re-login path for ChatGPT US "
+        "numbers; the guard must validate against the handler's "
+        "phone_relogin_pattern, not a hardcoded \\d{11}."
+    )
+    assert result["status"] == "success"
+    assert result["account_id"] == account_id
+
+
 def test_execute_query_rejects_chatgpt_login_page_and_expires_account(
     monkeypatch,
     tmp_path,

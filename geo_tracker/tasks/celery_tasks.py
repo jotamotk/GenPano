@@ -1672,20 +1672,36 @@ def auto_login(
                 # ``phone_number``. PR #1086 stopped the write-time bleed,
                 # but the rows that pre-date it can never re-login because
                 # ``BaseSMSLoginHandler.login_or_register`` rejects any phone
-                # that fails ``\d{11}`` when ``existing_cookies`` is set,
-                # leaving the account stuck in ``expired`` forever. When the
-                # stored phone is masked/invalid we cannot recover the
-                # original number, so the only path back to a working state
-                # is a fresh registration: call ``login_or_register`` with
+                # that fails the handler's ``phone_relogin_pattern`` when
+                # ``existing_cookies`` is set, leaving the account stuck in
+                # ``expired`` forever. When the stored phone is
+                # masked/invalid we cannot recover the original number, so
+                # the only path back to a working state is a fresh
+                # registration: call ``login_or_register`` with
                 # ``existing_cookies=None, phone=None`` so the handler
                 # allocates a brand-new SMS number and cookies, and the
                 # bot-flagged row is overwritten in place.
+                #
+                # Codex P2 review on PR #1088: the pattern is handler-
+                # specific (Doubao=``\d{11}``, ChatGPT=``\+?1\d{10}``).
+                # Validating against a hardcoded ``\d{11}`` here would
+                # misclassify a valid stored ChatGPT number like
+                # ``+17000007065`` as unavailable and discard reusable
+                # cookies. Mirror BaseSMSLoginHandler.login_or_register's
+                # own validation by using the handler's pattern.
                 stored_phone_raw = account.phone_number or ""
                 phone_is_masked = "*" in stored_phone_raw
-                phone_is_valid = bool(
-                    re.fullmatch(r"\d{11}", stored_phone_raw)
+                handler_phone_pattern = getattr(
+                    handler, "phone_relogin_pattern", r"\d{11}"
                 )
-                phone_unavailable = phone_is_masked or not phone_is_valid
+                phone_matches_handler_pattern = bool(
+                    stored_phone_raw
+                    and re.fullmatch(handler_phone_pattern, stored_phone_raw)
+                )
+                # Empty phone or any phone that doesn't match the selected
+                # handler's pattern means the handler would reject it on the
+                # re-login path; fall back to new-account registration.
+                phone_unavailable = phone_is_masked or not phone_matches_handler_pattern
                 if phone_unavailable:
                     logger.warning(
                         "auto_login: account #%s stored phone=%s is "
