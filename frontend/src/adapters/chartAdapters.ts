@@ -282,13 +282,43 @@ export interface TopCitedPageMockShape {
   tier: number | null
 }
 
+// Issue #1002 follow-up: the upstream `citation_sources.title` column
+// sometimes carries non-human-readable values — most commonly Doubao
+// reference indices stored as bare integers (`-1`, `-2`, `[5]`, etc.).
+// Rendering those as the page title looks like garbage. Treat the title
+// as usable only when it contains at least one non-digit, non-punctuation
+// character; otherwise derive a fallback from the URL's last path
+// segment, falling back to the URL itself.
+function _isUsableTitle(value: string | null | undefined): boolean {
+  if (value == null) return false
+  const trimmed = value.trim()
+  if (!trimmed) return false
+  // Reject titles that are just digits / brackets / punctuation (`-1`,
+  // `[5]`, `(3)`, `--`).
+  return /[^\d\s\-\[\]\(\)\.,#:;]/.test(trimmed)
+}
+
+function _displayTitleFromUrl(url: string): string {
+  try {
+    const parsed = new URL(url)
+    const path = parsed.pathname.replace(/\/$/, '')
+    const lastSegment = path.split('/').filter(Boolean).pop()
+    if (lastSegment) {
+      return decodeURIComponent(lastSegment).replace(/[-_]+/g, ' ').trim() || url
+    }
+    return parsed.hostname || url
+  } catch {
+    return url
+  }
+}
+
 export function adaptTopCitedPages(
   out: TopCitedPagesOut | undefined,
 ): TopCitedPageMockShape[] {
   if (!out || !canUseChartMetrics(out, ['citation']) || !Array.isArray(out.items)) return []
   return out.items.map((p) => ({
     url: p.url,
-    title: p.title ?? p.url,
+    title: _isUsableTitle(p.title) ? (p.title as string) : _displayTitleFromUrl(p.url),
     count: p.count,
     tier: p.tier ?? null,
   }))

@@ -1717,3 +1717,99 @@ async def test_top_cited_pages_aggregates_by_url_title_not_domain(
     assert shared_rows[0]["domain"] in {"example.com", "www.example.com"}
     # `total` counts distinct pages: just 1 in this fixture.
     assert body["total"] == 1
+
+
+@pytest.mark.asyncio
+async def test_top_cited_pages_applies_heuristic_tier_when_domain_authority_empty(
+    client,
+    user: User,
+    db_session: AsyncSession,
+) -> None:
+    """Issue #1002 follow-up: the heuristic tier fallback from #1020 was only
+    applied to ``_target_citation_composition_rows`` and
+    ``_target_authority_points_from_facts``; the top-pages target helper still
+    returned ``tier=null`` even when ``_classify_untiered_domain`` would have
+    classified the domain (Tier 1 via brand alias, Tier 2/3/4 via the
+    well-known host sets). Live bestCoffer evidence (workflow run 25951958628)
+    showed the donut + trend correctly split into Tier 1 (74) + Tier 2 (4) +
+    Tier 4 (25), but every Top Pages row rendered ``Tier ?``. Pin the
+    heuristic application here so all three citation surfaces converge.
+    """
+    project = await _project(db_session, user)
+    await _seed_admin_chain_tables(db_session)
+    # Use a single-word brand alias so the heuristic's label-based match
+    # ("alias appears as a label in domain") fires on the citation domain.
+    # The production shape is "BestCoffer" / "bestcoffer.com" — same pattern.
+    await db_session.execute(
+        text("INSERT INTO brands (id, name, industry) VALUES (12, 'BestCoffer', 'SaaS')")
+    )
+    await _seed_chain_response(
+        db_session,
+        topic_id=10491,
+        prompt_id=10492,
+        query_id=10493,
+        response_id=10494,
+    )
+    mention = BrandMention(
+        response_id=10494,
+        brand_id=12,
+        brand_name="BestCoffer",
+        mention_count=1,
+        sentiment="positive",
+        sentiment_score=0.8,
+        created_at=DAY,
+    )
+    db_session.add(mention)
+    await db_session.flush()
+    db_session.add_all(
+        [
+            # Brand-alias match → Tier 1 via heuristic (no DomainAuthority row).
+            CitationSource(
+                response_id=10494,
+                mention_id=mention.id,
+                url="https://bestcoffer.com/product",
+                domain="bestcoffer.com",
+                title="BestCoffer Product",
+                source_type="publisher",
+                created_at=DAY,
+            ),
+            # Authority host → Tier 2 via heuristic.
+            CitationSource(
+                response_id=10494,
+                mention_id=mention.id,
+                url="https://ibm.com/article",
+                domain="ibm.com",
+                title="IBM Article",
+                source_type="publisher",
+                created_at=DAY,
+            ),
+            # Unknown UGC → Tier 4 via heuristic.
+            CitationSource(
+                response_id=10494,
+                mention_id=mention.id,
+                url="https://randomforum.io/thread",
+                domain="randomforum.io",
+                title="Forum Thread",
+                source_type="ugc",
+                created_at=DAY,
+            ),
+            _analysis(10494, _base_packages(response_id=10494)),
+        ]
+    )
+    await db_session.commit()
+
+    resp = await client.get(
+        f"/api/v1/projects/{project.id}/citations/top-pages",
+        headers=_bearer(user),
+        params={"from": DAY.date().isoformat(), "to": DAY.date().isoformat()},
+    )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    tier_by_domain = {item["domain"]: item["tier"] for item in body["items"]}
+    # Brand-alias domain → Tier 1 (no DB row needed).
+    assert tier_by_domain["bestcoffer.com"] == 1, body
+    # ibm.com is in the authority host set → Tier 2.
+    assert tier_by_domain["ibm.com"] == 2, body
+    # Unknown UGC → Tier 4 (NOT None — heuristic guarantees a bucket).
+    assert tier_by_domain["randomforum.io"] == 4, body
