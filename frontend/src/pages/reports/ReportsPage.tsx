@@ -208,13 +208,20 @@ export default function ReportsPage() {
                     >
                       {t('reports.actions.view')}
                     </Button>
-                    <Button
-                      variant="secondary"
-                      size="sm"
+                    {/* Mock catalog rows have no backend payload to
+                        download (audit #1044 F4-5). The button is left
+                        visible-but-disabled so the layout matches LIVE
+                        rows above (which DO have working downloads),
+                        and a title attribute explains the state to
+                        anyone hovering. */}
+                    <span
+                      title="示例数据无可下载文件,请在上方 LIVE 区生成真实报告"
                       onClick={(e) => e.stopPropagation()}
                     >
-                      PDF
-                    </Button>
+                      <Button variant="secondary" size="sm" disabled>
+                        PDF
+                      </Button>
+                    </span>
                   </div>
                 </div>
               </div>
