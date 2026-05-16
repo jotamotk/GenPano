@@ -657,6 +657,56 @@ async def test_topic_monitoring_merge_gate_only_skips_for_topic_set_narrowing_fi
 
 
 @pytest.mark.asyncio
+async def test_topic_monitoring_excludes_archived_topics_from_count_and_list(
+    client, db_session, user
+):
+    """Regression for #1029 (follow-up to #1034): the merge helpers previously
+    pulled topics with NO status filter, which let archived/draft topics leak
+    into the user-facing list and ``summary.topic_count_total``. Downstream
+    evidence (``_fact_rows``) explicitly excludes archived rows, so leaked
+    topics show as zero-everything ghost rows. The scope must mirror
+    ``topic_analysis/queries.py:_fact_rows`` (active + non-archived).
+
+    Also reasserts the #1041 regression: an active topic with no evidence
+    (topic 102) must STILL appear in the list — we're filtering archived only,
+    not narrowing to with-evidence.
+    """
+    project = await _seed_admin_chain(db_session, user)
+    # Seed an archived topic on the same brand. The merge helpers used to
+    # surface this as a ghost zero-everything row in the user-facing list.
+    now = datetime.now()
+    await db_session.execute(
+        text(
+            """
+            INSERT INTO topics (id, brand_id, text, category, status, created_at)
+            VALUES (103, 42, 'Retired topic', 'product', 'archived', :now)
+            """
+        ),
+        {"now": now},
+    )
+    await db_session.commit()
+
+    resp = await client.get(
+        f"/api/v1/projects/{project.id}/topics/monitoring",
+        headers=_bearer(user),
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    topic_ids = [row["topic_id"] for row in body["topics"]]
+    # Archived topic must not leak into the user-facing list.
+    assert 103 not in topic_ids, "archived topic must not appear in user-facing list"
+    # summary.topic_count_total should exclude archived topics so it stays in
+    # sync with _fact_rows' scope.
+    assert body["summary"]["topic_count_total"] == 2, (
+        "topic_count_total must exclude archived topics to match _fact_rows scope"
+    )
+    # Active-but-no-evidence topic must STILL appear (regression for #1041).
+    assert 102 in topic_ids, (
+        "active no-evidence topic must remain in list (don't reintroduce #1041)"
+    )
+
+
+@pytest.mark.asyncio
 async def test_topic_prompt_query_response_drilldown(client, db_session, user):
     project = await _seed_admin_chain(db_session, user)
     headers = _bearer(user)
