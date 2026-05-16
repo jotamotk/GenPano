@@ -759,7 +759,42 @@ class GuestQueryExecutor:
                     "block_images": _block_heavy_resources(),
                     "os": "windows",
                     "locale": "zh-CN" if is_domestic else "en-US",
+                    # Refs #963 Q-184988 follow-up (5202 captcha-denial on a
+                    # freshly registered Doubao account 711158 going through
+                    # a rotating qg IP): WebRTC STUN bypasses HTTP proxies
+                    # and leaks the worker's static egress IP to Doubao
+                    # regardless of the qg lease. Doubao's risk control sees
+                    # HTTP-IP=qg-residential, WebRTC-IP=worker-static, flags
+                    # the mismatch, and serves a 3D image-selection captcha
+                    # whose image is then refused at the IP level (5202).
+                    # Disabling WebRTC entirely (media.peerconnection.enabled
+                    # = false) closes the leak so Doubao only ever sees the
+                    # qg IP. ``disable_coop`` lets cross-origin captcha
+                    # iframes be interacted with when one does fire.
+                    "block_webrtc": True,
+                    "disable_coop": True,
+                    "i_know_what_im_doing": True,
                 }
+                # Refs #963 doubao_homepage_content follow-up: a qg.net
+                # Chinese residential exit IP paired with the worker
+                # container's UTC timezone is the canonical "you're using a
+                # proxy" signal — Doubao's JS reads
+                # ``Intl.DateTimeFormat().resolvedOptions().timeZone`` (or
+                # ``new Date().getTimezoneOffset()``) and compares against
+                # the exit IP geo. Mismatch → silent rejection, page never
+                # leaves /home, scraper falls back to homepage UI text.
+                # Pin Camoufox to Shanghai geo + timezone for Doubao so JS
+                # geo matches qg exit-IP geo. The Dockerfile installs
+                # ``tzdata`` so Firefox can actually resolve
+                # ``Asia/Shanghai``; without it the env TZ silently no-ops.
+                if llm == "doubao":
+                    camoufox_kwargs["config"] = {
+                        "timezone": "Asia/Shanghai",
+                        "geolocation:longitude": 121.4737,
+                        "geolocation:latitude": 31.2304,
+                        "geolocation:accuracy": 100,
+                    }
+                    camoufox_kwargs["env"] = {**os.environ, "TZ": "Asia/Shanghai"}
                 # Refs #963: when the qg.net rotating-IP proxy is configured
                 # and the LLM is Doubao, swap out the static worker IP for
                 # a fresh residential / mobile IP per query. The worker's
@@ -840,6 +875,13 @@ class GuestQueryExecutor:
                         "--disable-background-timer-throttling",
                         "--disable-backgrounding-occluded-windows",
                         "--disable-renderer-backgrounding",
+                        # Refs #963: force WebRTC through the proxy (or
+                        # none) so the worker's static egress IP doesn't
+                        # leak via STUN. The Camoufox path disables WebRTC
+                        # entirely via media.peerconnection.enabled=false;
+                        # the Chromium fallback uses the Chromium-equivalent
+                        # policy flag so symmetric behaviour holds either way.
+                        "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
                     ],
                 )
                 logger.info(f"[{llm}] Playwright 启动成功")
@@ -3456,8 +3498,26 @@ class GuestQueryExecutor:
                         f"[{llm_name}] 提取到的内容疑似首页而非 AI 响应"
                         f"（匹配首页关键词: {matched_indicators}），丢弃"
                     )
-                    await _save_html(page, debug_query_id, f"{llm_name}_homepage_content")
-                    self.last_error_reason = f"{llm_name}_homepage_content"
+                    homepage_reason = f"{llm_name}_homepage_content"
+                    self.last_error_reason = homepage_reason
+                    # Refs #963 follow-up to PR #1051: after blocking WebRTC,
+                    # doubao_homepage_content kept firing twice in a row on
+                    # Doubao (queries silently rejected, page never leaves
+                    # /home). HTML alone is not enough to diagnose what's
+                    # still leaking — capture the runtime snapshot (with
+                    # fingerprint / timezone / WebRTC reachability /
+                    # on-chat-page flag) and the screenshot too so the next
+                    # failure surfaces enough to root-cause without
+                    # needing admin shell access on the worker.
+                    await _save_html(page, debug_query_id, homepage_reason)
+                    await _save_screenshot(page, debug_query_id, homepage_reason)
+                    await _save_runtime_snapshot(
+                        page,
+                        debug_query_id,
+                        homepage_reason,
+                        config=cfg,
+                        runtime_events=runtime_events,
+                    )
                     resp_text = ""
                     resp_html = ""
 
@@ -3860,6 +3920,61 @@ async def _save_runtime_snapshot(
                             responseSelectors: inspect(selectors.response),
                             loginLikeNodes: inspect("[class*='login'], [class*='sign-in'], [class*='passport'], [role='dialog']"),
                             challengeLikeNodes: inspect("[role='dialog'], [class*='captcha'], [class*='verify'], [class*='challenge'], [class*='modal']"),
+                            // Refs #963 doubao_homepage_content diagnostics:
+                            // capture browser fingerprint + timezone + WebRTC
+                            // surface so we can correlate IP-geo vs JS-geo
+                            // and prove whether block_webrtc is doing its job.
+                            // ``timezoneOffset`` is positive when behind UTC;
+                            // China should report -480 (UTC+8). If the proxy
+                            // IP is Chinese but the offset is 0 (worker
+                            // container is UTC), Doubao has a clear mismatch
+                            // signal for risk control.
+                            // ``rtcPeerConnectionAvailable`` should be false
+                            // after PR #1051 added block_webrtc=true to
+                            // Camoufox.
+                            // ``onChatPage`` / ``userMessageBubbleCount``
+                            // prove whether the submit actually reached
+                            // Doubao or the page never left the homepage.
+                            fingerprint: (() => {
+                                try {
+                                    return {
+                                        userAgent: navigator.userAgent || '',
+                                        language: navigator.language || '',
+                                        languages: navigator.languages || [],
+                                        platform: navigator.platform || '',
+                                        hardwareConcurrency: navigator.hardwareConcurrency || null,
+                                        webdriver: navigator.webdriver === true,
+                                        devicePixelRatio: window.devicePixelRatio || null,
+                                        timezone: (() => {
+                                            try { return Intl.DateTimeFormat().resolvedOptions().timeZone || ''; }
+                                            catch (e) { return 'err:' + String(e).slice(0, 80); }
+                                        })(),
+                                        timezoneOffset: new Date().getTimezoneOffset(),
+                                        screen: {
+                                            width: screen.width,
+                                            height: screen.height,
+                                            availWidth: screen.availWidth,
+                                            availHeight: screen.availHeight,
+                                            colorDepth: screen.colorDepth,
+                                            pixelDepth: screen.pixelDepth,
+                                        },
+                                        rtcPeerConnectionAvailable: (
+                                            typeof window.RTCPeerConnection !== 'undefined' ||
+                                            typeof window.webkitRTCPeerConnection !== 'undefined' ||
+                                            typeof window.mozRTCPeerConnection !== 'undefined'
+                                        ),
+                                        onChatPage: (
+                                            /\\/chat\\/[a-zA-Z0-9_-]+/.test(location.pathname || '')
+                                            || /[?&](conversation|chatId|conv_id|cid)=/.test(location.search || '')
+                                        ),
+                                        userMessageBubbleCount: document.querySelectorAll(
+                                            "[class*='user'][class*='message'], [class*='user'][class*='bubble']"
+                                        ).length,
+                                    };
+                                } catch (e) {
+                                    return {error: String(e).slice(0, 300)};
+                                }
+                            })(),
                         };
                     }
                     """,

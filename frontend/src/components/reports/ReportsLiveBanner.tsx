@@ -12,25 +12,37 @@ import { useProjects } from '../../hooks/useProjects'
 import { isLiveProjectId, useReports } from '../../hooks/useReports'
 import { reportsApi } from '../../api/reports'
 
-export default function ReportsLiveBanner() {
+export default function ReportsLiveBanner({
+  onSelect,
+}: {
+  onSelect?: (reportId: string) => void
+} = {}) {
   const { formatDate } = useLocale()
   const { data: projects } = useProjects()
   const liveProjectId = projects && projects.length > 0 ? projects[0].id : null
 
   if (!isLiveProjectId(liveProjectId)) return null
 
-  return <ReportsLiveBannerInner projectId={liveProjectId as string} formatDate={formatDate} />
+  return (
+    <ReportsLiveBannerInner
+      projectId={liveProjectId as string}
+      formatDate={formatDate}
+      onSelect={onSelect}
+    />
+  )
 }
 
 function ReportsLiveBannerInner({
   projectId,
   formatDate,
+  onSelect,
 }: {
   projectId: string
   formatDate: (
     d: string | number | Date,
     opts?: Intl.DateTimeFormatOptions,
   ) => string
+  onSelect?: (reportId: string) => void
 }) {
   const { data, isLoading, error } = useReports(projectId, 5)
   const items = data?.items ?? []
@@ -122,6 +134,15 @@ function ReportsLiveBannerInner({
                 </Badge>
               </div>
               <div className="flex gap-2">
+                {onSelect && (
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    onClick={() => onSelect(r.id)}
+                  >
+                    查看
+                  </Button>
+                )}
                 <Button
                   variant="outline"
                   size="sm"

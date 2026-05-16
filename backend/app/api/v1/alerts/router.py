@@ -14,6 +14,7 @@ from app.api.v1.alerts._dto import (
     AlertPatchIn,
     AlertRuleIn,
     AlertRuleOut,
+    AlertSnoozeIn,
     NotificationPrefsOut,
     NotificationPrefsPatch,
     UnreadCountOut,
@@ -26,6 +27,7 @@ from app.api.v1.alerts.service import (
     list_user_alerts,
     mark_all_read,
     patch_alert_status,
+    snooze_alert,
     unread_count,
     update_prefs,
 )
@@ -86,6 +88,23 @@ async def mark_all_read_endpoint(
     session: AsyncSession = _DependsDb,
 ) -> dict[str, int]:
     return {"updated_count": await mark_all_read(session, user=user)}
+
+
+@router.post("/{alert_id}/snooze", response_model=AlertOut)
+async def snooze_alert_endpoint(
+    alert_id: str,
+    payload: AlertSnoozeIn,
+    user: Annotated[User, Depends(current_user)],
+    session: AsyncSession = _DependsDb,
+) -> AlertOut:
+    """Defer a non-urgent alert for `hours` (PRD §4.8.7 / AC-4.8-15).
+
+    During the snooze window the alert is excluded from the bell-badge
+    `unread_count`. When `snoozed_until` is reached, the next read of
+    the alerts list lazily flips it back to `unread`.
+    """
+    alert = await snooze_alert(session, user=user, alert_id=alert_id, hours=payload.hours)
+    return AlertOut.model_validate(alert)
 
 
 # ── /v1/users/me/notifications ───────────────────────────────────

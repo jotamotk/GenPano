@@ -81,7 +81,6 @@ async def create_alert_from_diagnostic(
         if autocommit:
             await session.commit()
             await session.refresh(alert)
-        return alert
     except Exception as exc:  # pragma: no cover — defensive
         log.warning("create_alert_from_diagnostic failed: %s", exc)
         try:
@@ -89,6 +88,22 @@ async def create_alert_from_diagnostic(
         except Exception:
             pass
         return None
+
+    # B3-1: deliver the alert through the owner's enabled channels
+    # (email + in-app). Best-effort — dispatch failure MUST NOT roll
+    # back the Alert row. Only fires when the caller is auto-committing
+    # so the row is durably stored before we attempt delivery.
+    if autocommit:
+        try:
+            from app.alerts.dispatcher import dispatch_alert
+
+            await dispatch_alert(session, alert)
+        except Exception as exc:  # pragma: no cover — defensive
+            log.warning(
+                "alert_dispatch.failed",
+                extra={"alert_id": alert.id, "error": str(exc)},
+            )
+    return alert
 
 
 async def resolve_alert_for_diagnostic(

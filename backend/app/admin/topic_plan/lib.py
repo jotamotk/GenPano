@@ -703,16 +703,16 @@ def build_topic_plan_messages(
         "趋势分析",
     ]
     consumer_title_examples = [
-        "口红热门色号挑选",
-        "厚底慢跑鞋舒适度",
-        "运动鞋真伪辨别",
-        "篮球鞋抓地力测评",
-        "儿童运动鞋尺码指南",
-        "无糖可乐口感差异",
-        "新能源车日常通勤体验",
-        "送礼大牌包预算定位",
-        "大牌香水送礼香调",
-        "入门大牌包实用度",
+        "口红热门色号怎么选",
+        "新手慢跑鞋适合厚底跑鞋吗",
+        "运动鞋真伪辨别方法",
+        "篮球鞋抓地力性能测评",
+        "儿童运动鞋尺码选择指南",
+        "可口可乐无糖和普通版口感区别",
+        "宝马新能源车日常通勤体验怎么样",
+        "预算一万左右送女生大牌包怎么选",
+        "想买大牌香水送人哪种味道不容易踩雷",
+        "入门款大牌包包买哪只更实用",
     ]
     payload = {
         "industry": industry,
@@ -747,7 +747,7 @@ def build_topic_plan_messages(
         "Hard rules:\n"
         f"1. The only allowed brand values are: {payload['allowed_brand_names_text']}.\n"
         "2. topics[].brand must copy exactly one allowed brand value. Do not use brand id, numbers, aliases, or any other brand.\n"
-        "3. topics[].title must be Chinese, sound like a real consumer search subject, and be brand-neutral. Title must be a noun phrase research subject (5-20 chars, like an article title); never a chat question, imperative, or AI-user dialogue. No question marks, no 怎么/如何/为什么/帮我/推荐 leading phrases, no first-person 我/我家/我们.\n"
+        "3. topics[].title must be Chinese, sound like a real consumer search subject, and be brand-neutral.\n"
         "4. Do not write topics for brand operators, CRM teams, retail teams, private-domain operations.\n"
         "5. Never include banned_title_terms, selected brand names, selected brand aliases, or competitors in topics[].title.\n"
         "6. topics[].reason must be Chinese for an admin reviewer; explain consumer intent and coverage gap.\n"
@@ -761,9 +761,8 @@ def build_topic_plan_messages(
         "14. When a topic is specifically about a product, set topics[].dimension='product' and topics[].product_name to the exact product name; if the product name contains the brand, do not copy that brand into topics[].title.\n"
         "15. Use brand_context_packs and brand_research to expand beyond the brand name: infer the real industry, category terms, product lines, signature features, target audiences, shopping scenarios, competitors, claims, and common consumer questions.\n"
         "16. All dimensions, including brand/product/category/scenario/question, must keep topics[].title brand-neutral and use consumer category, feature, scenario, or problem language instead.\n"
-        "17. For category/scenario/question topics, prefer noun-phrase titles like 新手慢跑鞋膝盖友好选购 / 夏季通勤运动鞋透气挑选 / 送礼香水预算定位. Keep topics[].brand as the selected brand for attribution, but do not force that brand into the visible title. Do not phrase topics as questions or chat-style requests.\n"
+        "17. For category/scenario/question topics, prefer titles like 新手慢跑鞋怎么选不容易伤膝盖 / 夏天通勤运动鞋怎么选更透气 / 预算内送礼香水哪类不容易踩雷. Keep topics[].brand as the selected brand for attribution, but do not force that brand into the visible title.\n"
         "18. Balance the batch: include reusable non-brand topics that downstream Prompt can later expand into non_branded, branded, and competitor prompts.\n"
-        "19. Every topics[].title must use coherent, real-world terminology grounded in brand_context_packs, brand_research, or the selected brand's industry/products. Do not emit titles that combine unrelated category words, invented characters, or filler phrases (e.g., generic 选购指南/采购参考 suffixes appended to nonsense roots). If you cannot ground a topic in the provided context, omit it rather than hallucinating.\n"
         + json.dumps(payload, ensure_ascii=False)
     )
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]

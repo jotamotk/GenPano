@@ -1,3 +1,9 @@
+> **CI will reject this PR if `## Linked Work`, `## Root Cause Gate`, or `## Verification Evidence Ledger` are missing, empty, or contain placeholder text** (TODO, TBD, xxx, ...).
+>
+> If this PR is not fixing a reported failure, write `Classification: not an incident - <reason>` under Root Cause Gate.
+>
+> Full contract: [AGENTS.md](../AGENTS.md). Enforcement: `.github/workflows/pr-body-lint.yml`.
+
 ## Linked Work
 
 - Issue: Refs #
