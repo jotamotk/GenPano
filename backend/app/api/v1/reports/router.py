@@ -28,9 +28,9 @@ from app.api.v1.reports.service import (
 )
 from app.core.errors import not_found, validation_error
 from app.core.security import _DependsDb, current_user
-from app.reports.renderers import render_csv, render_json, render_markdown
+from app.reports.renderers import render_csv, render_json, render_markdown, render_pdf
 
-VALID_DOWNLOAD_FORMATS = {"json", "markdown", "md", "csv"}
+VALID_DOWNLOAD_FORMATS = {"json", "markdown", "md", "csv", "pdf"}
 
 router = APIRouter(tags=["Reports"])
 
@@ -115,8 +115,9 @@ async def download_my_report(
 ) -> Response:
     """Download a report payload in the requested format.
 
-    Phase RP.5 supports: markdown / md / json / csv. PDF (Phase RP.5
-    follow-up) requires weasyprint and is intentionally deferred.
+    Supports: markdown / md / json / csv / pdf (PRD §4.7.5). PDF
+    rendering uses `fpdf2` server-side (pure Python; no system deps
+    like WeasyPrint / wkhtmltopdf required) — closes audit #1044 B2-12.
     """
     fmt = format.lower()
     if fmt not in VALID_DOWNLOAD_FORMATS:
@@ -144,6 +145,15 @@ async def download_my_report(
             media_type="application/json; charset=utf-8",
             headers={
                 "Content-Disposition": f'attachment; filename="{job.id}.json"',
+            },
+        )
+    if fmt == "pdf":
+        pdf_bytes = render_pdf(payload)
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f'attachment; filename="{job.id}.pdf"',
             },
         )
     # csv

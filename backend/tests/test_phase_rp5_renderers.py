@@ -300,6 +300,8 @@ async def test_download_md_alias(client, user, project):
 
 @pytest.mark.asyncio
 async def test_download_invalid_format_422(client, user, project):
+    """PDF is now supported (#1044 B2-12) — use a truly invalid format
+    here to exercise the validation gate."""
     rid = (
         await client.post(
             f"/api/v1/projects/{project.id}/reports",
@@ -309,7 +311,7 @@ async def test_download_invalid_format_422(client, user, project):
     ).json()["id"]
 
     resp = await client.get(
-        f"/api/v1/projects/{project.id}/reports/{rid}/download?format=pdf",
+        f"/api/v1/projects/{project.id}/reports/{rid}/download?format=docx",
         headers=_bearer(user),
     )
     assert resp.status_code == 422

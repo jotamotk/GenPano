@@ -10,6 +10,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+# fonts-wqy-microhei provides a Unicode TTC with CJK glyph coverage so
+# the PDF renderer can write zh-CN report titles/summaries instead of
+# transliterating to '?'. ~1MB; the renderer auto-detects this path at
+# runtime (app/reports/renderers/pdf_renderer.py).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends fonts-wqy-microhei \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN pip install --no-cache-dir uv==0.11.4 --trusted-host mirrors.aliyun.com
 
 COPY pyproject.toml uv.lock ./
