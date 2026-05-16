@@ -6476,3 +6476,47 @@ def test_qg_proxy_env_vars_wired_into_deploy_yaml():
             f"{env_name} must be written to .env through the $-escape "
             f"python3 heredoc, not the unescaped ENVEOF block."
         )
+
+
+# Refs #963 follow-up to PR #1038 production evidence (worker log
+# 2026-05-16 08:47:59 → 08:49:15): qg.net rotating proxy was wired
+# into guest_executor's Camoufox launch but NOT into sms_login/base.py's
+# auto_login launch. Production registered a new Doubao account via
+# service_id=666056, received the SMS code, and submitted login — only
+# for Doubao to refuse with doubao_not_logged_in because auto_login's
+# Camoufox was still using the worker's native fingerprinted IP.
+# Registration is the most IP-sensitive flow because Doubao's risk
+# control inspects the registration source IP and rejects numbers that
+# arrive from a known-bad address. The fix reserves a qg IP for the
+# auto_login Camoufox too, so the entire chain (registration + first
+# query) is done from a fresh residential IP.
+def test_qg_proxy_wired_into_sms_login_launch():
+    """``sms_login/base.py:_launch_browser`` must reserve a qg IP for Doubao."""
+    from pathlib import Path
+
+    source_path = (
+        Path(__file__).resolve().parent.parent
+        / "agent" / "sms_login" / "base.py"
+    )
+    source = source_path.read_text(encoding="utf-8")
+    # 1. Import is present.
+    assert "from geo_tracker.agent.qg_proxy import QGProxyClient" in source, (
+        "sms_login/base.py must import QGProxyClient so auto_login can "
+        "reserve a rotating qg.net IP at Camoufox launch time."
+    )
+    # 2. Inside _launch_browser, the doubao branch reserves a lease.
+    launch_idx = source.index("async def _launch_browser")
+    launch_block = source[launch_idx:launch_idx + 6000]
+    assert "QGProxyClient.from_env()" in launch_block, (
+        "_launch_browser must call QGProxyClient.from_env() so the qg "
+        "credentials gate the lease reservation."
+    )
+    assert 'self.platform == "doubao"' in launch_block, (
+        "qg reservation must be gated on platform=='doubao' so chatgpt / "
+        "deepseek auto_login do not consume qg credits."
+    )
+    assert "qg_lease.server_url" in launch_block, (
+        "Camoufox kwargs must wire qg_lease.server_url + auth_key + "
+        "auth_password into the proxy={server, username, password} shape "
+        "Playwright expects."
+    )

@@ -28,6 +28,7 @@ from geo_tracker.agent.browser_fingerprint import (
     attach_fingerprint_to_login_result,
     generate_doubao_fingerprint,
 )
+from geo_tracker.agent.qg_proxy import QGProxyClient
 from geo_tracker.agent.sms_login.providers import (
     LubanSMSProvider,
     SMSNumberLease,
@@ -803,6 +804,34 @@ class BaseSMSLoginHandler(ABC):
                 redact_sensitive_text(proxy_url or ""),
             )
 
+        # Refs #963 follow-up to PR #1038 production evidence (worker log
+        # 2026-05-16 08:47:59 → 08:49:15 for query 184406): the qg.net
+        # rotating-proxy was wired into guest_executor's Camoufox launch
+        # in #1038 but NOT into the auto_login flow here. Production
+        # registered a new Doubao account via service_id=666056, got the
+        # SMS code, and submitted login — only for Doubao's server-side
+        # check to refuse because auto_login's Camoufox was still using
+        # the worker's native (fingerprinted) egress IP. New-account
+        # registration is the most IP-sensitive flow because Doubao's
+        # risk-control inspects the registration source IP and rejects
+        # numbers that arrive from a known-bad address. Reserve a qg.net
+        # IP for the auto_login Camoufox too so the entire chain
+        # (registration + first query) is done from a fresh residential
+        # IP.
+        qg_lease = None
+        if self.platform == "doubao":
+            qg_client = QGProxyClient.from_env()
+            if qg_client is not None:
+                try:
+                    qg_lease = await qg_client.reserve()
+                except Exception as exc:
+                    logger.warning(
+                        "[%s] auto_login qg proxy reserve failed (%s); "
+                        "falling back to default proxy path",
+                        self.platform,
+                        redact_sensitive_text(str(exc))[:200],
+                    )
+
         if HAS_CAMOUFOX:
             logger.info(f"[{self.platform}] 启动 Camoufox...")
             # Refs #963: generate the Firefox fingerprint up-front and remember
@@ -823,7 +852,18 @@ class BaseSMSLoginHandler(ABC):
             }
             if self._launch_fingerprint is not None:
                 camoufox_kwargs["fingerprint"] = self._launch_fingerprint
-            if use_proxy:
+            if qg_lease is not None:
+                camoufox_kwargs["proxy"] = {
+                    "server": qg_lease.server_url,
+                    "username": qg_lease.auth_key,
+                    "password": qg_lease.auth_password,
+                }
+                logger.info(
+                    "[%s] auto_login using qg.net rotating proxy IP %s",
+                    self.platform,
+                    qg_lease.ip_port.split(":")[0] + ":[port-redacted]",
+                )
+            elif use_proxy:
                 camoufox_kwargs["proxy"] = {"server": proxy_url}
             ctx = AsyncCamoufox(**camoufox_kwargs)
             browser = await ctx.__aenter__()
@@ -843,7 +883,16 @@ class BaseSMSLoginHandler(ABC):
                     "--window-size=1920,1080",
                 ],
             }
-            if use_proxy:
+            if qg_lease is not None:
+                # Same qg-first ordering as the Camoufox path: prefer the
+                # rotating residential IP when available so the Playwright
+                # fallback doesn't silently leak the worker's native IP.
+                launch_kwargs["proxy"] = {
+                    "server": qg_lease.server_url,
+                    "username": qg_lease.auth_key,
+                    "password": qg_lease.auth_password,
+                }
+            elif use_proxy:
                 launch_kwargs["proxy"] = {"server": proxy_url}
             pw = await async_playwright().start()
             browser = await pw.chromium.launch(**launch_kwargs)
