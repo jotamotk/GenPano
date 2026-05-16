@@ -249,7 +249,13 @@ const TIER_COLORS = [
   'var(--color-chart-3)',
   'var(--color-chart-2)',
   'var(--color-chart-4)',
-  'var(--color-chart-line-grid)',
+  // Issue #1002 follow-up: "未分类" (tier=null) was using `--color-chart-line-grid`
+  // (#E8E8F0) — the same color as the chart's background grid lines, which made
+  // the segment indistinguishable from the empty donut ring whenever the
+  // backend bucketed every citation as untiered (e.g. bestCoffer where no
+  // domain has a `domain_authority` row yet). Use the axis-text grey so the
+  // segment is visible without screaming for attention.
+  'var(--color-chart-axis-text)',
 ]
 
 export function adaptCitationComposition(
