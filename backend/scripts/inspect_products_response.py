@@ -36,6 +36,14 @@ Scenarios:
         formula_status == "ok"` (frontend gate PASSES). This is exactly
         the BestCoffer screenshot pattern — page renders, all per-product
         metric columns show "--".
+  (f) Issue #1031 trend_30d evidence repro: v3 packages with non-empty
+      products[] should now emit BOTH `metric_formula_evidence.topic_product`
+      AND `metric_formula_evidence.trend_30d` (status="ok"). Asserts the
+      bcgData-style filter (`x != null && y != null && z != null`) would
+      pass for at least one product when sparkline + mention_count are
+      populated. Without trend_30d evidence, the frontend
+      `canUseMetricEvidence(data, 'trend_30d')` gate returns false and
+      EVERY row in the BCG matrix is dropped → "暂无产品数据".
 
 Usage:
   uv run python backend/scripts/inspect_products_response.py
@@ -432,9 +440,10 @@ def _can_use_metric_evidence(data: dict[str, Any], metric: str = "product") -> t
 
     The frontend gate maps `metric='product'` to evidence key 'topic_product'
     and passes when:
-      - `metric_formula_evidence.topic_product` exists
+      - `metric_formula_evidence.<key>` exists
       - `formula_status` in {'ok', 'partial'}
       - `state` in {'ok', 'partial'}
+    For metric='trend_30d' the gate maps to evidence key 'trend_30d'.
     """
     evidence_key = "topic_product" if metric == "product" else metric
     metric_evidence = data.get("metric_formula_evidence") or {}
@@ -448,6 +457,23 @@ def _can_use_metric_evidence(data: dict[str, Any], metric: str = "product") -> t
     if state and state not in {"ok", "partial"}:
         return False, f"status={state!r} not in ok|partial"
     return True, f"formula_status={formula_status} status={state}"
+
+
+def _bcg_filter_would_pass(items: list[dict[str, Any]]) -> tuple[bool, int, int]:
+    """Python emulation of BrandProductsPage.tsx:134 BCG filter
+    (`x != null && y != null && z != null`), where x=mention_rate,
+    y=trend_30d, z=mention_count. Returns (any_row_passes, passing_count,
+    total_count). Page renders "暂无产品数据" when no row passes.
+    """
+    total = len(items)
+    passing = 0
+    for item in items:
+        x = item.get("mention_rate")
+        y = item.get("trend_30d")
+        z = item.get("mention_count")
+        if x is not None and y is not None and z is not None:
+            passing += 1
+    return passing > 0, passing, total
 
 
 def _scenario_banner(label: str, description: str) -> str:
@@ -522,6 +548,19 @@ async def _run_scenario(
         f"  topic_product key present: {has_topic_product}"
     )
 
+    # Issue #1031: separate gate for trend_30d, plus BCG filter audit.
+    trend_passes, trend_reason = _can_use_metric_evidence(body, "trend_30d")
+    has_trend_30d = "trend_30d" in metric_evidence
+    bcg_pass, bcg_passing_count, bcg_total = _bcg_filter_would_pass(body.get("items") or [])
+    print(
+        "\n-- canUseMetricEvidence(data, 'trend_30d') emulation (Issue #1031) --\n"
+        f"  result: {'PASS' if trend_passes else 'FAIL'}\n"
+        f"  reason: {trend_reason}\n"
+        f"  trend_30d key present: {has_trend_30d}\n"
+        f"  BCG filter (x,y,z != null): {bcg_passing_count}/{bcg_total} rows pass "
+        f"({'render' if bcg_pass else '暂无产品数据'})"
+    )
+
     # Per-item metric audit — surfaces the BestCoffer screenshot pattern
     # (product names populated but every per-product metric column is "--").
     items_metric_audit: list[dict[str, Any]] = []
@@ -545,6 +584,13 @@ async def _run_scenario(
         "has_topic_product": has_topic_product,
         "metric_evidence_keys": sorted(metric_evidence.keys()),
         "topic_product": metric_evidence.get("topic_product"),
+        "trend_30d": metric_evidence.get("trend_30d"),
+        "has_trend_30d": has_trend_30d,
+        "trend_30d_passes_gate": trend_passes,
+        "trend_30d_reason": trend_reason,
+        "bcg_filter_pass": bcg_pass,
+        "bcg_filter_passing_count": bcg_passing_count,
+        "bcg_filter_total": bcg_total,
         "state": body.get("state"),
         "total": body.get("total"),
         "evidence_count": body.get("evidence_count"),
@@ -629,6 +675,32 @@ async def main() -> None:
             v3_payload=True,
         )
     )
+    # Scenario (f) — Issue #1031: v3 packages with products[] should now
+    # emit `metric_formula_evidence.trend_30d.formula_status="ok"`
+    # (post-fix). Asserts:
+    #   - trend_30d evidence key is present
+    #   - frontend canUseMetricEvidence(data, 'trend_30d') gate PASSes
+    # The BCG filter still requires per-product `mention_rate`,
+    # `trend_30d`, `mention_count` all non-null — which depends on
+    # `product_score_daily` having data. Since this scenario seeds
+    # ProductScoreDaily-equivalent data via the fallback path's
+    # ProductFeatureMention rows (mention_count populated), but
+    # per-product trend_30d is computed from sparkline (requires 14+
+    # days of ProductScoreDaily), the BCG row filter will still drop
+    # rows when sparkline is empty. The IMPORTANT result for #1031 is
+    # that the `trend_30d` evidence key exists and its formula_status
+    # is "ok" so the FE gate flips to true.
+    summaries.append(
+        await _run_scenario(
+            "(f)",
+            "Issue #1031 trend_30d evidence repro — v3 packages with "
+            "products[] should emit metric_formula_evidence.trend_30d.formula_status='ok'",
+            response_ids=[8000, 8001, 8002],
+            product_fact_count=3,
+            include_topic_product=False,
+            v3_payload=True,
+        )
+    )
 
     print("\n" + "=" * 78)
     print("SUMMARY")
@@ -638,6 +710,9 @@ async def main() -> None:
             f"  {s['label']}: gate={'PASS' if s['passes_gate'] else 'FAIL'} "
             f"reason={s['reason']!r} "
             f"topic_product_present={s['has_topic_product']} "
+            f"trend_30d_present={s['has_trend_30d']} "
+            f"trend_gate={'PASS' if s['trend_30d_passes_gate'] else 'FAIL'} "
+            f"bcg_filter={s['bcg_filter_passing_count']}/{s['bcg_filter_total']} "
             f"state={s['state']!r} total={s['total']} "
             f"evidence_count={s['evidence_count']}"
         )
@@ -652,6 +727,39 @@ async def main() -> None:
                     f"sov={item['sov']} avg_sentiment={item['avg_sentiment']} "
                     f"ranking={item['ranking']} trend_30d={item['trend_30d']}"
                 )
+
+    # Issue #1031 explicit assertion — scenario (f) must surface
+    # `metric_formula_evidence.trend_30d.formula_status == "ok"`.
+    scenario_f = next((s for s in summaries if s["label"] == "(f)"), None)
+    if scenario_f is None:
+        raise AssertionError("scenario (f) result missing from summaries")
+    trend_evidence = scenario_f["trend_30d"]
+    assert trend_evidence is not None, (
+        "scenario (f): metric_formula_evidence.trend_30d MUST be present (Issue #1031); got None"
+    )
+    formula_status = trend_evidence.get("formula_status")
+    assert formula_status == "ok", (
+        f"scenario (f): metric_formula_evidence.trend_30d.formula_status "
+        f"MUST be 'ok'; got {formula_status!r}"
+    )
+    assert scenario_f["trend_30d_passes_gate"], (
+        f"scenario (f): canUseMetricEvidence(data, 'trend_30d') gate "
+        f"MUST pass; got reason={scenario_f['trend_30d_reason']!r}"
+    )
+    print(
+        "\n-- Issue #1031 assertion --\n"
+        "  scenario (f) trend_30d evidence: PASS\n"
+        f"  formula_status={formula_status!r} status={trend_evidence.get('status')!r}\n"
+        f"  data_point_count={trend_evidence.get('data_point_count')}\n"
+        f"  product_data_point_count={trend_evidence.get('product_data_point_count')}\n"
+        f"  BCG filter pass: {scenario_f['bcg_filter_passing_count']}"
+        f"/{scenario_f['bcg_filter_total']} rows "
+        f"({'render' if scenario_f['bcg_filter_pass'] else '暂无产品数据'})\n"
+        "  NOTE: BCG row filter additionally requires per-product sparkline\n"
+        "        + mention_count, which depends on product_score_daily having\n"
+        "        >= 14 days of data. Issue #1031 fixes the gate; per-product\n"
+        "        rendering still needs ProductScoreDaily rows."
+    )
 
 
 if __name__ == "__main__":

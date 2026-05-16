@@ -86,6 +86,7 @@ from app.api.v1.projects.contracts.rollups import (
     _rollup_sentiment,
     _rollup_sov,
     _rollup_topic_product,
+    _rollup_trend_30d,
 )
 
 
@@ -607,6 +608,26 @@ async def _analyzer_fact_rollup(
             reason_codes = _unique(
                 list(reason_codes) + list(topic_product_evidence.get("reason_codes") or [])
             )
+        # Issue #1031: same omit-when-None pattern for `trend_30d` so the
+        # frontend `canUseMetricEvidence(data, 'trend_30d')` gate
+        # (BrandProductsPage.tsx:99) passes when the underlying packages
+        # carry trend evidence — without it, every `p.trend = null` and
+        # the BCG matrix drops every row.
+        trend_30d_evidence = _rollup_trend_30d(packages) if packages else None
+        if trend_30d_evidence is not None:
+            metric_evidence = {**metric_evidence, "trend_30d": trend_30d_evidence}
+            counts = {
+                **counts,
+                "analyzer_trend_30d_data_point_count": int(
+                    trend_30d_evidence.get("data_point_count") or 0
+                ),
+                "analyzer_trend_30d_product_data_point_count": int(
+                    trend_30d_evidence.get("product_data_point_count") or 0
+                ),
+            }
+            reason_codes = _unique(
+                list(reason_codes) + list(trend_30d_evidence.get("reason_codes") or [])
+            )
         return metric_evidence, counts, reason_codes
 
     if not packages:
@@ -625,6 +646,13 @@ async def _analyzer_fact_rollup(
     topic_product_evidence = _rollup_topic_product(packages)
     if topic_product_evidence is not None:
         metric_evidence["topic_product"] = topic_product_evidence
+    # Issue #1031: same omit-when-None semantics for `trend_30d` so older
+    # fixtures without the per-package signal keep their pre-existing
+    # metric-evidence shape unchanged (regression risk caught by
+    # `test_issue_687_bestcoffer_app_api_contract`).
+    trend_30d_evidence = _rollup_trend_30d(packages)
+    if trend_30d_evidence is not None:
+        metric_evidence["trend_30d"] = trend_30d_evidence
     reason_codes = _unique(
         [
             reason
@@ -673,6 +701,13 @@ async def _analyzer_fact_rollup(
         )
         counts["analyzer_product_fact_count"] = int(
             topic_product_evidence.get("product_fact_count") or 0
+        )
+    if trend_30d_evidence is not None:
+        counts["analyzer_trend_30d_data_point_count"] = int(
+            trend_30d_evidence.get("data_point_count") or 0
+        )
+        counts["analyzer_trend_30d_product_data_point_count"] = int(
+            trend_30d_evidence.get("product_data_point_count") or 0
         )
     return metric_evidence, counts, reason_codes
 
