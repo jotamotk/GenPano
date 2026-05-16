@@ -1,0 +1,221 @@
+name: Doubao Verify (read-only)
+
+# Refs #963 anti-scraping verification: SSH to the worker, read recent
+# Doubao query state + the latest runtime-snapshot fingerprint dump
+# from PR #1068, and post the output back as a PR comment so the
+# Claude session can read it via the GitHub MCP without needing
+# admin/SSH access on its own. Read-only — does not mutate any DB
+# row or kick a celery task. Pure observation.
+
+# Refs Codex P2 review on PR #1073: the original trigger was just
+# ``pull_request`` on this file's path, which is too narrow — after the
+# YAML lands on main, future Doubao fix PRs won't re-run this verifier
+# unless someone makes a dummy workflow edit. Broaden the trigger:
+# - ``workflow_dispatch`` lets the user (or any maintainer) hit "Run
+#   workflow" in the Actions UI on demand, exactly the way
+#   ``server-diagnostics.yml`` and the other runbook workflows are
+#   invoked.
+# - ``push`` on a fixed Claude-owned branch lets the assistant trigger
+#   a fresh dump by pushing an empty commit / tiny edit to that branch
+#   without opening a new PR every time.
+# - ``pull_request`` on this file is kept so PR self-tests still work
+#   when the verifier YAML itself is being touched.
+on:
+  workflow_dispatch:
+    inputs:
+      brand_id:
+        description: "Optional brand_id filter for the doubao query SELECT (default: all)"
+        required: false
+        default: ""
+  push:
+    branches:
+      - 'claude/verify-doubao'
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/doubao-verify-readonly.yml'
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: SSH + capture Doubao state
+        id: ssh
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s' "$SERVER_SSH_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H "$SERVER_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+          output=$(ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=accept-new \
+            -o ServerAliveInterval=30 -o ServerAliveCountMax=4 \
+            "$SERVER_USER@$SERVER_HOST" 'bash -s' <<'REMOTE'
+          set -uo pipefail
+          cd /opt/genpano
+
+          echo "=== Container build identity ==="
+          docker compose images worker 2>/dev/null | head -5 || true
+
+          echo ""
+          echo "=== TZ env in worker container ==="
+          docker compose exec -T worker sh -c 'echo TZ=$TZ; date; ls -la /usr/share/zoneinfo/Asia/Shanghai 2>&1 | head -2' </dev/null 2>&1 || true
+
+          echo ""
+          echo "=== Last 15 doubao queries (most recent first) ==="
+          docker compose exec -T postgres psql -X -U genpano -d genpano -P pager=off -c "
+            SELECT
+              q.id,
+              q.status,
+              q.retry_reason,
+              q.retry_count,
+              q.account_id,
+              q.queued_at,
+              q.finished_at,
+              EXTRACT(EPOCH FROM (NOW() - q.queued_at))::int AS seconds_since_queued,
+              (SELECT COUNT(*) FROM llm_responses r WHERE r.query_id = q.id) AS resp_count
+            FROM queries q
+            WHERE q.target_llm='doubao'
+            ORDER BY q.id DESC
+            LIMIT 15;
+          " </dev/null 2>&1 || true
+
+          echo ""
+          echo "=== Doubao queries with response_count > 0 after deploy 2026-05-16 (success markers) ==="
+          docker compose exec -T postgres psql -X -U genpano -d genpano -P pager=off -c "
+            SELECT
+              q.id, q.status, q.retry_reason, q.finished_at,
+              (SELECT COUNT(*) FROM llm_responses r WHERE r.query_id=q.id) AS resp_count
+            FROM queries q
+            WHERE q.target_llm='doubao'
+              AND q.finished_at > '2026-05-16 09:00:00 UTC'::timestamp
+              AND EXISTS (SELECT 1 FROM llm_responses r WHERE r.query_id=q.id)
+            ORDER BY q.id DESC
+            LIMIT 10;
+          " </dev/null 2>&1 || true
+
+          echo ""
+          echo "=== Latest 5 doubao runtime-snapshot files ==="
+          ls -lat /data/screenshots/query_*_doubao_*.json 2>/dev/null | head -5 || echo "(none)"
+
+          echo ""
+          echo "=== Latest doubao_homepage_content fingerprint dump ==="
+          latest_hp=$(ls -t /data/screenshots/query_*_doubao_homepage_content_*.json 2>/dev/null | head -1)
+          if [ -n "$latest_hp" ]; then
+            echo "FILE: $latest_hp"
+            python3 - <<PY
+          import json, sys
+          with open("$latest_hp") as f:
+              d = json.load(f)
+          page = d.get("page", {}) or {}
+          fp = page.get("fingerprint", {}) or {}
+          print("url             :", page.get("url"))
+          print("title           :", (page.get("title") or "")[:120])
+          print("doubaoAuthReason:", d.get("doubaoAuthStateReason"))
+          print("doubaoChallenge :", d.get("doubaoVisualChallenge"))
+          print("--- fingerprint ---")
+          for k in ("userAgent","language","languages","platform","hardwareConcurrency","webdriver","devicePixelRatio","timezone","timezoneOffset","rtcPeerConnectionAvailable","onChatPage","userMessageBubbleCount"):
+              v = fp.get(k)
+              print(f"{k:30s} = {v!r}")
+          scr = fp.get("screen") or {}
+          print("screen          :", json.dumps(scr))
+          PY
+          else
+            echo "(no homepage_content snapshots — possibly cleared / not yet captured)"
+          fi
+
+          echo ""
+          echo "=== Latest doubao runtime snapshot (any reason) ==="
+          latest_any=$(ls -t /data/screenshots/query_*_doubao_*.json 2>/dev/null | head -1)
+          if [ -n "$latest_any" ] && [ "$latest_any" != "$latest_hp" ]; then
+            echo "FILE: $latest_any"
+            python3 - <<PY
+          import json
+          with open("$latest_any") as f:
+              d = json.load(f)
+          page = d.get("page", {}) or {}
+          fp = page.get("fingerprint", {}) or {}
+          print("suffix          :", d.get("suffix"))
+          print("url             :", page.get("url"))
+          print("doubaoAuthReason:", d.get("doubaoAuthStateReason"))
+          print("timezone        :", fp.get("timezone"))
+          print("timezoneOffset  :", fp.get("timezoneOffset"))
+          print("onChatPage      :", fp.get("onChatPage"))
+          print("rtcAvail        :", fp.get("rtcPeerConnectionAvailable"))
+          PY
+          fi
+
+          echo ""
+          echo "=== Doubao worker log tail (last 50 lines mentioning doubao) ==="
+          docker compose logs --tail 500 worker 2>&1 | grep -iE "doubao|qg|timezone" | tail -50 || true
+          REMOTE
+          )
+
+          # Save raw output to file for the next step
+          {
+            echo "$output"
+          } > /tmp/doubao-verify-output.txt
+
+          # Also push to step summary
+          {
+            echo "## Doubao verify (read-only)"
+            echo ""
+            echo '```'
+            head -2000 /tmp/doubao-verify-output.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Post output as PR comment (when a PR context exists)
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let body = '## Doubao verify (read-only)\n\n';
+            try {
+              const out = fs.readFileSync('/tmp/doubao-verify-output.txt', 'utf-8');
+              // Truncate so we don't blow past comment size limit (65536 chars).
+              const max = 50000;
+              const trimmed = out.length > max ? out.slice(0, max) + '\n…[truncated]' : out;
+              body += '```\n' + trimmed + '\n```';
+            } catch (e) {
+              body += '⚠️ failed to read output: ' + String(e);
+            }
+            // Refs Codex P2 on PR #1073: the workflow now also runs on
+            // ``workflow_dispatch`` and ``push`` to a Claude-owned branch.
+            // Neither context carries a PR number, so trying to comment
+            // would throw. Find the PR for the current head SHA when one
+            // exists; otherwise dump to the step summary and exit cleanly.
+            let issueNumber = null;
+            if (context.payload.pull_request) {
+              issueNumber = context.payload.pull_request.number;
+            } else {
+              // Look up an open PR whose head SHA matches the trigger commit.
+              const sha = context.sha;
+              const prs = await github.rest.search.issuesAndPullRequests({
+                q: `repo:${context.repo.owner}/${context.repo.repo} is:pr is:open ${sha}`,
+              });
+              if (prs.data.items.length > 0) {
+                issueNumber = prs.data.items[0].number;
+              }
+            }
+            if (issueNumber) {
+              await github.rest.issues.createComment({
+                issue_number: issueNumber,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body,
+              });
+              core.notice(`Posted verify dump to PR #${issueNumber}`);
+            } else {
+              core.notice('No PR context found; dump available in step summary only.');
+            }
