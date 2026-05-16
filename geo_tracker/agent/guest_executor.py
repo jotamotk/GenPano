@@ -3478,8 +3478,26 @@ class GuestQueryExecutor:
                         f"[{llm_name}] 提取到的内容疑似首页而非 AI 响应"
                         f"（匹配首页关键词: {matched_indicators}），丢弃"
                     )
-                    await _save_html(page, debug_query_id, f"{llm_name}_homepage_content")
-                    self.last_error_reason = f"{llm_name}_homepage_content"
+                    homepage_reason = f"{llm_name}_homepage_content"
+                    self.last_error_reason = homepage_reason
+                    # Refs #963 follow-up to PR #1051: after blocking WebRTC,
+                    # doubao_homepage_content kept firing twice in a row on
+                    # Doubao (queries silently rejected, page never leaves
+                    # /home). HTML alone is not enough to diagnose what's
+                    # still leaking — capture the runtime snapshot (with
+                    # fingerprint / timezone / WebRTC reachability /
+                    # on-chat-page flag) and the screenshot too so the next
+                    # failure surfaces enough to root-cause without
+                    # needing admin shell access on the worker.
+                    await _save_html(page, debug_query_id, homepage_reason)
+                    await _save_screenshot(page, debug_query_id, homepage_reason)
+                    await _save_runtime_snapshot(
+                        page,
+                        debug_query_id,
+                        homepage_reason,
+                        config=cfg,
+                        runtime_events=runtime_events,
+                    )
                     resp_text = ""
                     resp_html = ""
 
@@ -3882,6 +3900,61 @@ async def _save_runtime_snapshot(
                             responseSelectors: inspect(selectors.response),
                             loginLikeNodes: inspect("[class*='login'], [class*='sign-in'], [class*='passport'], [role='dialog']"),
                             challengeLikeNodes: inspect("[role='dialog'], [class*='captcha'], [class*='verify'], [class*='challenge'], [class*='modal']"),
+                            // Refs #963 doubao_homepage_content diagnostics:
+                            // capture browser fingerprint + timezone + WebRTC
+                            // surface so we can correlate IP-geo vs JS-geo
+                            // and prove whether block_webrtc is doing its job.
+                            // ``timezoneOffset`` is positive when behind UTC;
+                            // China should report -480 (UTC+8). If the proxy
+                            // IP is Chinese but the offset is 0 (worker
+                            // container is UTC), Doubao has a clear mismatch
+                            // signal for risk control.
+                            // ``rtcPeerConnectionAvailable`` should be false
+                            // after PR #1051 added block_webrtc=true to
+                            // Camoufox.
+                            // ``onChatPage`` / ``userMessageBubbleCount``
+                            // prove whether the submit actually reached
+                            // Doubao or the page never left the homepage.
+                            fingerprint: (() => {
+                                try {
+                                    return {
+                                        userAgent: navigator.userAgent || '',
+                                        language: navigator.language || '',
+                                        languages: navigator.languages || [],
+                                        platform: navigator.platform || '',
+                                        hardwareConcurrency: navigator.hardwareConcurrency || null,
+                                        webdriver: navigator.webdriver === true,
+                                        devicePixelRatio: window.devicePixelRatio || null,
+                                        timezone: (() => {
+                                            try { return Intl.DateTimeFormat().resolvedOptions().timeZone || ''; }
+                                            catch (e) { return 'err:' + String(e).slice(0, 80); }
+                                        })(),
+                                        timezoneOffset: new Date().getTimezoneOffset(),
+                                        screen: {
+                                            width: screen.width,
+                                            height: screen.height,
+                                            availWidth: screen.availWidth,
+                                            availHeight: screen.availHeight,
+                                            colorDepth: screen.colorDepth,
+                                            pixelDepth: screen.pixelDepth,
+                                        },
+                                        rtcPeerConnectionAvailable: (
+                                            typeof window.RTCPeerConnection !== 'undefined' ||
+                                            typeof window.webkitRTCPeerConnection !== 'undefined' ||
+                                            typeof window.mozRTCPeerConnection !== 'undefined'
+                                        ),
+                                        onChatPage: (
+                                            /\\/chat\\/[a-zA-Z0-9_-]+/.test(location.pathname || '')
+                                            || /[?&](conversation|chatId|conv_id|cid)=/.test(location.search || '')
+                                        ),
+                                        userMessageBubbleCount: document.querySelectorAll(
+                                            "[class*='user'][class*='message'], [class*='user'][class*='bubble']"
+                                        ).length,
+                                    };
+                                } catch (e) {
+                                    return {error: String(e).slice(0, 300)};
+                                }
+                            })(),
                         };
                     }
                     """,

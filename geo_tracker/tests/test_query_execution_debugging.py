@@ -6649,3 +6649,66 @@ def test_playwright_fallback_forces_webrtc_through_proxy():
             "achieves this via block_webrtc=True; the Chromium path needs "
             "the Chromium-equivalent flag for symmetry."
         )
+
+
+# Refs #963 follow-up to PR #1051: after WebRTC was blocked,
+# ``doubao_homepage_content`` kept firing twice in a row on Doubao
+# (queries silently rejected; page never left /home and never reached
+# /chat/{id}). The single saved HTML wasn't enough to root-cause —
+# we needed to know whether the IP-geo / JS-geo lined up, whether
+# WebRTC was actually disabled, and whether the submit reached Doubao.
+# Augment ``_save_runtime_snapshot`` to capture browser fingerprint +
+# timezone + RTCPeerConnection availability + on-chat-page flag, then
+# wire the homepage_content path to save all three artifacts (HTML,
+# screenshot, runtime snapshot) on every failure.
+def test_runtime_snapshot_captures_doubao_fingerprint_diagnostics():
+    """The runtime snapshot must include fingerprint fields for #963 triage."""
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parent.parent
+        / "agent" / "guest_executor.py"
+    ).read_text(encoding="utf-8")
+    snapshot_idx = source.index("async def _save_runtime_snapshot")
+    snapshot_block = source[snapshot_idx:snapshot_idx + 10000]
+    for marker in (
+        "fingerprint:",
+        "timezoneOffset",
+        "rtcPeerConnectionAvailable",
+        "onChatPage",
+        "userMessageBubbleCount",
+        "Intl.DateTimeFormat()",
+    ):
+        assert marker in snapshot_block, (
+            f"_save_runtime_snapshot must include `{marker}` in its page "
+            "evaluate so #963 doubao_homepage_content failures dump enough "
+            "fingerprint / timezone / WebRTC / submit-state info to root-"
+            "cause without admin shell access on the worker."
+        )
+
+
+def test_doubao_homepage_content_path_saves_all_three_artifacts():
+    """homepage_content failures must persist HTML + screenshot + runtime snapshot."""
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parent.parent
+        / "agent" / "guest_executor.py"
+    ).read_text(encoding="utf-8")
+    # Find the homepage_content save-site, not the earlier qg-cleanup
+    # ip_block_reasons set that also references the string literal. The
+    # save-site is identified by the assignment to ``homepage_reason``.
+    homepage_idx = source.index('homepage_reason = f"{llm_name}_homepage_content"')
+    homepage_block = source[homepage_idx:homepage_idx + 2500]
+    for marker in (
+        "_save_html",
+        "_save_screenshot",
+        "_save_runtime_snapshot",
+    ):
+        assert marker in homepage_block, (
+            "doubao_homepage_content path must call "
+            f"`{marker}` so #963 triage has HTML + screenshot + runtime "
+            "snapshot for every silently-rejected query, not just the "
+            "HTML it had before. Saving only one artifact left us unable "
+            "to root-cause when the failure recurred."
+        )
