@@ -115,6 +115,28 @@ def _normalize_brand_name_sql(col: Any) -> Any:
     return func.replace(func.lower(func.trim(col)), " ", "")
 
 
+def _weighted_avg_geo_metric(metric_col: Any) -> Any:
+    """Traffic-weighted average of a GeoScoreDaily metric column.
+
+    Audit #1044 B1-6: ``GeoScoreDaily`` rows are keyed by
+    ``(brand_id, date, target_llm, intent, language)`` — one row per
+    engine per day. A naive ``func.avg(metric)`` gives every row
+    equal voice regardless of how many queries the engine actually
+    served, so a low-traffic engine (10 queries) distorts the
+    aggregate equally with a high-traffic one (500 queries).
+
+    The fix returns ``SUM(metric * total_queries) / NULLIF(SUM(total_queries), 0)``
+    — i.e. weighted by the per-row query count. ``COALESCE`` on
+    ``total_queries`` keeps NULL rows from poisoning the sum;
+    ``NULLIF`` guards the division when all weights are zero (returns
+    NULL rather than raising). Portable across SQLite + Postgres.
+    """
+    weight = func.coalesce(GeoScoreDaily.total_queries, 0)
+    weighted_sum = func.sum(metric_col * weight)
+    total_weight = func.sum(weight)
+    return weighted_sum / func.nullif(total_weight, 0)
+
+
 # ─────────────────────────────────────────────────────────────────
 
 
@@ -131,7 +153,7 @@ class VisibilityDeclineRule(BaseRule):
         prior_to = today - timedelta(days=30)
 
         async def _avg(date_lo: date, date_hi: date) -> float | None:
-            stmt = select(func.avg(GeoScoreDaily.mention_rate)).where(
+            stmt = select(_weighted_avg_geo_metric(GeoScoreDaily.mention_rate)).where(
                 and_(
                     GeoScoreDaily.brand_id == project.primary_brand_id,
                     GeoScoreDaily.date >= datetime.combine(date_lo, datetime.min.time()),
@@ -249,7 +271,7 @@ class GeoScoreDropRule(BaseRule):
         prior_to = today - timedelta(days=30)
 
         async def _avg(date_lo: date, date_hi: date) -> float | None:
-            stmt = select(func.avg(GeoScoreDaily.avg_geo_score)).where(
+            stmt = select(_weighted_avg_geo_metric(GeoScoreDaily.avg_geo_score)).where(
                 and_(
                     GeoScoreDaily.brand_id == project.primary_brand_id,
                     GeoScoreDaily.date >= datetime.combine(date_lo, datetime.min.time()),
@@ -327,7 +349,7 @@ class CompetitorOvertakeRule(BaseRule):
             return []
 
         async def _avg(brand_id: int) -> float | None:
-            stmt = select(func.avg(GeoScoreDaily.avg_geo_score)).where(
+            stmt = select(_weighted_avg_geo_metric(GeoScoreDaily.avg_geo_score)).where(
                 and_(
                     GeoScoreDaily.brand_id == brand_id,
                     GeoScoreDaily.date >= datetime.combine(from_d, datetime.min.time()),
@@ -616,7 +638,7 @@ class ShareOfVoiceMinorRule(BaseRule):
             return []
         today = date.today()
         from_d = today - timedelta(days=29)
-        stmt = select(func.avg(GeoScoreDaily.avg_sov)).where(
+        stmt = select(_weighted_avg_geo_metric(GeoScoreDaily.avg_sov)).where(
             and_(
                 GeoScoreDaily.brand_id == project.primary_brand_id,
                 GeoScoreDaily.date >= datetime.combine(from_d, datetime.min.time()),
@@ -681,7 +703,7 @@ class IndustryLagTop10Rule(BaseRule):
             return []
         today = date.today()
         from_d = today - timedelta(days=29)
-        my_stmt = select(func.avg(GeoScoreDaily.avg_geo_score)).where(
+        my_stmt = select(_weighted_avg_geo_metric(GeoScoreDaily.avg_geo_score)).where(
             and_(
                 GeoScoreDaily.brand_id == project.primary_brand_id,
                 GeoScoreDaily.date >= datetime.combine(from_d, datetime.min.time()),
@@ -698,7 +720,7 @@ class IndustryLagTop10Rule(BaseRule):
         # the project's industry via KgBrand.industry_id and excluding the
         # project's own brand (it can't be in its own peer set).
         top_stmt = (
-            select(func.avg(GeoScoreDaily.avg_geo_score).label("g"))
+            select(_weighted_avg_geo_metric(GeoScoreDaily.avg_geo_score).label("g"))
             .select_from(GeoScoreDaily)
             .join(KgBrand, KgBrand.brand_id == GeoScoreDaily.brand_id)
             .where(
@@ -709,7 +731,7 @@ class IndustryLagTop10Rule(BaseRule):
                 )
             )
             .group_by(GeoScoreDaily.brand_id)
-            .order_by(func.avg(GeoScoreDaily.avg_geo_score).desc())
+            .order_by(_weighted_avg_geo_metric(GeoScoreDaily.avg_geo_score).desc())
             .limit(10)
         )
         rows = list((await session.execute(top_stmt)).all())
@@ -844,7 +866,7 @@ class GeoScoreDropSevereRule(BaseRule):
             ]
             if _to is not None:
                 cond.append(GeoScoreDaily.date < _to)
-            stmt = select(func.avg(GeoScoreDaily.avg_geo_score)).where(and_(*cond))
+            stmt = select(_weighted_avg_geo_metric(GeoScoreDaily.avg_geo_score)).where(and_(*cond))
             return (await session.execute(stmt)).scalar_one_or_none()
 
         cur = await _avg(cur_from, None)
@@ -921,7 +943,7 @@ class CompetitorRadicalGrowthRule(BaseRule):
             ]
             if _to is not None:
                 cond.append(GeoScoreDaily.date < _to)
-            stmt = select(func.avg(GeoScoreDaily.avg_geo_score)).where(and_(*cond))
+            stmt = select(_weighted_avg_geo_metric(GeoScoreDaily.avg_geo_score)).where(and_(*cond))
             return (await session.execute(stmt)).scalar_one_or_none()
 
         out: list[DiagnosticPayload] = []
@@ -990,7 +1012,9 @@ class CategoryRankDropRule(BaseRule):
             ]
             if _to is not None:
                 cond.append(GeoScoreDaily.date < _to)
-            stmt = select(func.avg(GeoScoreDaily.avg_position_rank)).where(and_(*cond))
+            stmt = select(_weighted_avg_geo_metric(GeoScoreDaily.avg_position_rank)).where(
+                and_(*cond)
+            )
             return (await session.execute(stmt)).scalar_one_or_none()
 
         cur = await _avg(cur_from, None)
@@ -1201,7 +1225,7 @@ class TopicLossRule(BaseRule):
             ]
             if _to is not None:
                 cond.append(GeoScoreDaily.date < _to)
-            stmt = select(func.avg(GeoScoreDaily.mention_rate)).where(and_(*cond))
+            stmt = select(_weighted_avg_geo_metric(GeoScoreDaily.mention_rate)).where(and_(*cond))
             return (await session.execute(stmt)).scalar_one_or_none()
 
         cur = await _avg(cur_from, None)
