@@ -28,7 +28,10 @@
  */
 import { useMemo, useState } from 'react';
 import { Badge, Button, Card, Tabs } from '../../components/ui';
+import ReportsLiveBanner from '../../components/reports/ReportsLiveBanner';
 import { useLocale } from '../../contexts/LocaleContext';
+import { useProjects } from '../../hooks/useProjects';
+import { isLiveProjectId } from '../../hooks/useReports';
 import { GenerateModal } from './components/GenerateModal';
 import { ReportDetail } from './components/ReportDetail';
 import { REPORTS, SECTION_MATRIX, SECTION_ORDER } from './lib/data';
@@ -42,6 +45,10 @@ export default function ReportsPage() {
   const [activeTab, setActiveTab] = useState('all');
   const [selectedId, setSelectedId] = useState(null);
   const [showGenerate, setShowGenerate] = useState(false);
+  const { data: liveProjects } = useProjects();
+  const liveProjectId =
+    liveProjects && liveProjects.length > 0 ? liveProjects[0].id : null;
+  const showSampleBadge = !isLiveProjectId(liveProjectId);
 
   const tabs = [
     { id: 'all',             label: t('reports.tabs.all') },
@@ -86,10 +93,21 @@ export default function ReportsPage() {
         </Button>
       </div>
 
-      {/* Live banner — real backend reports (Phase RP) */}
+      {/* Live banner — real backend reports (Phase RP). Renders null
+          when there's no live project, so demo sessions are unaffected. */}
+      <ReportsLiveBanner />
 
       {/* Tabs */}
       <Tabs tabs={tabs} active={activeTab} onChange={setActiveTab} />
+
+      {showSampleBadge && (
+        <div className="flex items-center gap-2 text-[11px] text-themed-muted">
+          <Badge variant="default" size="sm">示例</Badge>
+          <span>
+            以下为示例报告。创建项目并生成真实报告后,可在上方 LIVE 区查看。
+          </span>
+        </div>
+      )}
 
       {/* Schedule / delivery strip */}
       <Card

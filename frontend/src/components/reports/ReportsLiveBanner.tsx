@@ -5,6 +5,7 @@
  * Design: same LIVE banner pattern used elsewhere — non-invasive, returns
  * null when there's no live project so mock-only sessions are unaffected.
  */
+import { useState } from 'react'
 import { Badge, Button, Card } from '../ui'
 import { useLocale } from '../../contexts/LocaleContext'
 import { useProjects } from '../../hooks/useProjects'
@@ -33,6 +34,27 @@ function ReportsLiveBannerInner({
 }) {
   const { data, isLoading, error } = useReports(projectId, 5)
   const items = data?.items ?? []
+  const [shareState, setShareState] = useState<
+    Record<string, 'idle' | 'pending' | 'copied' | 'error'>
+  >({})
+
+  const handleShare = async (reportId: string) => {
+    setShareState((s) => ({ ...s, [reportId]: 'pending' }))
+    try {
+      const res = await reportsApi.share(projectId, reportId, 72)
+      const fullUrl = `${window.location.origin}${res.url}`
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(fullUrl)
+      }
+      setShareState((s) => ({ ...s, [reportId]: 'copied' }))
+      window.setTimeout(
+        () => setShareState((s) => ({ ...s, [reportId]: 'idle' })),
+        2500,
+      )
+    } catch {
+      setShareState((s) => ({ ...s, [reportId]: 'error' }))
+    }
+  }
 
   return (
     <Card
@@ -138,6 +160,21 @@ function ReportsLiveBannerInner({
                   style={{}}
                 >
                   CSV
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => handleShare(r.id)}
+                  disabled={shareState[r.id] === 'pending'}
+                  style={{}}
+                >
+                  {shareState[r.id] === 'pending'
+                    ? '生成中…'
+                    : shareState[r.id] === 'copied'
+                    ? '链接已复制'
+                    : shareState[r.id] === 'error'
+                    ? '失败'
+                    : '分享'}
                 </Button>
               </div>
             </li>
