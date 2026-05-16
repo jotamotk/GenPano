@@ -395,6 +395,9 @@ jobs:
             CLASH_FORCE_GLOBAL_PROXY_ROUTE=${{ vars.CLASH_FORCE_GLOBAL_PROXY_ROUTE || '1' }}
             DOUBAO_USE_PROXY=${{ vars.DOUBAO_USE_PROXY || '0' }}
             LUBANSMS_DOUBAO_SERVICE_ID=${{ secrets.LUBANSMS_DOUBAO_SERVICE_ID || vars.LUBANSMS_DOUBAO_SERVICE_ID }}
+            QG_PROXY_EXTRACT_URL=${{ secrets.QG_PROXY_EXTRACT_URL }}
+            QG_PROXY_AUTH_KEY=${{ secrets.QG_PROXY_AUTH_KEY }}
+            QG_PROXY_AUTH_PASSWORD=${{ secrets.QG_PROXY_AUTH_PASSWORD }}
             PORT=4000
             ZHIPU_API_KEY=${{ secrets.ZHIPU_API_KEY }}
             GLM_MODEL=glm-4

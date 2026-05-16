@@ -6289,3 +6289,163 @@ def test_doubao_homepage_content_triggers_reauth_handoff():
         "fallback → fresh fingerprint+cookies) never fires for that "
         "failure mode."
     )
+
+
+# Refs #963: qg.net (青果网络) rotating-proxy integration unblocks
+# Doubao's by-IP shadow-ban / 5202 captcha-denial. The worker's static
+# egress IP got fingerprinted by Doubao after the full self-healing
+# chain (#1016 / #1017 / #1027 / #1030 / #1032 / #1037) deployed —
+# even fresh accounts with fresh fingerprints get challenged with an
+# image-selection captcha whose image fails to load (5202), which is
+# unsolvable. Rotating to a fresh residential / mobile IP per Doubao
+# query bypasses the IP-level memory.
+def test_qg_parse_documented_success_response():
+    """Parse the success envelope shape documented in qg.net doc 1865."""
+    from geo_tracker.agent.qg_proxy import _parse_qg_response
+
+    # Verbatim shape from doc 1839 / 1865 example.
+    body = (
+        '{"code":"SUCCESS","data":[{"proxy_ip":"129.150.42.240",'
+        '"server":"129.150.42.240:18080","area":"新加坡",'
+        '"deadline":"2023-02-25 15:38:36"}],"request_id":"abc"}'
+    )
+    assert _parse_qg_response(body) == ["129.150.42.240:18080"]
+
+
+def test_qg_parse_numeric_success_code():
+    """Legacy / domestic qg endpoints use ``code:0`` instead of "SUCCESS"."""
+    from geo_tracker.agent.qg_proxy import _parse_qg_response
+
+    body = '{"code":0,"data":[{"server":"1.2.3.4:8080"}]}'
+    assert _parse_qg_response(body) == ["1.2.3.4:8080"]
+
+
+def test_qg_parse_plain_text_response():
+    """Some qg endpoints return one ip:port per line, no JSON envelope."""
+    from geo_tracker.agent.qg_proxy import _parse_qg_response
+
+    body = "1.2.3.4:8080\n5.6.7.8:9090\n"
+    assert _parse_qg_response(body) == ["1.2.3.4:8080", "5.6.7.8:9090"]
+
+
+def test_qg_parse_error_envelope_returns_empty():
+    """Non-success code (e.g. INVALID_KEY) must return [] not raise."""
+    from geo_tracker.agent.qg_proxy import _parse_qg_response
+
+    body = '{"code":"INVALID_KEY","msg":"Key不存在"}'
+    assert _parse_qg_response(body) == []
+
+
+def test_qg_parse_extract_ip_port_handles_separate_fields():
+    """Dict items with separate ip + port fields must be reconstructed."""
+    from geo_tracker.agent.qg_proxy import _extract_ip_port
+
+    assert _extract_ip_port({"ip": "1.2.3.4", "port": 8080}) == "1.2.3.4:8080"
+    assert _extract_ip_port({"server": "1.2.3.4:8080"}) == "1.2.3.4:8080"
+    assert _extract_ip_port("1.2.3.4:8080") == "1.2.3.4:8080"
+    assert _extract_ip_port({"unrelated": "x"}) is None
+
+
+def test_qg_lease_proxy_url_format_matches_qg_doc_example():
+    """Lease URL must be ``http://AUTH_KEY:PASSWORD@IP:PORT``.
+
+    qg.net account-mode code samples (Python requests / aiohttp / urllib2)
+    all hard-code this exact ordering. A typo here silently sends the
+    authKey as the host or password as the user → 407 / 502 from the
+    rotating proxy with no obvious link to qg.
+    """
+    from geo_tracker.agent.qg_proxy import QGProxyLease
+
+    lease = QGProxyLease(
+        ip_port="1.2.3.4:8080",
+        auth_key="myKey",
+        auth_password="myPwd",
+    )
+    assert lease.proxy_url == "http://myKey:myPwd@1.2.3.4:8080"
+    # server_url is what Playwright wants (auth passed separately).
+    assert lease.server_url == "http://1.2.3.4:8080"
+
+
+def test_qg_proxy_client_from_env_returns_none_when_unconfigured(monkeypatch):
+    """Missing any of the 3 env vars → no client, fall through to native IP."""
+    from geo_tracker.agent.qg_proxy import QGProxyClient
+
+    # All unset
+    monkeypatch.delenv("QG_PROXY_EXTRACT_URL", raising=False)
+    monkeypatch.delenv("QG_PROXY_AUTH_KEY", raising=False)
+    monkeypatch.delenv("QG_PROXY_AUTH_PASSWORD", raising=False)
+    assert QGProxyClient.from_env() is None
+
+    # Only one set — still incomplete, must not partially activate.
+    monkeypatch.setenv("QG_PROXY_EXTRACT_URL", "https://share.proxy.qg.net/get?key=x")
+    monkeypatch.delenv("QG_PROXY_AUTH_KEY", raising=False)
+    monkeypatch.delenv("QG_PROXY_AUTH_PASSWORD", raising=False)
+    assert QGProxyClient.from_env() is None
+
+    monkeypatch.setenv("QG_PROXY_AUTH_KEY", "k")
+    monkeypatch.delenv("QG_PROXY_AUTH_PASSWORD", raising=False)
+    assert QGProxyClient.from_env() is None
+
+    # All three set → client constructs.
+    monkeypatch.setenv("QG_PROXY_AUTH_PASSWORD", "p")
+    client = QGProxyClient.from_env()
+    assert client is not None
+    assert client.auth_key == "k"
+    assert client.auth_password == "p"
+
+
+@pytest.mark.asyncio
+async def test_qg_proxy_client_reserve_pops_from_pool():
+    """``reserve`` must remove the IP from the pool to prevent reuse races."""
+    from geo_tracker.agent.qg_proxy import QGProxyClient
+
+    client = QGProxyClient(
+        extract_url="http://stub",
+        auth_key="k",
+        auth_password="p",
+        pool=["1.1.1.1:1111", "2.2.2.2:2222"],
+    )
+    lease1 = await client.reserve()
+    assert lease1.ip_port in {"1.1.1.1:1111", "2.2.2.2:2222"}
+    assert len(client.pool) == 1
+    lease2 = await client.reserve()
+    assert lease2.ip_port != lease1.ip_port
+    assert len(client.pool) == 0
+
+
+@pytest.mark.asyncio
+async def test_qg_proxy_client_report_failure_drops_ip():
+    """``report_failure`` must remove the bad IP from the cached pool."""
+    from geo_tracker.agent.qg_proxy import QGProxyClient
+
+    client = QGProxyClient(
+        extract_url="http://stub",
+        auth_key="k",
+        auth_password="p",
+        pool=["1.1.1.1:1111", "2.2.2.2:2222", "3.3.3.3:3333"],
+    )
+    await client.report_failure("2.2.2.2:2222")
+    assert client.pool == ["1.1.1.1:1111", "3.3.3.3:3333"]
+    # Idempotent — calling twice or for an unknown IP is a no-op, not an error.
+    await client.report_failure("9.9.9.9:9999")
+    assert client.pool == ["1.1.1.1:1111", "3.3.3.3:3333"]
+
+
+def test_qg_proxy_env_vars_wired_into_deploy_yaml():
+    """deploy.yml must forward all 3 qg env vars into the worker container."""
+    from pathlib import Path
+
+    source_path = (
+        Path(__file__).resolve().parent.parent.parent
+        / ".github" / "workflows" / "deploy.yml"
+    )
+    source = source_path.read_text(encoding="utf-8")
+    for env_name in (
+        "QG_PROXY_EXTRACT_URL",
+        "QG_PROXY_AUTH_KEY",
+        "QG_PROXY_AUTH_PASSWORD",
+    ):
+        assert f"{env_name}=" in source, (
+            f"{env_name} must be wired into deploy.yml so the worker "
+            f"container picks it up from GitHub secrets/vars."
+        )
