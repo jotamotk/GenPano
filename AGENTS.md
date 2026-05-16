@@ -127,6 +127,59 @@ covers all values in the new set.
 
 If you can't paste that trace, the PR isn't ready.
 
+### Orchestrator And Subagent Discipline
+
+Subagents (anything dispatched via the Agent tool — Claude Code subagents,
+Codex sub-tasks, Aider sub-runs, etc.) do **not** inherit this file. They
+see only the prompt the orchestrator writes. That gap is where prior bugs
+slipped past every rule above: the orchestrator wrote a hypothesis-laden
+prompt, the subagent acted on it as fact, and the chain produced a fix
+with no evidence ledger.
+
+The rules below are canonical. The Claude Code SessionStart digest
+(`.claude/hooks/session-start.sh`) and any other agent-specific reminder
+must reference this section by name rather than redefining it — drift
+between digest and source is itself a violation.
+
+1. **First dispatch is investigate-only.** When a bug-fix task starts,
+   the first subagent call must produce evidence (broken-surface output,
+   live-env code path, grep of callers), not code. Edit/Write tool access
+   should be withheld on the first call. Use the `Explore` subagent or
+   restrict `tools:` in the subagent definition.
+
+2. **Prompts must reference this file.** Every subagent prompt for a
+   bug-fix, incident, or contract-changing task MUST contain the literal
+   string "AGENTS.md" plus the relevant section name (e.g. "Read AGENTS.md
+   `### Evidence-First Debugging` before proceeding"). A prompt that omits
+   it is non-compliant regardless of outcome. CI cannot catch this; the
+   orchestrator owns it.
+
+3. **No pre-baked hypotheses.** Anti-pattern: "The bug is at
+   `foo.py:42`; fix it." This collapses investigation into a directive
+   and is how #905 produced 4 wrong PRs. Acceptable: "User reports
+   <symptom>. Capture broken-surface evidence, grep callers, identify
+   live code path. Do not edit code." State the symptom and the unknown,
+   not the cause.
+
+4. **Second-iteration revert applies recursively.** If a subagent's
+   output produced a PR that the user rejected, the orchestrator must
+   revert that subagent's changes before dispatching a follow-up — not
+   patch forward with another subagent. Same rule as Hard Rule 5 in the
+   digest, applied at the orchestration layer.
+
+5. **Skills are the preferred carrier.** When the same prompt pattern
+   recurs (evidence capture, PR body composition, safe subagent
+   dispatch), package it as a skill in `.claude/skills/` so the rule
+   travels with the invocation instead of relying on the orchestrator's
+   memory. Skills do not replace CI — they raise compliance rate
+   without claiming to be a gate.
+
+Failure mode this prevents: orchestrator skims AGENTS.md, dispatches a
+subagent with "fix the timeout bug at scraper.py:88", subagent edits the
+line, PR opens, lint passes because the orchestrator hand-fills the
+ledger from the same hypothesis. CI cannot detect a hypothesis-grounded
+ledger. Only the orchestrator can.
+
 ### Fast Path And Full Path
 
 Not every request needs Epic -> Frontend Visualization -> PRD -> split issues.

@@ -23,6 +23,8 @@ venv/
 !.claude/hooks/
 !.claude/hooks/**
 !.claude/settings.json
+!.claude/skills/
+!.claude/skills/**
 
 # Agent/session artifacts
 # Note: top-level CLAUDE.md is a tracked pointer file to AGENTS.md (the canonical
