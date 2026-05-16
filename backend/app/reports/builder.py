@@ -10,10 +10,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.reports.sections.base import BaseSection, ReportContext, SectionData
+from app.reports.sections.brand_performance import BrandPerformanceSection
+from app.reports.sections.branding_narrative import BrandingNarrativeSection
 from app.reports.sections.competitor_comparison import CompetitorComparisonSection
 from app.reports.sections.diagnostic_summary import DiagnosticSummarySection
 from app.reports.sections.executive_summary import ExecutiveSummarySection
+from app.reports.sections.industry_landscape import IndustryLandscapeSection
 from app.reports.sections.pano_score import PanoScoreSection
+from app.reports.sections.product_competitiveness import ProductCompetitivenessSection
 
 # PRD §4.7.2 — variants: 'full' | 'simple' | 'p01_only' | 'optional'
 # Each cell is the chosen variant for (report_type, section_type).
@@ -21,24 +25,34 @@ SECTION_MATRIX: dict[str, dict[str, str]] = {
     "weekly": {
         "executive_summary": "full",
         "pano_score": "full",
+        "industry_landscape": "simple",
+        "brand_performance": "full",
         "competitor_comparison": "full",
         "diagnostic_summary": "p01_only",
     },
     "monthly": {
         "executive_summary": "full",
         "pano_score": "full",
+        "industry_landscape": "full",
+        "brand_performance": "full",
+        "product_competitiveness": "full",
+        "branding_narrative": "full",
         "competitor_comparison": "full",
         "diagnostic_summary": "full",
     },
     "on_demand": {
         "executive_summary": "simple",
         "pano_score": "simple",
+        "industry_landscape": "optional",
+        "brand_performance": "simple",
         "competitor_comparison": "optional",
         "diagnostic_summary": "full",
     },
     # lead_diagnostic uses dedicated lead_view; full SECTION_MATRIX bypassed
     "lead_diagnostic": {
         "executive_summary": "simple",
+        "brand_performance": "focus",
+        "branding_narrative": "full",
         "diagnostic_summary": "full",
     },
 }
@@ -46,6 +60,10 @@ SECTION_MATRIX: dict[str, dict[str, str]] = {
 SECTION_ORDER: list[str] = [
     "executive_summary",
     "pano_score",
+    "industry_landscape",
+    "brand_performance",
+    "product_competitiveness",
+    "branding_narrative",
     "competitor_comparison",
     "diagnostic_summary",
 ]
@@ -53,6 +71,10 @@ SECTION_ORDER: list[str] = [
 _REGISTRY: dict[str, type[BaseSection]] = {
     "executive_summary": ExecutiveSummarySection,
     "pano_score": PanoScoreSection,
+    "industry_landscape": IndustryLandscapeSection,
+    "brand_performance": BrandPerformanceSection,
+    "product_competitiveness": ProductCompetitivenessSection,
+    "branding_narrative": BrandingNarrativeSection,
     "competitor_comparison": CompetitorComparisonSection,
     "diagnostic_summary": DiagnosticSummarySection,
 }
