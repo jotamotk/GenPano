@@ -4,9 +4,11 @@ import { useLocale } from '../contexts/LocaleContext';
 import {
   useAlerts,
   useMarkAllAlertsRead,
+  useSnoozeAlert,
   useUpdateAlertStatus,
 } from '../hooks/useAlerts';
 import type { AlertOut } from '../api/alerts';
+import { SNOOZE_PRESET_HOURS } from '../api/alerts';
 
 /* ────────────────────────────────────────────────────────────────
    AlertsPage — Phase N user-facing alert center
@@ -43,10 +45,17 @@ function formatRelative(iso: string): string {
   }
 }
 
+function snoozeLabel(hours: number): string {
+  if (hours < 24) return `${hours} 小时`;
+  const days = Math.round(hours / 24);
+  return `${days} 天`;
+}
+
 export default function AlertsPage() {
   const { t } = useLocale();
   const [statusFilter, setStatusFilter] = useState<'unread' | 'read' | 'all'>('unread');
   const [severityFilter, setSeverityFilter] = useState<string | 'all'>('all');
+  const [snoozeOpenFor, setSnoozeOpenFor] = useState<string | null>(null);
 
   const { data, isLoading, isError } = useAlerts({
     status: statusFilter === 'all' ? undefined : statusFilter,
@@ -55,6 +64,12 @@ export default function AlertsPage() {
   });
   const updateStatus = useUpdateAlertStatus();
   const markAll = useMarkAllAlertsRead();
+  const snooze = useSnoozeAlert();
+
+  const handleSnooze = (id: string, hours: number) => {
+    snooze.mutate({ id, hours });
+    setSnoozeOpenFor(null);
+  };
 
   const items: AlertOut[] = data?.items ?? [];
 
@@ -165,7 +180,7 @@ export default function AlertsPage() {
                     {alert.brand_id != null && <span>品牌: {alert.brand_id}</span>}
                   </div>
                 </div>
-                <div className="flex items-center gap-1 shrink-0">
+                <div className="flex items-center gap-1 shrink-0 relative">
                   {alert.status === 'unread' && (
                     <button
                       type="button"
@@ -176,6 +191,51 @@ export default function AlertsPage() {
                     >
                       标为已读
                     </button>
+                  )}
+                  {/* B3-3: Snooze defers a non-urgent alert. Backend hides
+                      it from unread_count until snoozed_until passes, then
+                      lazily flips it back to 'unread' on next read. */}
+                  {(alert.status === 'unread' || alert.status === 'snoozed') && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setSnoozeOpenFor(
+                            snoozeOpenFor === alert.id ? null : alert.id,
+                          )
+                        }
+                        className="text-xs px-2 py-1 rounded-btn text-themed-muted hover:text-themed-primary hover:bg-themed-subtle"
+                        aria-expanded={snoozeOpenFor === alert.id}
+                      >
+                        {alert.status === 'snoozed' ? '稍后再处理 · 已暂缓' : '稍后再处理'}
+                      </button>
+                      {snoozeOpenFor === alert.id && (
+                        <div
+                          className="absolute right-0 top-full mt-1 z-10 bg-themed-card border border-themed shadow-elevated rounded-card-lg p-2 space-y-1"
+                          role="menu"
+                        >
+                          <div className="text-[10px] text-themed-muted px-2 py-1">
+                            暂缓时长
+                          </div>
+                          {SNOOZE_PRESET_HOURS.map((h) => (
+                            <button
+                              key={h}
+                              type="button"
+                              onClick={() => handleSnooze(alert.id, h)}
+                              disabled={snooze.isPending}
+                              className="block w-full text-left text-xs px-2 py-1 rounded-btn text-themed-body hover:bg-themed-subtle disabled:opacity-50"
+                            >
+                              {snoozeLabel(h)}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  )}
+                  {alert.status === 'snoozed' && alert.snoozed_until && (
+                    <span className="text-[10px] text-themed-faint px-1">
+                      至 {new Date(alert.snoozed_until).toLocaleString()}
+                    </span>
                   )}
                   {alert.status !== 'resolved' && (
                     <button
