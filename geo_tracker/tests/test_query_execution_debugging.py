@@ -6594,3 +6594,58 @@ def test_qg_proxy_wired_into_sms_login_launch():
         "fresh one before relaunching Camoufox — otherwise every retry "
         "burns a fresh SMS number on the same fingerprinted IP."
     )
+
+
+# Refs #963 Q-184988 follow-up production evidence (account 711158,
+# 2026-05-16 ~10:00): a freshly registered Doubao account going through
+# a rotating qg residential IP still hit the 5202 image-load denial on
+# the 3D image-selection captcha. Root cause is WebRTC STUN leaking the
+# worker's static egress IP regardless of the qg HTTP proxy — Doubao
+# sees HTTP-IP=qg, WebRTC-IP=worker-static, flags the mismatch, serves
+# the captcha, then refuses the captcha image at the IP level. Both the
+# Camoufox launch (preferred path) and the Playwright Chromium fallback
+# must close the WebRTC leak.
+def test_camoufox_launches_block_webrtc_to_prevent_stun_leak():
+    """Both Camoufox launches must set block_webrtc=True + disable_coop=True."""
+    from pathlib import Path
+
+    for relpath in (
+        ("agent", "sms_login", "base.py"),
+        ("agent", "guest_executor.py"),
+    ):
+        source_path = Path(__file__).resolve().parent.parent.joinpath(*relpath)
+        source = source_path.read_text(encoding="utf-8")
+        camoufox_idx = source.index("camoufox_kwargs = {")
+        # Capture the dict literal — generously sized so future additions
+        # stay inside the slice.
+        camoufox_block = source[camoufox_idx:camoufox_idx + 4000]
+        assert '"block_webrtc": True' in camoufox_block, (
+            f"{'/'.join(relpath)} camoufox_kwargs must set "
+            "block_webrtc=True so WebRTC STUN cannot bypass the qg HTTP "
+            "proxy and leak the worker's static egress IP to Doubao."
+        )
+        assert '"disable_coop": True' in camoufox_block, (
+            f"{'/'.join(relpath)} camoufox_kwargs must set "
+            "disable_coop=True so cross-origin captcha iframes can be "
+            "interacted with when Doubao does serve one."
+        )
+
+
+def test_playwright_fallback_forces_webrtc_through_proxy():
+    """Chromium fallback args must close the WebRTC leak symmetrically."""
+    from pathlib import Path
+
+    for relpath in (
+        ("agent", "sms_login", "base.py"),
+        ("agent", "guest_executor.py"),
+    ):
+        source_path = Path(__file__).resolve().parent.parent.joinpath(*relpath)
+        source = source_path.read_text(encoding="utf-8")
+        assert "force-webrtc-ip-handling-policy=disable_non_proxied_udp" in source, (
+            f"{'/'.join(relpath)} Playwright Chromium fallback must pass "
+            "--force-webrtc-ip-handling-policy=disable_non_proxied_udp so "
+            "WebRTC traffic is forced through the proxy (or dropped) "
+            "instead of leaking the worker's egress IP. The Camoufox path "
+            "achieves this via block_webrtc=True; the Chromium path needs "
+            "the Chromium-equivalent flag for symmetry."
+        )
