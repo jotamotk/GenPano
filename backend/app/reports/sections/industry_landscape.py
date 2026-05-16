@@ -8,6 +8,13 @@ the report window:
   - distance from median + percentile band
   - total brands measured in the industry
 
+The `industry_benchmark_daily` table is keyed by `industry` (string
+name), but `Project.industry_id` is an integer position assigned by
+`list_industries`. We resolve id → name via the existing helper in
+`app/api/v1/industries/service` so multi-industry deployments don't
+silently average benchmarks across unrelated industries (Codex review
+on #1064).
+
 Falls back to a sparse-but-honest payload when industry data is
 absent — never invents a rank for a brand that has no industry-level
 samples.
@@ -49,6 +56,18 @@ class IndustryLandscapeSection(BaseSection):
         my_score = round(float(my_row[0] or 0), 2)
         my_rank = float(my_row[1]) if my_row[1] is not None else None
 
+        # Resolve project's industry name so the benchmark query is
+        # scoped to a single industry (Codex review #1064). When the
+        # project has no industry_id OR the resolver returns None
+        # (industry has no benchmark rows yet), we skip the filter and
+        # tag the payload so callers know the comparison is broad.
+        industry_name = await _resolve_industry_name_safe(ctx, ctx.project.industry_id)
+        ind_filters: list[Any] = [
+            IndustryBenchmarkDaily.date >= ctx.from_date,
+            IndustryBenchmarkDaily.date <= ctx.to_date,
+        ]
+        if industry_name:
+            ind_filters.append(IndustryBenchmarkDaily.industry == industry_name)
         ind_stmt = select(
             func.avg(IndustryBenchmarkDaily.score_p50),
             func.avg(IndustryBenchmarkDaily.score_p25),
@@ -56,12 +75,7 @@ class IndustryLandscapeSection(BaseSection):
             func.avg(IndustryBenchmarkDaily.avg_geo_score),
             func.avg(IndustryBenchmarkDaily.total_brands),
             func.count(IndustryBenchmarkDaily.id),
-        ).where(
-            and_(
-                IndustryBenchmarkDaily.date >= ctx.from_date,
-                IndustryBenchmarkDaily.date <= ctx.to_date,
-            )
-        )
+        ).where(and_(*ind_filters))
         ind_row = (await ctx.session.execute(ind_stmt)).one()
         ind_samples = int(ind_row[5] or 0)
 
@@ -76,6 +90,8 @@ class IndustryLandscapeSection(BaseSection):
         metrics: dict[str, Any] = {
             "my_geo_score": my_score,
             "my_rank": round(my_rank, 1) if my_rank is not None else None,
+            "industry_name": industry_name,
+            "industry_filter_applied": industry_name is not None,
             "industry_samples": ind_samples,
             "industry_total_brands": total_brands,
             "industry_median": median,
@@ -95,6 +111,25 @@ class IndustryLandscapeSection(BaseSection):
             metrics=metrics,
             chosen_variant=variant,
         )
+
+
+async def _resolve_industry_name_safe(ctx: ReportContext, industry_id: int | None) -> str | None:
+    """Defer to the canonical resolver in `industries/service.py` so this
+    section matches the rest of the v1 industries API (`overview`,
+    `ranking`, `avg-geo-score`). Returns None when:
+      - project has no industry_id
+      - the resolver itself errors (import / DB)
+    Callers then fall back to a no-filter benchmark query and flag the
+    payload so consumers know the comparison was not industry-scoped.
+    """
+    if industry_id is None:
+        return None
+    try:
+        from app.api.v1.industries.service import _resolve_industry_name
+
+        return await _resolve_industry_name(ctx.session, industry_id)
+    except Exception:
+        return None
 
 
 def _percentile_band(

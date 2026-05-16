@@ -126,6 +126,67 @@ async def test_industry_landscape_percentile_band(db_session, project):
     assert m["position_band"] == "top_quartile"
 
 
+@pytest.mark.asyncio
+async def test_industry_landscape_filters_by_resolved_industry_name(
+    db_session, project, monkeypatch
+):
+    """Codex review #1064: when multiple industries exist in the
+    benchmark table, the section must filter to the project's industry
+    rather than blending all industries together."""
+    from app.reports.sections import industry_landscape as il_module
+    from app.reports.sections.industry_landscape import IndustryLandscapeSection
+
+    today = date.today()
+    for i in range(7):
+        d = today - timedelta(days=6 - i)
+        db_session.add(
+            GeoScoreDaily(
+                brand_id=42,
+                date=d,
+                target_llm="chatgpt",
+                avg_geo_score=75.0,
+                total_queries=100,
+            )
+        )
+        db_session.add(
+            IndustryBenchmarkDaily(
+                industry="cosmetics",
+                date=d,
+                avg_geo_score=70.0,
+                score_p25=60.0,
+                score_p50=70.0,
+                score_p75=80.0,
+                total_brands=12,
+            )
+        )
+        db_session.add(
+            IndustryBenchmarkDaily(
+                industry="finance",
+                date=d,
+                avg_geo_score=95.0,
+                score_p25=90.0,
+                score_p50=95.0,
+                score_p75=99.0,
+                total_brands=8,
+            )
+        )
+    await db_session.commit()
+
+    async def _stub_resolver(ctx, industry_id):
+        return "cosmetics" if industry_id == 1 else None
+
+    monkeypatch.setattr(il_module, "_resolve_industry_name_safe", _stub_resolver)
+
+    out = await IndustryLandscapeSection().render(_ctx(db_session, project), variant="full")
+    m = out.metrics
+    assert m["industry_filter_applied"] is True
+    assert m["industry_name"] == "cosmetics"
+    # Median must be the cosmetics median (70), NOT a blend of cosmetics
+    # + finance (which would be ~82.5).
+    assert m["industry_median"] == 70.0
+    assert m["industry_total_brands"] == 12
+
+
 # ── brand_performance ───────────────────────────────────────────
 
 

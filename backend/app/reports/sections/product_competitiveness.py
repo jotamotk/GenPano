@@ -7,6 +7,13 @@ position, category rank, sentiment, comparison wins. Aggregated from
 The renderer surfaces a ranked table — top performers + the weakest
 positions for the period. Useful for product marketing to spot which
 SKU is over/under-performing in the AI engines' answers.
+
+Sort key: `mention_rate DESC` (tiebreak `first_place_rate DESC`). We
+cannot sort by `avg_geo_score` because the canonical aggregator
+(`geo_tracker/analyzer/aggregator.py::_aggregate_product_daily`) does
+not populate that column today — every row carries the default 0.0
+and the ranking would be arbitrary. `mention_rate` is reliably written
+on every aggregation pass (Codex review on #1064).
 """
 
 from __future__ import annotations
@@ -48,7 +55,10 @@ class ProductCompetitivenessSection(BaseSection):
                 )
             )
             .group_by(ProductScoreDaily.product_name, ProductScoreDaily.category)
-            .order_by(func.avg(ProductScoreDaily.avg_geo_score).desc())
+            .order_by(
+                func.avg(ProductScoreDaily.mention_rate).desc(),
+                func.avg(ProductScoreDaily.first_place_rate).desc(),
+            )
             .limit(_TOP_K)
         )
         result = (await ctx.session.execute(stmt)).all()
@@ -117,18 +127,18 @@ def _summary(
     total: int,
 ) -> str:
     is_zh = locale.startswith("zh")
+    top_mr = (top.get("mention_rate") or 0) * 100
     if is_zh:
-        head = (
-            f"本期共 {total} 个产品有数据;"
-            f"领先:'{top['product_name']}'(GEO {top['avg_geo_score']})。"
-        )
+        head = f"本期共 {total} 个产品有数据;领先:'{top['product_name']}'(提及率 {top_mr:.2f}%)。"
         if weakest is not None and weakest is not top:
-            head += f" 表现最弱:'{weakest['product_name']}'(GEO {weakest['avg_geo_score']})。"
+            weak_mr = (weakest.get("mention_rate") or 0) * 100
+            head += f" 表现最弱:'{weakest['product_name']}'(提及率 {weak_mr:.2f}%)。"
         return head
     head = (
         f"This period: {total} product(s) with data; top "
-        f"'{top['product_name']}' (GEO {top['avg_geo_score']})."
+        f"'{top['product_name']}' (mention rate {top_mr:.2f}%)."
     )
     if weakest is not None and weakest is not top:
-        head += f" Weakest: '{weakest['product_name']}' (GEO {weakest['avg_geo_score']})."
+        weak_mr = (weakest.get("mention_rate") or 0) * 100
+        head += f" Weakest: '{weakest['product_name']}' (mention rate {weak_mr:.2f}%)."
     return head
