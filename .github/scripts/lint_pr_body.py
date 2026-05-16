@@ -107,6 +107,17 @@ def _normalize(text: str) -> str:
     return text.replace("\r\n", "\n").replace("\r", "\n").lstrip("﻿")
 
 
+def _strip_md_emphasis(text: str) -> str:
+    """Strip markdown bold/italic markers (** * __ _) so field-name extraction
+    works on lines like `**Business Goal:** value` or `_Field_: value`.
+
+    Removes only the markers themselves, preserving the visible text. The
+    intent is form-tolerance, not content rewriting — markers are widely used
+    by humans to emphasize required fields, and the lint should still match.
+    """
+    return re.sub(r"\*{1,3}|_{1,3}", "", text)
+
+
 def _split_sections(body: str) -> dict[str, str]:
     """Split a markdown body on `## ` headers. Returns {section_name: body_text}.
 
@@ -172,7 +183,8 @@ def _extract_field(section_body: str, field_name: str) -> str | None:
     )
     lines = section_body.split("\n")
     for i, line in enumerate(lines):
-        m = field_re.match(line)
+        # Strip markdown emphasis so `**Field:** value` matches as `Field: value`.
+        m = field_re.match(_strip_md_emphasis(line))
         if not m:
             continue
         value = m.group(1).rstrip()
