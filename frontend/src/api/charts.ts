@@ -163,6 +163,28 @@ export interface CitationCompositionOut extends AnalyticsContractMetadata {
   state: 'ok' | 'empty' | 'partial'
 }
 
+// ── /citations/top-pages ────────────────────────────────────────────
+// Issue #1019: page-level citation aggregation (url + title) ordered by
+// count desc, replacing the `livePages = []` deferral in BrandCitationsPage.
+export interface TopCitedPageRow {
+  url: string
+  title: string | null
+  domain: string | null
+  tier: number | null
+  count: number
+  first_seen_at: string | null
+  last_seen_at: string | null
+}
+
+export interface TopCitedPagesOut extends AnalyticsContractMetadata {
+  project_id: string
+  brand_id: number | null
+  period: { from: string; to: string }
+  items: TopCitedPageRow[]
+  total: number
+  state: 'ok' | 'empty' | 'partial'
+}
+
 // ── /citations/content-gap ──────────────────────────────────────────
 export interface ContentGapTopicRow {
   topic_id: number | null
@@ -383,6 +405,18 @@ export const projectChartsApi = {
   ): Promise<CitationCompositionOut> {
     return apiClient.get<CitationCompositionOut>(
       `/v1/projects/${projectId}/citations/composition${buildQuery(filters)}`,
+    )
+  },
+  topCitedPages(
+    projectId: string,
+    limit = 10,
+    filters: ProjectAnalysisParams = {},
+  ): Promise<TopCitedPagesOut> {
+    return apiClient.get<TopCitedPagesOut>(
+      `/v1/projects/${projectId}/citations/top-pages${buildQuery({
+        ...filters,
+        limit,
+      })}`,
     )
   },
   contentGap(

@@ -65,6 +65,7 @@ from app.api.v1.projects._charts_dto import (
     SimulatorTierWeight,
     Tier2MatrixOut,
     Tier2MatrixRow,
+    TopCitedPagesOut,
     TopicAttributionOut,
     TopicAttributionRow,
     TopicHeatmapOut,
@@ -109,7 +110,9 @@ from app.api.v1.projects.charts.authority import (
 )
 from app.api.v1.projects.charts.citation import (
     _target_citation_composition_rows,
+    _target_top_cited_pages_rows,
     _with_citation_composition_contract,
+    _with_top_cited_pages_contract,
 )
 from app.api.v1.projects.charts.engine_metric import (
     _engine_metric_rows_from_facts,
@@ -2067,6 +2070,184 @@ async def get_citation_composition(
         evidence_counts=_chart_counts(citation_source_count=total),
     )
     return await _with_citation_composition_contract(
+        out,
+        session,
+        project,
+        from_d,
+        to_d,
+        source_provenance=["citation_sources", "brand_mentions"],
+        brand_id=primary,
+    )
+
+
+# ── /citations/top-pages ────────────────────────────────────────────
+async def get_top_cited_pages(
+    session: AsyncSession,
+    project: Project,
+    *,
+    from_date: date | None = None,
+    to_date: date | None = None,
+    engines: list[str] | None = None,
+    segment_id: str | None = None,
+    profile_id: str | None = None,
+    brand_id_override: int | None = None,
+    limit: int = 10,
+) -> TopCitedPagesOut:
+    """Issue #1019: aggregate citation sources by (url, title) for the
+    Brand Citations "Top 引用页面" section. Pattern mirrors
+    `get_citation_composition` (admin-chain filter when filters present,
+    direct CitationSource window otherwise, lenient brand match via
+    `brand_mention_match_condition`).
+    """
+    from_d, to_d = _resolve_window(from_date, to_date)
+    primary = brand_id_override if brand_id_override is not None else project.primary_brand_id
+    if primary is None:
+        return TopCitedPagesOut(
+            project_id=project.id,
+            brand_id=None,
+            period=_period(from_d, to_d),
+            items=[],
+            total=0,
+            state="empty",
+            state_reason="no_primary_brand",
+        )
+    f, t = _dt_range(from_d, to_d)
+    if _needs_admin_filter(engines=engines, segment_id=segment_id, profile_id=profile_id):
+        fact_rows = await _admin_fact_rows(
+            session,
+            project,
+            from_d,
+            to_d,
+            engines=engines,
+            segment_id=segment_id,
+            profile_id=profile_id,
+            brand_id_override=primary,
+        )
+        evidence_count = _response_evidence_count(fact_rows)
+        response_ids = _fact_response_ids(fact_rows)
+        if not response_ids:
+            return TopCitedPagesOut(
+                project_id=project.id,
+                brand_id=primary,
+                period=_period(from_d, to_d),
+                items=[],
+                total=0,
+                state="empty",
+                state_reason="no_admin_fact_data",
+                evidence_count=0,
+            )
+        items, total = await _target_top_cited_pages_rows(
+            session,
+            brand_id=primary,
+            response_ids=response_ids,
+            limit=limit,
+        )
+        state = "ok" if items else "empty"
+        out = TopCitedPagesOut(
+            project_id=project.id,
+            brand_id=primary,
+            period=_period(from_d, to_d),
+            items=items,
+            total=total,
+            state=state,
+            state_reason=_state_reason(state, "no_citation_data"),
+            evidence_count=sum(item.count for item in items),
+            evidence_counts=_chart_counts(
+                admin_fact_response_count=evidence_count,
+                citation_source_count=sum(item.count for item in items),
+            ),
+        )
+        return await _with_top_cited_pages_contract(
+            out,
+            session,
+            project,
+            from_d,
+            to_d,
+            source_provenance=["admin_facts", "citation_sources", "brand_mentions"],
+            brand_id=primary,
+        )
+
+    # Direct CitationSource window (no admin filters). Mirrors the
+    # `get_citations` list path so production tenants without analyzer
+    # data still surface page aggregation.
+    items, total = await _target_top_cited_pages_rows(
+        session,
+        brand_id=primary,
+        from_dt=f,
+        to_dt=t,
+        limit=limit,
+    )
+    if not items:
+        # Fall back to admin-chain rows the same way composition does so
+        # the page aggregation lines up with the rest of the citation
+        # surface when admin-chain rows exist but the direct window is
+        # empty.
+        fact_rows = await _admin_fact_rows(
+            session, project, from_d, to_d, brand_id_override=primary
+        )
+        evidence_count = _response_evidence_count(fact_rows)
+        fact_items, fact_total = await _target_top_cited_pages_rows(
+            session,
+            brand_id=primary,
+            response_ids=_fact_response_ids(fact_rows),
+            limit=limit,
+        )
+        if fact_items:
+            out = TopCitedPagesOut(
+                project_id=project.id,
+                brand_id=primary,
+                period=_period(from_d, to_d),
+                items=fact_items,
+                total=fact_total,
+                state="ok",
+                state_reason="data_available",
+                evidence_count=sum(item.count for item in fact_items),
+                evidence_counts=_chart_counts(
+                    admin_fact_response_count=evidence_count,
+                    citation_source_count=sum(item.count for item in fact_items),
+                ),
+            )
+            return await _with_top_cited_pages_contract(
+                out,
+                session,
+                project,
+                from_d,
+                to_d,
+                source_provenance=["admin_facts", "citation_sources", "brand_mentions"],
+                brand_id=primary,
+            )
+        out = TopCitedPagesOut(
+            project_id=project.id,
+            brand_id=primary,
+            period=_period(from_d, to_d),
+            items=[],
+            total=0,
+            state="empty",
+            state_reason="no_citation_data",
+            evidence_count=evidence_count,
+            evidence_counts=_chart_counts(admin_fact_response_count=evidence_count),
+        )
+        return await _with_top_cited_pages_contract(
+            out,
+            session,
+            project,
+            from_d,
+            to_d,
+            source_provenance=["admin_facts", "citation_sources", "brand_mentions"],
+            brand_id=primary,
+        )
+    out = TopCitedPagesOut(
+        project_id=project.id,
+        brand_id=primary,
+        period=_period(from_d, to_d),
+        items=items,
+        total=total,
+        state="ok",
+        state_reason="data_available",
+        evidence_count=sum(item.count for item in items),
+        evidence_counts=_chart_counts(citation_source_count=sum(item.count for item in items)),
+    )
+    return await _with_top_cited_pages_contract(
         out,
         session,
         project,

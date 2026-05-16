@@ -32,7 +32,9 @@ from app.api.v1.projects.charts.authority import (
 )
 from app.api.v1.projects.charts.citation import (
     _target_citation_composition_rows,
+    _target_top_cited_pages_rows,
     _with_citation_composition_contract,
+    _with_top_cited_pages_contract,
 )
 from app.api.v1.projects.charts.engine_metric import (
     _apply_engine_metric_contract,
@@ -78,6 +80,7 @@ __all__ = [
     "_sentiment_missing_out",
     "_target_authority_points_from_facts",
     "_target_citation_composition_rows",
+    "_target_top_cited_pages_rows",
     "_topic_heatmap_from_facts",
     "_unique",
     "_with_authority_trend_contract",
@@ -86,4 +89,5 @@ __all__ = [
     "_with_engine_metric_contract",
     "_with_sentiment_by_engine_contract",
     "_with_sentiment_trend_contract",
+    "_with_top_cited_pages_contract",
 ]

@@ -25,6 +25,7 @@ import type {
   SentimentByEngineOut,
   SentimentTrendByEngineOut,
   SimulatorBaselineOut,
+  TopCitedPagesOut,
   TopicAttributionOut,
   TopicHeatmapOut,
 } from '../api/charts'
@@ -266,6 +267,30 @@ export function adaptCitationComposition(
     name: s.label,
     value: +s.pct.toFixed(1),
     color: TIER_COLORS[i] ?? 'var(--color-chart-line-grid)',
+  }))
+}
+
+// ── Top cited pages (BrandCitationsPage Top 引用页面) ────────────────
+// Issue #1019: shape the `/citations/top-pages` DTO into the prop
+// the page already consumes (title / url / count / tier). Guards on
+// the standard `citation` metric evidence so untrusted-evidence pages
+// don't render alongside the trusted-evidence ones.
+export interface TopCitedPageMockShape {
+  url: string
+  title: string
+  count: number
+  tier: number | null
+}
+
+export function adaptTopCitedPages(
+  out: TopCitedPagesOut | undefined,
+): TopCitedPageMockShape[] {
+  if (!out || !canUseChartMetrics(out, ['citation']) || !Array.isArray(out.items)) return []
+  return out.items.map((p) => ({
+    url: p.url,
+    title: p.title ?? p.url,
+    count: p.count,
+    tier: p.tier ?? null,
   }))
 }
 

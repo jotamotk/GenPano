@@ -201,6 +201,31 @@ class CitationCompositionOut(ChartState):
     total: int
 
 
+# ── /citations/top-pages ────────────────────────────────────────────
+# Issue #1019: aggregate `citation_sources` by (url, title) ordered by
+# count desc so the Brand Citations page can render the "Top 引用页面"
+# section (PRD §4.6-IA-v2.C.2.2). Tier is exposed for parity with
+# `by_domain_top` but stays `null` until per-domain authority data
+# lands (#1020). The lenient brand match is applied at the SQL layer
+# (same `brand_mention_match_condition` used by `/citations`).
+class TopCitedPageRow(BaseModel):
+    url: str
+    title: str | None
+    domain: str | None
+    tier: int | None
+    count: int
+    first_seen_at: str | None
+    last_seen_at: str | None
+
+
+class TopCitedPagesOut(ChartState):
+    project_id: str
+    brand_id: int | None
+    period: dict[str, str]
+    items: list[TopCitedPageRow]
+    total: int
+
+
 # ── /citations/content-gap ──────────────────────────────────────────
 class ContentGapTopicRow(BaseModel):
     topic_id: int | None
