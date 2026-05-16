@@ -5520,3 +5520,201 @@ def test_doubao_should_use_proxy_respects_direct_connect_default(monkeypatch):
     assert _should_use_proxy_for_llm("deepseek", "http://clash:6789") is False
     # Sanity: chatgpt (not domestic) still uses the proxy.
     assert _should_use_proxy_for_llm("chatgpt", "http://clash:6789") is True
+
+
+# Refs #963 follow-up to PR #1015 live evidence (Admin E2E run 25931878272
+# query 184968 retry 25, stage=response_wait, latency=480898ms): the
+# response_wait wall-clock budget (240s) bails the wait loop and extraction
+# phase, but the post-failure cleanup chain in ``_query_one_llm``'s "未能
+# 获取响应" branch invokes ``_prefer_doubao_visual_challenge_reason`` →
+# ``_doubao_visual_challenge_state_from_page`` and
+# ``_prefer_doubao_auth_failure_reason`` → ``_doubao_auth_state_reason_from_page``,
+# each of which makes unbounded ``page.evaluate("document.body...")`` and
+# ``page.content()`` calls. On a dead page each can hang for the rest of
+# the Celery 480s soft cap. ``_save_screenshot`` and ``_save_runtime_snapshot``
+# similarly have unbounded ``page.screenshot()`` and ``page.evaluate()``.
+# These tests pin that the page-read calls inside the post-failure cleanup
+# helpers are bounded by ``asyncio.wait_for`` so a hung page cannot extend
+# the failure latency past the response_wait stage budget.
+@pytest.mark.asyncio
+async def test_doubao_visual_challenge_state_bounds_page_evaluate(monkeypatch):
+    """``_doubao_visual_challenge_state_from_page`` must not hang on a dead page."""
+    import asyncio as _asyncio
+
+    _install_fake_playwright(monkeypatch)
+
+    from geo_tracker.agent import guest_executor as guest_executor_mod
+    from geo_tracker.agent.guest_executor import (
+        _doubao_visual_challenge_state_from_page,
+    )
+
+    monkeypatch.setattr(
+        guest_executor_mod, "POST_FAILURE_PAGE_READ_TIMEOUT_S", 0.1
+    )
+
+    class HangingPage:
+        async def evaluate(self, _script, *args, **kwargs):
+            await _asyncio.sleep(3600)
+
+        async def content(self):
+            await _asyncio.sleep(3600)
+
+    # Without the bound, this would hang for ~7200s. The bound caps it at
+    # roughly 2 * POST_FAILURE_PAGE_READ_TIMEOUT_S (=0.2s in the test).
+    result = await _asyncio.wait_for(
+        _doubao_visual_challenge_state_from_page(HangingPage()),
+        timeout=2.0,
+    )
+    # With no body_text / html the state-from-text helper returns an empty dict.
+    assert result == {}
+
+
+@pytest.mark.asyncio
+async def test_doubao_auth_state_reason_bounds_page_evaluate(monkeypatch):
+    """``_doubao_auth_state_reason_from_page`` must not hang on a dead page."""
+    import asyncio as _asyncio
+
+    _install_fake_playwright(monkeypatch)
+
+    from geo_tracker.agent import guest_executor as guest_executor_mod
+    from geo_tracker.agent.guest_executor import (
+        _doubao_auth_state_reason_from_page,
+    )
+
+    monkeypatch.setattr(
+        guest_executor_mod, "POST_FAILURE_PAGE_READ_TIMEOUT_S", 0.1
+    )
+
+    class HangingPage:
+        async def evaluate(self, _script, *args, **kwargs):
+            await _asyncio.sleep(3600)
+
+        async def content(self):
+            await _asyncio.sleep(3600)
+
+    result = await _asyncio.wait_for(
+        _doubao_auth_state_reason_from_page(HangingPage()),
+        timeout=2.0,
+    )
+    # The bound bails to empty body_text + empty html. The helper returns
+    # whatever ``doubao_auth_state_reason("", "")`` resolves to; the value
+    # is unimportant — the key contract is that the call returned at all
+    # instead of hanging on the unbounded ``page.evaluate`` / ``page.content``.
+    # Pin the value so a behaviour change in the helper still surfaces here.
+    assert result == "doubao_auth_state_missing"
+
+
+@pytest.mark.asyncio
+async def test_doubao_response_auth_reason_bounds_page_evaluate(monkeypatch):
+    """``_doubao_response_auth_reason_from_page`` must not hang on a dead page."""
+    import asyncio as _asyncio
+
+    _install_fake_playwright(monkeypatch)
+
+    from geo_tracker.agent import guest_executor as guest_executor_mod
+    from geo_tracker.agent.guest_executor import (
+        _doubao_response_auth_reason_from_page,
+    )
+
+    monkeypatch.setattr(
+        guest_executor_mod, "POST_FAILURE_PAGE_READ_TIMEOUT_S", 0.1
+    )
+
+    class HangingPage:
+        async def evaluate(self, _script, *args, **kwargs):
+            await _asyncio.sleep(3600)
+
+        async def content(self):
+            await _asyncio.sleep(3600)
+
+    result = await _asyncio.wait_for(
+        _doubao_response_auth_reason_from_page(HangingPage(), None, None),
+        timeout=2.0,
+    )
+    # As above — the contract under test is that the call returned at all;
+    # the helper's empty-input behaviour is pinned for change-detection.
+    assert result == "doubao_auth_state_missing"
+
+
+@pytest.mark.asyncio
+async def test_save_runtime_snapshot_bounds_page_evaluate(monkeypatch, tmp_path):
+    """``_save_runtime_snapshot`` must not hang on a dead page."""
+    import asyncio as _asyncio
+
+    _install_fake_playwright(monkeypatch)
+
+    from geo_tracker.agent import guest_executor as guest_executor_mod
+    from geo_tracker.agent.guest_executor import _save_runtime_snapshot
+
+    monkeypatch.setattr(guest_executor_mod, "SCREENSHOT_DIR", tmp_path)
+    monkeypatch.setattr(
+        guest_executor_mod, "POST_FAILURE_PAGE_READ_TIMEOUT_S", 0.1
+    )
+
+    class HangingPage:
+        url = "https://doubao.example.com/"
+
+        async def evaluate(self, _script, *args, **kwargs):
+            await _asyncio.sleep(3600)
+
+    result = await _asyncio.wait_for(
+        _save_runtime_snapshot(
+            HangingPage(),
+            query_id=184968,
+            suffix="doubao_no_response",
+            config={"input_selector": "textarea", "response_selector": ".resp"},
+        ),
+        timeout=2.0,
+    )
+    # The helper still writes a snapshot file with the evaluate_timeout marker
+    # so operators have forensic evidence of the dead page.
+    assert result is not None
+    payload = json.loads(result.read_text(encoding="utf-8"))
+    assert payload["page"] == {"error": "evaluate_timeout"}
+
+
+@pytest.mark.asyncio
+async def test_save_screenshot_bounds_page_screenshot(monkeypatch, tmp_path):
+    """``_save_screenshot`` must not hang on a dead page."""
+    import asyncio as _asyncio
+
+    _install_fake_playwright(monkeypatch)
+
+    from geo_tracker.agent import guest_executor as guest_executor_mod
+    from geo_tracker.agent.guest_executor import _save_screenshot
+
+    monkeypatch.setattr(guest_executor_mod, "SCREENSHOT_DIR", tmp_path)
+    monkeypatch.setattr(
+        guest_executor_mod, "POST_FAILURE_SCREENSHOT_TIMEOUT_S", 0.1
+    )
+
+    class HangingPage:
+        async def screenshot(self, *args, **kwargs):
+            await _asyncio.sleep(3600)
+
+    result = await _asyncio.wait_for(
+        _save_screenshot(HangingPage(), 184968, "doubao_no_response"),
+        timeout=2.0,
+    )
+    # The screenshot hung; the helper returns None instead of letting it
+    # eat the post-failure budget.
+    assert result is None
+
+
+def test_post_failure_page_read_timeout_constants_exist():
+    """Pin the existence of the post-failure cleanup bound constants.
+
+    The production response_wait→cleanup chain depends on these bounds
+    being applied to every page-read call. Removing them silently would
+    regress the failure latency back to the Celery 480s soft cap.
+    """
+    from geo_tracker.agent import guest_executor as guest_executor_mod
+
+    assert isinstance(
+        guest_executor_mod.POST_FAILURE_PAGE_READ_TIMEOUT_S, (int, float)
+    )
+    assert guest_executor_mod.POST_FAILURE_PAGE_READ_TIMEOUT_S > 0
+    assert isinstance(
+        guest_executor_mod.POST_FAILURE_SCREENSHOT_TIMEOUT_S, (int, float)
+    )
+    assert guest_executor_mod.POST_FAILURE_SCREENSHOT_TIMEOUT_S > 0
