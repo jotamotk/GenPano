@@ -1,0 +1,241 @@
+name: Topics #1029 Worker Stall Diagnostics
+
+# Investigation-only worker / broker / queue inspection for issue #1029.
+#
+# Prior state (verified 2026-05-16 14:22 UTC, PR #1077 readback):
+# - 72 queries in status='pending' for the 9 stuck BestCoffer topics
+#   (162..170), brand_id=24, queued_at populated, started_at NULL.
+# - 0 llm_responses rows for those queries; 0 status='failed' either.
+# - scheduler_config.mode='paused', paused_engines=[].
+# - docker compose ps shows all worker containers Up.
+#
+# Goal: figure out why the Celery workers are not consuming pending
+# queries. Run docker compose ps / celery inspect / redis LLEN / docker
+# logs against the live test env and post the output as a PR comment on
+# PR #1077 so the orchestrator can decide the unstick step.
+#
+# READ ONLY. This workflow does not modify product code, scheduler
+# config, queries rows, Redis keys, or restart any containers.
+
+on:
+  workflow_dispatch:
+    inputs:
+      brand_id:
+        description: "BestCoffer canonical brand id (for context only)"
+        required: false
+        default: "24"
+  push:
+    branches:
+      - claude/investigate-issue-1029-worker-stall-Ny8TZ
+    paths:
+      - '.github/workflows/topics-1029-worker-stall.yml'
+
+concurrency:
+  group: topics-1029-worker-stall
+  cancel-in-progress: false
+
+jobs:
+  worker-stall:
+    name: Inspect worker / broker / queue state for #1029
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    env:
+      SERVER_HOST: ${{ secrets.SERVER_HOST }}
+      SERVER_USER: ${{ secrets.SERVER_USER }}
+      SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+
+    steps:
+      - name: Set up SSH
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "${SERVER_SSH_KEY}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H "${SERVER_HOST}" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Run worker / broker / queue inspection on live env
+        shell: bash
+        run: |
+          set -euo pipefail
+          ssh \
+            -i ~/.ssh/id_rsa \
+            -o StrictHostKeyChecking=accept-new \
+            "${SERVER_USER}@${SERVER_HOST}" \
+            "bash -s" <<'REMOTE' | tee /tmp/topics_1029_worker_stall.txt
+          set +e
+          cd /opt/genpano
+
+          echo "=== Captured at ==="
+          date -u +"%Y-%m-%dT%H:%M:%SZ"
+
+          echo
+          echo "=== 1. docker compose ps (containers state) ==="
+          docker compose ps
+
+          echo
+          echo "=== 2. docker compose ps --format json (detail) ==="
+          docker compose ps --format json 2>/dev/null || docker compose ps
+
+          echo
+          echo "=== 3. celery inspect active (currently processing tasks) ==="
+          # The Celery app is geo_tracker.tasks.celery_tasks (see
+          # docker-compose.yml command lines). The worker container is
+          # named 'worker' in compose; on disk it's genpano-worker-1.
+          docker compose exec -T worker celery -A geo_tracker.tasks.celery_tasks inspect active --timeout=10 --json 2>&1 || true
+
+          echo
+          echo "=== 4. celery inspect reserved (waiting tasks) ==="
+          docker compose exec -T worker celery -A geo_tracker.tasks.celery_tasks inspect reserved --timeout=10 --json 2>&1 || true
+
+          echo
+          echo "=== 5. celery inspect scheduled (ETA / countdown tasks) ==="
+          docker compose exec -T worker celery -A geo_tracker.tasks.celery_tasks inspect scheduled --timeout=10 --json 2>&1 || true
+
+          echo
+          echo "=== 6. celery inspect stats (worker stats including total processed) ==="
+          docker compose exec -T worker celery -A geo_tracker.tasks.celery_tasks inspect stats --timeout=10 --json 2>&1 || true
+
+          echo
+          echo "=== 7. celery inspect registered (task names registered on worker) ==="
+          docker compose exec -T worker celery -A geo_tracker.tasks.celery_tasks inspect registered --timeout=10 --json 2>&1 || true
+
+          echo
+          echo "=== 8. celery inspect active_queues (queue subscriptions per worker) ==="
+          docker compose exec -T worker celery -A geo_tracker.tasks.celery_tasks inspect active_queues --timeout=10 --json 2>&1 || true
+
+          echo
+          echo "=== 9. celery inspect ping (worker liveness probe) ==="
+          docker compose exec -T worker celery -A geo_tracker.tasks.celery_tasks inspect ping --timeout=10 2>&1 || true
+
+          echo
+          echo "=== 10. Redis queue depths (LLEN on each LLM queue + analysis + account_login + celery) ==="
+          for q in llm_doubao llm_chatgpt llm_deepseek llm_gemini analysis account_login celery beat; do
+            depth=$(docker compose exec -T redis redis-cli LLEN "$q" 2>&1)
+            echo "LLEN $q = $depth"
+          done
+
+          echo
+          echo "=== 11. Redis KEYS (high-level inventory) ==="
+          docker compose exec -T redis redis-cli --scan --pattern 'celery*' 2>&1 | head -50
+          echo "---"
+          docker compose exec -T redis redis-cli DBSIZE 2>&1
+
+          echo
+          echo "=== 12. Redis unacked_index (orphaned reservations) ==="
+          docker compose exec -T redis redis-cli ZCARD unacked_index 2>&1
+          docker compose exec -T redis redis-cli ZRANGE unacked_index 0 5 WITHSCORES 2>&1
+
+          echo
+          echo "=== 13. docker compose logs --tail 100 worker | grep errors ==="
+          docker compose logs --tail 100 worker 2>&1 \
+            | grep -iE 'error|warn|exception|fail|traceback' \
+            | tail -80
+
+          echo
+          echo "=== 14. docker compose logs --tail 60 worker (general activity) ==="
+          docker compose logs --tail 60 worker 2>&1 | tail -60
+
+          echo
+          echo "=== 15. docker compose logs --tail 30 worker-analysis ==="
+          docker compose logs --tail 30 worker-analysis 2>&1 | tail -30
+
+          echo
+          echo "=== 16. docker compose logs --tail 30 beat (scheduler tick health) ==="
+          docker compose logs --tail 30 beat 2>&1 | tail -30
+
+          echo
+          echo "=== 17. backend sanity: redis_url + celery broker (config consistency) ==="
+          docker compose exec -T backend python - <<'PY' 2>&1 || true
+          import os
+          import json
+          print("BACKEND env REDIS_URL:", os.getenv("REDIS_URL"))
+          print("BACKEND env CELERY_BROKER_URL:", os.getenv("CELERY_BROKER_URL"))
+          try:
+              from app.core.config import get_settings
+              s = get_settings()
+              print("settings.redis_url:", getattr(s, "redis_url", "<missing>"))
+              print("settings.celery_broker_url:", getattr(s, "celery_broker_url", "<missing>"))
+          except Exception as exc:
+              print("settings import failed:", exc)
+          try:
+              from geo_tracker.tasks.celery_tasks import app as gt_app
+              print("geo_tracker celery app broker:", gt_app.conf.broker_url)
+              print("geo_tracker celery app backend:", gt_app.conf.result_backend)
+          except Exception as exc:
+              print("geo_tracker app import failed:", exc)
+          PY
+
+          echo
+          echo "=== 18. worker sanity: same lookup from inside the worker container ==="
+          docker compose exec -T worker python - <<'PY' 2>&1 || true
+          import os
+          print("WORKER env REDIS_URL:", os.getenv("REDIS_URL"))
+          print("WORKER env CELERY_BROKER_URL:", os.getenv("CELERY_BROKER_URL"))
+          try:
+              from geo_tracker.tasks.celery_tasks import app as gt_app
+              print("worker celery app broker:", gt_app.conf.broker_url)
+              print("worker celery app backend:", gt_app.conf.result_backend)
+              print("worker celery app main name:", gt_app.main)
+          except Exception as exc:
+              print("celery import failed in worker:", exc)
+          PY
+
+          echo
+          echo "=== 19. Probe: are the 72 pending query ids reachable in DB from worker container? ==="
+          docker compose exec -T postgres psql -U genpano -d genpano -tA -c "
+            SELECT q.id, q.target_llm, q.status, q.queued_at, q.started_at
+            FROM queries q
+            JOIN prompts p ON p.id = q.prompt_id
+            WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170)
+              AND q.status='pending'
+            ORDER BY q.id
+            LIMIT 10;
+          " 2>&1 | head -20
+
+          echo
+          echo "=== Inspection complete ==="
+          REMOTE
+
+      - name: Upload diagnostic log as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: topics-1029-worker-stall
+          path: /tmp/topics_1029_worker_stall.txt
+          if-no-files-found: warn
+
+      - name: Post worker-stall output to PR #1077 as comment
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: 1077
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -s /tmp/topics_1029_worker_stall.txt ]; then
+            echo "worker-stall file missing or empty; skipping PR comment"
+            exit 0
+          fi
+          {
+            echo "## Worker stall diagnostics (issue #1029)"
+            echo ""
+            echo "**Run**: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo "**Branch**: \`${{ github.ref_name }}\`"
+            echo ""
+            echo "<details><summary>Raw inspection output (click)</summary>"
+            echo ""
+            echo '```'
+            # Strip ANSI and trim to keep comment under GitHub's 64KB limit.
+            sed 's/\x1b\[[0-9;]*m//g' /tmp/topics_1029_worker_stall.txt | head -c 55000
+            echo ''
+            echo '```'
+            echo ""
+            echo "</details>"
+          } > /tmp/worker-stall-comment.md
+          gh pr comment "$PR_NUMBER" --repo "$REPO" --body-file /tmp/worker-stall-comment.md
