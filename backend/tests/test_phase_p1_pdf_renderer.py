@@ -142,10 +142,12 @@ def test_render_pdf_handles_empty_sections():
     assert out.startswith(b"%PDF-")
 
 
-def test_render_pdf_strips_non_latin1_when_no_cjk_font():
-    """fpdf2's built-in Helvetica is Latin-1; the renderer should
-    transliterate (not crash) when the payload contains CJK text.
-    Production deployments install a CJK TTF via register_cjk_font()."""
+def test_render_pdf_handles_cjk_payload_without_crash():
+    """zh-CN payloads must produce a valid PDF whether or not a CJK
+    font is registered on the host. With font: glyphs preserved.
+    Without font: transliterated to '?' + warning header added (so the
+    operator immediately sees the cause). Either way: %PDF- magic
+    holds and bytes are returned."""
     from app.reports.renderers import render_pdf
 
     payload = {
@@ -163,9 +165,99 @@ def test_render_pdf_strips_non_latin1_when_no_cjk_font():
             }
         ],
     }
-    # No exception; bytes returned.
     out = render_pdf(payload)
     assert out.startswith(b"%PDF-")
+
+
+def test_render_pdf_resolver_returns_none_without_env_or_system_path(monkeypatch, tmp_path):
+    """Closes the Codex P1 contract surface for zh-CN PDFs: the
+    renderer must KNOW when no CJK font is available (so it can fall
+    back gracefully). Verify the path resolver returns None when the
+    env var is unset AND none of the system paths exist."""
+    from app.reports.renderers import pdf_renderer
+
+    # Clear the env override and re-point search paths at an empty dir
+    # so the resolver sees no candidates.
+    monkeypatch.delenv("GENPANO_PDF_CJK_FONT_PATH", raising=False)
+    monkeypatch.setattr(pdf_renderer, "_CJK_FONT_SEARCH_PATHS", (str(tmp_path / "missing.ttc"),))
+    assert pdf_renderer._resolve_cjk_font_path() is None
+
+
+def test_render_pdf_resolver_picks_env_override_first(monkeypatch, tmp_path):
+    """Operator override env var takes precedence over the default
+    system paths."""
+    from app.reports.renderers import pdf_renderer
+
+    override = tmp_path / "operator-font.ttc"
+    override.write_bytes(b"")  # exists()-check passes
+    monkeypatch.setenv("GENPANO_PDF_CJK_FONT_PATH", str(override))
+    assert pdf_renderer._resolve_cjk_font_path() == str(override)
+
+
+def test_render_pdf_renders_zh_payload_in_no_cjk_mode(monkeypatch, tmp_path):
+    """End-to-end: when no CJK font is detected, render_pdf still
+    produces a valid PDF for a zh-CN payload (transliteration path).
+    The bytes start with %PDF- and the function does not raise."""
+    from app.reports.renderers import pdf_renderer
+
+    # Force the no-CJK branch independently of host font availability.
+    monkeypatch.setattr(pdf_renderer, "_CJK_FONT_PATH", None)
+    payload = {
+        "report_type": "weekly",
+        "locale": "zh-CN",
+        "period": {"from": "2026-01-01", "to": "2026-01-07"},
+        "project_id": "p-1",
+        "sections": [
+            {
+                "section_type": "executive_summary",
+                "title": "执行摘要",
+                "summary": "GEO 总分 80",
+                "tables": [],
+            }
+        ],
+    }
+    out = pdf_renderer.render_pdf(payload)
+    assert out.startswith(b"%PDF-")
+    # Sanity: warning page header pushed the body size above the
+    # minimum-empty PDF threshold.
+    assert len(out) > 700
+
+
+def test_render_pdf_uses_cjk_font_when_available_for_zh_locale(monkeypatch):
+    """When a CJK font IS available, the renderer must (a) skip the
+    warning header and (b) preserve the CJK string as UTF-8 in the
+    PDF stream so glyphs render correctly."""
+    import os
+
+    if not os.path.exists("/usr/share/fonts/truetype/wqy/wqy-microhei.ttc"):
+        pytest.skip(
+            "no wqy-microhei.ttc on test host; this asserts the happy "
+            "path on backend Docker image / CI"
+        )
+    from app.reports.renderers import pdf_renderer
+
+    # Refresh in case a prior test cleared the module-level cache.
+    pdf_renderer._refresh_cjk_font_path_for_tests()
+    assert pdf_renderer.cjk_font_is_available()
+
+    payload = {
+        "report_type": "weekly",
+        "locale": "zh-CN",
+        "period": {"from": "2026-01-01", "to": "2026-01-07"},
+        "project_id": "p-1",
+        "sections": [
+            {
+                "section_type": "executive_summary",
+                "title": "执行摘要",
+                "summary": "GEO 总分 80",
+                "tables": [],
+            }
+        ],
+    }
+    out = pdf_renderer.render_pdf(payload)
+    assert out.startswith(b"%PDF-")
+    # Warning header NOT present (font is registered).
+    assert b"GENPANO_PDF_CJK_FONT_PATH" not in out
 
 
 def test_render_pdf_table_truncates_long_cells():
