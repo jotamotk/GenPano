@@ -193,6 +193,238 @@ async def test_products_empty_for_no_brand(client, user, db_session):
     assert resp.json()["state"] == "empty"
 
 
+def _v3_package_with_products(*, response_id: int, products: list[dict]) -> dict:
+    """Minimal v3 fixture exercising the issue #1049 derivation path.
+
+    Mirrors `tests/test_issue_687_bestcoffer_app_api_contract.py::_bestcoffer_package_v3`
+    but uses brand_id=42 to match this file's `project_with_data` fixture.
+    """
+    return {
+        "analyzer_version": "v3",
+        "response_id": response_id,
+        "query_id": response_id + 1,
+        "prompt_id": response_id + 2,
+        "topic_id": response_id + 3,
+        "project_ids": [],
+        "source_brand_id": 42,
+        "target_brand_id": 42,
+        "engine": "deepseek",
+        "collected_at": datetime.now().isoformat(),
+        "analysis_started_at": datetime.now().isoformat(),
+        "analysis_completed_at": datetime.now().isoformat(),
+        "provider": "openai",
+        "model": "gpt-4.1-mini",
+        "prompt_version": "issue-1049-test",
+        "raw_output_sha256": f"sha{response_id}",
+        "idempotency_key": f"{response_id}:v3:sha{response_id}",
+        "eligibility": {
+            "eligible": True,
+            "success_response": True,
+            "invalid_reason": None,
+            "missing_reason_codes": [],
+        },
+        "coverage": {
+            "eligible_response_count_basis": 1,
+            "analyzed": True,
+            "parse_status": "ok",
+            "validation_errors": [],
+        },
+        "entities": {
+            "target": {
+                "brand_id": 42,
+                "canonical_name": "Primary",
+                "mentioned": True,
+                "mention_count": 1,
+            },
+            "configured_competitors": [],
+            "response_named_brands": [],
+        },
+        "visibility": {
+            "is_visible": True,
+            "rank": 1,
+            "position_type": "ranked_list",
+            "visibility_score": 1.0,
+            "formula_status": "ok",
+            "reason_codes": [],
+        },
+        "sov": {
+            "numerator_target_mentions": 1,
+            "denominator_competitive_mentions": 1,
+            "denominator_brand_ids": [],
+            "denominator_raw_names": [],
+            "formula_status": "ok",
+            "reason_codes": [],
+            "sample_response_ids": [response_id],
+        },
+        "sentiment": {
+            "label": "positive",
+            "score": 0.8,
+            "drivers": [],
+            "source_quotes": [],
+            "formula_status": "ok",
+            "reason_codes": [],
+        },
+        "citations": {
+            "total_citations": 0,
+            "attributed_citations": [],
+            "unresolved_citations": [],
+            "domains": [],
+            "source_types": [],
+            "formula_status": "ok",
+            "reason_codes": [],
+        },
+        "rank": {
+            "best_rank": 1,
+            "rank_bucket": "top_3",
+            "rank_basis": "position_rank",
+            "formula_status": "ok",
+            "reason_codes": [],
+        },
+        "topic": {
+            "topic_id": response_id + 3,
+            "topic_name": "Primary topic",
+            "dimension": "product",
+            "associated_brand_id": 42,
+            "prompt_id": response_id + 2,
+            "query_id": response_id + 1,
+        },
+        "products": products,
+        "topic_metrics": {
+            "visible": True,
+            "visibility_rate_basis": 1,
+            "sentiment_basis": 1,
+            "citation_basis": 0,
+            "rank_basis": 1,
+            "formula_status": "ok",
+            "reason_codes": [],
+        },
+        "geo_pano": {
+            "visibility_component": "ok",
+            "sentiment_component": "ok",
+            "sov_component": "ok",
+            "citation_component": "ok",
+            "geo_score": None,
+            "pano_score": None,
+            "formula_status": "ok",
+            "reason_codes": [],
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_products_v3_payload_with_products_passes_contract(
+    client, user, db_session: AsyncSession
+):
+    """Issue #1049: `/api/v1/projects/<id>/products` must emit
+    `metric_formula_evidence.topic_product` with `formula_status='ok'` when
+    the analyzer payload is the durable v3 contract (BestCoffer prod shape).
+
+    The v3 schema pre-dates the `topic_product` sub-block; `_as_v3_package`
+    now derives it from the v3 `products[]` array so `_rollup_topic_product`
+    can aggregate v3 packages just like v1 ones. Without this, the frontend
+    `canUseMetricEvidence(data, 'product')` gate fails and BestCoffer's
+    products page renders empty (issue #1031).
+    """
+    p = Project(user_id=user.id, name="Issue 1049 v3", primary_brand_id=42, industry_id=1)
+    db_session.add(p)
+    await db_session.commit()
+    await db_session.refresh(p, ["competitors"])
+
+    today = datetime.now().date()
+    for i in range(5):
+        d = today - timedelta(days=i)
+        db_session.add(
+            GeoScoreDaily(
+                brand_id=42,
+                date=datetime.combine(d, datetime.min.time()),
+                target_llm="chatgpt",
+                avg_geo_score=70.0,
+                mention_rate=0.6,
+                avg_sov=0.4,
+                avg_sentiment=0.7,
+                total_queries=100,
+            )
+        )
+
+    response_ids = [9000, 9001, 9002]
+    for rid in response_ids:
+        db_session.add(
+            BrandMention(
+                response_id=rid,
+                brand_id=42,
+                brand_name="Primary",
+                sentiment="positive",
+                sentiment_score=0.6,
+                created_at=datetime.now() - timedelta(days=1),
+            )
+        )
+        db_session.add(
+            ResponseAnalysis(
+                response_id=rid,
+                target_brand_mentioned=True,
+                sentiment_score=0.6,
+                analyzed_at=datetime.now() - timedelta(days=1),
+                raw_analysis_json={
+                    "analyzer_fact_package_v3": _v3_package_with_products(
+                        response_id=rid,
+                        products=[
+                            {
+                                "product_name": "ProductA",
+                                "brand_id": 42,
+                                "feature_name": None,
+                                "sentiment": None,
+                                "snippets": [],
+                                "formula_status": "ok",
+                            },
+                            {
+                                "product_name": "ProductB",
+                                "brand_id": 42,
+                                "feature_name": None,
+                                "sentiment": None,
+                                "snippets": [],
+                                "formula_status": "ok",
+                            },
+                        ],
+                    )
+                },
+                created_at=datetime.now() - timedelta(days=1),
+            )
+        )
+
+    # Seed legacy ProductFeatureMention so the products endpoint payload has
+    # items to surface (the rollup is independent — driven by the v3
+    # raw_analysis_json — but we keep the body non-empty for realism).
+    for i, pn in enumerate(("ProductA", "ProductB")):
+        db_session.add(
+            ProductFeatureMention(
+                analysis_id=1,
+                brand_name="Primary",
+                product_name=pn,
+                feature_name="taste",
+                feature_sentiment="positive",
+                scenario="morning",
+                created_at=datetime.now() - timedelta(days=i),
+            )
+        )
+    await db_session.commit()
+
+    resp = await client.get(f"/api/v1/projects/{p.id}/products", headers=_bearer(user))
+    assert resp.status_code == 200
+    body = resp.json()
+    metric_evidence = body.get("metric_formula_evidence") or {}
+    topic_product = metric_evidence.get("topic_product")
+    assert topic_product is not None, (
+        "topic_product must be derived from v3 packages so the frontend "
+        "canUseMetricEvidence(data, 'product') gate passes."
+    )
+    assert topic_product["formula_status"] == "ok"
+    assert topic_product["status"] == "ok"
+    # 3 v3 packages * 2 products each = 6
+    assert topic_product["product_fact_count"] >= 6
+    # Each v3 package contributes 1 topic chain (topic/prompt/query all set).
+    assert topic_product["topic_chain_count"] >= 3
+
+
 @pytest.mark.asyncio
 async def test_competitor_metrics_includes_primary_and_competitors(client, user, project_with_data):
     resp = await client.get(
