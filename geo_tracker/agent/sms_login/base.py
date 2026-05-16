@@ -263,7 +263,22 @@ class BaseSMSLoginHandler(ABC):
             )
 
         try:
-            sms_provider = self.sms_provider_factory()
+            # Refs #963 / #973: LubanSMS keyword API is intermittently returning
+            # 400 "未知错误" for Doubao number allocation. The service-id
+            # API ("验证码接收") draws from a separate pool and is the
+            # documented fallback. Pass the platform-specific
+            # ``LUBANSMS_<PLATFORM>_SERVICE_ID`` env var to the provider so
+            # it can fall back automatically when keyword allocation fails.
+            # For doubao the value is provided by operator as "666056".
+            factory_kwargs: dict = {}
+            if self.sms_provider_factory is LubanSMSProvider:
+                service_id_env = (
+                    f"LUBANSMS_{self.platform.upper()}_SERVICE_ID"
+                )
+                service_id = os.getenv(service_id_env)
+                if service_id:
+                    factory_kwargs["service_id"] = service_id
+            sms_provider = self.sms_provider_factory(**factory_kwargs)
 
             # ── 获取初始手机号 ──────────────────────────────────────────
             if is_relogin:
