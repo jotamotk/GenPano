@@ -67,3 +67,15 @@ export function useMarkAllAlertsRead() {
     },
   })
 }
+
+export function useSnoozeAlert() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, hours }: { id: string; hours: number }) =>
+      alertsApi.snooze(id, hours),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: KEY_LIST })
+      qc.invalidateQueries({ queryKey: KEY_UNREAD })
+    },
+  })
+}
