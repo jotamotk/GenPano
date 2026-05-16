@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import uuid
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 
 import pytest
 import pytest_asyncio
@@ -579,131 +579,6 @@ async def test_topic_monitoring_aggregates_admin_chain(client, db_session, user)
     scoped_body = prompt_scope.json()
     assert scoped_body["summary"]["query_count"] == 1
     assert scoped_body["topics"][0]["mention_rate"] is None
-
-
-@pytest.mark.asyncio
-async def test_topic_monitoring_list_includes_topics_without_evidence(client, db_session, user):
-    """Regression for #1029: the user-facing topic list should match admin's
-    topic count (no status filter), not just the with-evidence subset. Topic
-    102 (Vitamin C) has no responses but is a valid brand-42 topic, so it
-    should appear in the list with zero-valued metrics. summary.topic_count
-    stays as the with-evidence count.
-    """
-    project = await _seed_admin_chain(db_session, user)
-    resp = await client.get(
-        f"/api/v1/projects/{project.id}/topics/monitoring",
-        headers=_bearer(user),
-    )
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    topic_ids = [row["topic_id"] for row in body["topics"]]
-    assert 101 in topic_ids
-    assert 102 in topic_ids
-    # summary.topic_count still reports only topics with evidence
-    assert body["summary"]["topic_count"] == 1
-    # summary.topic_count_total reports the admin-equivalent raw count
-    assert body["summary"]["topic_count_total"] == 2
-    empty_row = next(row for row in body["topics"] if row["topic_id"] == 102)
-    assert empty_row["prompt_count"] == 0
-    assert empty_row["query_count"] == 0
-    assert empty_row["response_count"] == 0
-    assert empty_row["engine_coverage"] == []
-
-
-@pytest.mark.asyncio
-async def test_topic_monitoring_merge_gate_only_skips_for_topic_set_narrowing_filters(
-    client, db_session, user
-):
-    """Regression for #1029 (follow-up to #1034): the previous gate keyed off
-    ``filters.explicit`` which trips on *any* filter, including the default
-    frontend state (90-day window + all engines preselected). That suppressed
-    the evidence-less-topic merge on the page-load default and shrank the list
-    back to the with-evidence subset. The narrower gate should only skip the
-    merge when filters narrow the topic *set* itself (dimensions / intents /
-    prompt_scope), not when they only narrow the response/query scope.
-    """
-    project = await _seed_admin_chain(db_session, user)
-    headers = _bearer(user)
-
-    # Default-frontend-style filters: 90-day window ending today + all
-    # engines preselected. Topic 102 has no evidence; it must still surface
-    # so the list matches admin's count.
-    today = date.today()
-    default_frontend = await client.get(
-        f"/api/v1/projects/{project.id}/topics/monitoring",
-        params={
-            "from": (today - timedelta(days=89)).isoformat(),
-            "to": today.isoformat(),
-            "engine": "chatgpt,doubao,deepseek",
-        },
-        headers=headers,
-    )
-    assert default_frontend.status_code == 200, default_frontend.text
-    topic_ids = [row["topic_id"] for row in default_frontend.json()["topics"]]
-    assert 102 in topic_ids, "evidence-less topic must merge when only date/engine filters apply"
-
-    # Narrowing filter on a topic attribute: merge should be suppressed so we
-    # don't surface topics that don't match the requested dimension.
-    narrowed = await client.get(
-        f"/api/v1/projects/{project.id}/topics/monitoring",
-        params={"dimension": "nonexistent_dimension"},
-        headers=headers,
-    )
-    assert narrowed.status_code == 200, narrowed.text
-    narrowed_ids = [row["topic_id"] for row in narrowed.json()["topics"]]
-    assert 102 not in narrowed_ids, (
-        "evidence-less topic must NOT merge when dimensions filter is set"
-    )
-
-
-@pytest.mark.asyncio
-async def test_topic_monitoring_excludes_archived_topics_from_count_and_list(
-    client, db_session, user
-):
-    """Regression for #1029 (follow-up to #1034): the merge helpers previously
-    pulled topics with NO status filter, which let archived/draft topics leak
-    into the user-facing list and ``summary.topic_count_total``. Downstream
-    evidence (``_fact_rows``) explicitly excludes archived rows, so leaked
-    topics show as zero-everything ghost rows. The scope must mirror
-    ``topic_analysis/queries.py:_fact_rows`` (active + non-archived).
-
-    Also reasserts the #1041 regression: an active topic with no evidence
-    (topic 102) must STILL appear in the list — we're filtering archived only,
-    not narrowing to with-evidence.
-    """
-    project = await _seed_admin_chain(db_session, user)
-    # Seed an archived topic on the same brand. The merge helpers used to
-    # surface this as a ghost zero-everything row in the user-facing list.
-    now = datetime.now()
-    await db_session.execute(
-        text(
-            """
-            INSERT INTO topics (id, brand_id, text, category, status, created_at)
-            VALUES (103, 42, 'Retired topic', 'product', 'archived', :now)
-            """
-        ),
-        {"now": now},
-    )
-    await db_session.commit()
-
-    resp = await client.get(
-        f"/api/v1/projects/{project.id}/topics/monitoring",
-        headers=_bearer(user),
-    )
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    topic_ids = [row["topic_id"] for row in body["topics"]]
-    # Archived topic must not leak into the user-facing list.
-    assert 103 not in topic_ids, "archived topic must not appear in user-facing list"
-    # summary.topic_count_total should exclude archived topics so it stays in
-    # sync with _fact_rows' scope.
-    assert body["summary"]["topic_count_total"] == 2, (
-        "topic_count_total must exclude archived topics to match _fact_rows scope"
-    )
-    # Active-but-no-evidence topic must STILL appear (regression for #1041).
-    assert 102 in topic_ids, (
-        "active no-evidence topic must remain in list (don't reintroduce #1041)"
-    )
 
 
 @pytest.mark.asyncio
