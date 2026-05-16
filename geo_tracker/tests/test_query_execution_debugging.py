@@ -3082,6 +3082,190 @@ def test_doubao_auto_login_new_account_requeues_no_active_query(
     assert requeued == [{"args": [query_id], "queue": "llm_doubao"}]
 
 
+def test_doubao_auto_login_new_account_persists_unmasked_phone(
+    monkeypatch,
+    tmp_path,
+):
+    """Refs #963: ``auto_login`` (new_account=True) must persist the raw
+    phone returned by the SMS handler into ``llm_accounts.phone_number``.
+
+    Production worker (PR #1076 deploy, 2026-05-16 14:05:49 UTC) showed:
+
+        worker-1 | auto_login: re-login account #43 (doubao, phone=147****0231)
+        worker-1 | [doubao] 传入的 phone='147****0231' 非 11 位数字，
+                       降级为新注册流程
+        worker-1 | [doubao] invalid phone for re-login;
+                       refusing to request a new SMS number
+
+    ``BaseSMSLoginHandler.login_or_register`` validates the incoming
+    phone against ``\\d{11}`` before re-reserving an SMS lease; storing
+    the ``mask_phone()`` output (``147****0231`` with literal asterisks)
+    fails that regex, refuses the re-login, and exits without recovery.
+    The account stays stuck on a Doubao-bot-flagged cookie set forever.
+
+    Lock the contract that ``create_account`` (and therefore
+    ``auto_login`` new-account success) writes the RAW phone string
+    untouched — no ``mask_phone`` call, no asterisks, exact match.
+    """
+    _install_fake_playwright(monkeypatch)
+
+    import redis.asyncio as aioredis
+
+    from geo_tracker.agent import sms_login
+    from geo_tracker.agent.sms_redaction import mask_phone
+    from geo_tracker.tasks import celery_tasks
+
+    db_url = (
+        f"sqlite+aiosqlite:///{tmp_path / 'doubao-unmasked-phone.db'}"
+    )
+    raw_phone = "14712340231"
+    # Sanity guard: confirm this raw phone really does mask to the
+    # production-observed shape so the test catches the exact regression.
+    assert mask_phone(raw_phone) == "147****0231"
+
+    async def seed_database():
+        engine = create_async_engine(db_url, future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        await engine.dispose()
+
+    asyncio.run(seed_database())
+
+    def create_engine():
+        return create_async_engine(db_url, future=True)
+
+    def get_session(engine):
+        return _TaskSessionContext(
+            async_sessionmaker(engine, expire_on_commit=False)
+        )
+
+    class FakeRedisClient:
+        async def exists(self, _key):
+            return False
+
+        async def delete(self, _key):
+            return 1
+
+        async def set(self, *_args, **_kwargs):
+            return True
+
+        async def aclose(self):
+            return None
+
+    class FakeDoubaoHandler:
+        async def login_or_register(self, **_kwargs):
+            return {
+                "cookies": [{"name": "session", "value": "fresh"}],
+                "phone": raw_phone,
+                "localStorage": {"session": "fresh"},
+            }
+
+    class FakeExecuteQuery:
+        @staticmethod
+        def apply_async(*, args, queue):
+            return None
+
+    async def fake_release_new_account_lock(_platform, *, failed=False):
+        return None
+
+    monkeypatch.setattr(celery_tasks, "create_task_engine", create_engine)
+    monkeypatch.setattr(celery_tasks, "get_task_async_session", get_session)
+    monkeypatch.setattr(
+        aioredis, "from_url", lambda *args, **kwargs: FakeRedisClient()
+    )
+    monkeypatch.setattr(
+        sms_login,
+        "get_handler",
+        lambda platform: FakeDoubaoHandler() if platform == "doubao" else None,
+    )
+    monkeypatch.setattr(celery_tasks, "execute_query", FakeExecuteQuery)
+    monkeypatch.setattr(
+        celery_tasks,
+        "release_new_account_lock",
+        fake_release_new_account_lock,
+    )
+
+    result = celery_tasks.auto_login.run(
+        platform="doubao",
+        new_account=True,
+    )
+
+    async def load_phone():
+        engine = create_async_engine(db_url, future=True)
+        maker = async_sessionmaker(engine, expire_on_commit=False)
+        async with maker() as session:
+            accounts = (
+                await session.execute(select(LLMAccount))
+            ).scalars().all()
+            assert len(accounts) == 1
+            stored_phone = accounts[0].phone_number
+            stored_email = accounts[0].email
+            stored_id = accounts[0].id
+        await engine.dispose()
+        return stored_phone, stored_email, stored_id
+
+    stored_phone, stored_email, stored_id = asyncio.run(load_phone())
+
+    # Pins the bug-fix contract: the persisted phone must be the raw
+    # SMS-provider value, NOT the mask_phone() output.
+    assert stored_phone == raw_phone, (
+        f"llm_accounts.phone_number stored masked value "
+        f"{stored_phone!r}; expected raw {raw_phone!r}"
+    )
+    assert "*" not in (stored_phone or ""), (
+        f"llm_accounts.phone_number contains an asterisk "
+        f"({stored_phone!r}); auto_login MUST persist the raw phone "
+        f"so the re-login \\d{{11}} regex matches."
+    )
+    # Email is derived from phone — same contract applies.
+    assert stored_email == f"{raw_phone}@doubao.local"
+    # auto_login return payload must also expose the raw phone so
+    # downstream requeue paths don't propagate the masked form.
+    assert result == {
+        "status": "success",
+        "account_id": stored_id,
+        "phone": raw_phone,
+    }
+
+
+def test_account_pool_create_account_rejects_masked_phone(tmp_path):
+    """Refs #963: ``AccountPool.create_account`` must refuse to persist
+    a phone that contains the ``*`` character produced by
+    :func:`mask_phone`. Any caller that accidentally passes the masked
+    form should raise at write time so a corrupted ``phone_number``
+    never reaches the DB.
+    """
+    from geo_tracker.pool.account_pool import AccountPool
+
+    db_url = (
+        f"sqlite+aiosqlite:///{tmp_path / 'pool-mask-guard.db'}"
+    )
+
+    async def runner():
+        engine = create_async_engine(db_url, future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        maker = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with maker() as session:
+                pool = AccountPool(session)
+                with pytest.raises(ValueError, match="masked phone"):
+                    await pool.create_account(
+                        llm_name="doubao",
+                        phone="147****0231",
+                        cookies_json="[]",
+                    )
+                # And nothing should have been committed.
+                accounts = (
+                    await session.execute(select(LLMAccount))
+                ).scalars().all()
+                assert accounts == []
+        finally:
+            await engine.dispose()
+
+    asyncio.run(runner())
+
+
 def test_execute_query_persists_doubao_answer_with_generic_toolbar_login(
     monkeypatch, tmp_path
 ):

@@ -1705,7 +1705,30 @@ def auto_login(
                     account.cooldown_until = None
                     account.consecutive_fails = 0
                     if login_result.get("phone"):
-                        account.phone_number = login_result["phone"]
+                        # Refs #963: the re-login handler returns the raw
+                        # SMS lease phone here, but we still guard against
+                        # any future regression that swaps in mask_phone()
+                        # output. Storing the masked form (e.g.
+                        # ``"147****0231"``) would break the
+                        # ``\\d{11}``-fullmatch in
+                        # ``BaseSMSLoginHandler.login_or_register`` on the
+                        # NEXT re-login attempt, leaving the account
+                        # permanently stuck on a Doubao-bot-flagged
+                        # cookie set with no recovery path.
+                        relogin_phone = login_result["phone"]
+                        if "*" in str(relogin_phone):
+                            logger.error(
+                                "auto_login: refusing to overwrite "
+                                "account #%s phone_number with masked "
+                                "value %r (re-login handler returned "
+                                "mask_phone() output instead of the raw "
+                                "SMS lease); keeping prior phone_number "
+                                "intact",
+                                account_id,
+                                mask_phone(relogin_phone),
+                            )
+                        else:
+                            account.phone_number = relogin_phone
                     await db.commit()
                     if previous_status != AccountStatus.ACTIVE.value:
                         logger.info(
