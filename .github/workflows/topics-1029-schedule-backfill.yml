@@ -10,6 +10,10 @@ name: Topics #1029 Schedule Backfill
 #
 # INSERT runs inside a single transaction with ON_ERROR_STOP=1. The INSERT
 # is idempotent via NOT EXISTS, so re-running is safe.
+#
+# Second run header: the first auto-trigger ran before PR #1080 existed and
+# therefore skipped the comment step. This re-trigger gets the row-count
+# summary posted to PR #1080.
 
 on:
   workflow_dispatch:
@@ -87,7 +91,7 @@ jobs:
           \set ON_ERROR_STOP on
           BEGIN;
 
-          \echo '--- pre-INSERT: schedules count per stuck topic (should be 0 for all) ---'
+          \echo '--- pre-INSERT: schedules count per stuck topic (should be 0 for all on first run) ---'
           SELECT p.topic_id,
                  COUNT(qs.id) AS schedules_before
           FROM prompts p
