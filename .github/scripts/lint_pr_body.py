@@ -2,9 +2,10 @@
 """Lint a Pull Request body against the contract in AGENTS.md.
 
 The PR body MUST contain three sections:
-  - ## Linked Work        (with Business Goal: and Final Success Evidence:)
+  - ## Linked Work        (with Parent Business Goal: [or Business Goal:] and Final Success Evidence:)
   - ## Root Cause Gate    (with Direct trigger, Underlying ... root cause, Evidence proving it)
-  - ## Verification Evidence Ledger (with at least one - [x] and one https:// URL)
+  - ## Verification Evidence Ledger (with a `- [x]` bullet OR a filled table row,
+    AND at least one https:// URL)
 
 Escape hatches:
   - "Classification: not an incident" under Root Cause Gate makes its rest optional.
@@ -40,12 +41,19 @@ REQUIRED_SECTIONS = (SECTION_LINKED_WORK, SECTION_ROOT_CAUSE, SECTION_LEDGER)
 # Field name -> section it must live under. Case-sensitive on the field name to
 # match the template; the value must be non-empty and not a placeholder.
 REQUIRED_FIELDS: dict[str, tuple[str, ...]] = {
-    SECTION_LINKED_WORK: ("Business Goal", "Final Success Evidence"),
+    SECTION_LINKED_WORK: ("Parent Business Goal", "Final Success Evidence"),
     SECTION_ROOT_CAUSE: (
         "Direct trigger",
         "Underlying product/system root cause",
         "Evidence proving it",
     ),
+}
+
+# Aliases: a required field may be satisfied by any name in its alias tuple.
+# Keeps the lint aligned with the actual PR template while accepting variant
+# wording from earlier PRs that invented their own field names.
+FIELD_ALIASES: dict[str, tuple[str, ...]] = {
+    "Parent Business Goal": ("Parent Business Goal", "Business Goal"),
 }
 
 # Strings that count as "the agent left the placeholder in" — case-insensitive.
@@ -97,6 +105,17 @@ def _strip_html_comments(text: str) -> str:
 def _normalize(text: str) -> str:
     # Normalize CRLF and strip BOM.
     return text.replace("\r\n", "\n").replace("\r", "\n").lstrip("﻿")
+
+
+def _strip_md_emphasis(text: str) -> str:
+    """Strip markdown bold/italic markers (** * __ _) so field-name extraction
+    works on lines like `**Business Goal:** value` or `_Field_: value`.
+
+    Removes only the markers themselves, preserving the visible text. The
+    intent is form-tolerance, not content rewriting — markers are widely used
+    by humans to emphasize required fields, and the lint should still match.
+    """
+    return re.sub(r"\*{1,3}|_{1,3}", "", text)
 
 
 def _split_sections(body: str) -> dict[str, str]:
@@ -164,7 +183,8 @@ def _extract_field(section_body: str, field_name: str) -> str | None:
     )
     lines = section_body.split("\n")
     for i, line in enumerate(lines):
-        m = field_re.match(line)
+        # Strip markdown emphasis so `**Field:** value` matches as `Field: value`.
+        m = field_re.match(_strip_md_emphasis(line))
         if not m:
             continue
         value = m.group(1).rstrip()
@@ -222,14 +242,44 @@ def _root_cause_not_incident(section_body: str) -> str | None:
     return stripped
 
 
+def _has_filled_table_row(section_body: str) -> bool:
+    """A 'filled' Ledger table row has >=3 non-empty cells (excluding header/separator).
+
+    The PR template ships the Ledger as a markdown table; agents that fill the
+    rows with evidence (commands, exit codes, URLs, commit SHAs) satisfy the
+    substantive 'recorded evidence' requirement without needing - [x] bullets.
+    """
+    for line in section_body.split("\n"):
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            continue
+        # Trim outer pipes, then split on inner pipes.
+        inner = stripped.strip("|")
+        cells = [c.strip() for c in inner.split("|")]
+        # Skip separator rows (cells are dashes or empty).
+        if all(re.fullmatch(r"-+", c) or not c for c in cells):
+            continue
+        non_empty = [c for c in cells if c]
+        if len(non_empty) >= 3:
+            return True
+    return False
+
+
 def _validate_ledger(section_body: str, result: LintResult) -> None:
-    """The Verification Evidence Ledger needs at least one - [x] and one https:// URL."""
-    # Strip code-fenced backticks for the URL search so escaped URLs still count.
-    has_checked = bool(re.search(r"^\s*[-*]\s*\[[xX]\]\s+\S", section_body, re.MULTILINE))
+    """The Verification Evidence Ledger needs recorded evidence:
+    - a bullet checked item `- [x] ...` (bullet style), OR
+    - a substantively-filled table row (>=3 non-empty cells; template style).
+    AND at least one https:// URL anywhere in the section.
+    """
+    has_bullet_checked = bool(
+        re.search(r"^\s*[-*]\s*\[[xX]\]\s+\S", section_body, re.MULTILINE)
+    )
+    has_filled_row = _has_filled_table_row(section_body)
     has_url = bool(re.search(r"https?://\S+", section_body))
-    if not has_checked:
+    if not (has_bullet_checked or has_filled_row):
         result.add(
-            "## Verification Evidence Ledger has no checked items (need at least one `- [x] ...`)"
+            "## Verification Evidence Ledger has no recorded evidence "
+            "(need either `- [x] ...` bullet OR a filled table row with >=3 non-empty cells)"
         )
     if not has_url:
         result.add(
@@ -256,9 +306,15 @@ def lint(body: str) -> LintResult:
         na_reason = _section_na_escape(section_body, SECTION_LINKED_WORK)
         if na_reason is None:
             for fname in REQUIRED_FIELDS[SECTION_LINKED_WORK]:
-                value = _extract_field(section_body, fname)
+                aliases = FIELD_ALIASES.get(fname, (fname,))
+                value = None
+                for alias in aliases:
+                    value = _extract_field(section_body, alias)
+                    if value is not None:
+                        break
                 if value is None:
-                    result.add(f"## {SECTION_LINKED_WORK} missing field: `{fname}:`")
+                    label = "` or `".join(f"{a}:" for a in aliases)
+                    result.add(f"## {SECTION_LINKED_WORK} missing field: `{label}`")
                 elif _is_placeholder(value):
                     result.add(
                         f"## {SECTION_LINKED_WORK} field `{fname}:` is empty or a placeholder "
