@@ -97,12 +97,28 @@ _DOUBAO_FLOW_MARKDOWN_BODY_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
-_DOUBAO_PERSISTENCE_STRONG_UNAUTH_MARKERS = (
-    "\u0037\u5929\u514d\u767b\u5f55",  # 7天免登录
-    "\u767b\u5f55\u4ee5\u89e3\u9501\u66f4\u591a\u529f\u80fd",
-    "\u4f1a\u8bdd\u8fc7\u671f\uff0c\u8bf7\u91cd\u65b0\u767b\u5f55",
+# Refs #963 production evidence (run 25951168887, query 184406 at
+# 2026-05-16 03:04:24): Doubao overlays a "登录以解锁更多功能" /
+# "7天免登录" promo on successful answers as a tier-up push -
+# the page still carries the promo while ``.flow-markdown-body`` holds the
+# real 1866-char response. Treating these visible promo strings as hard
+# logout evidence rejected real answers. Split the strong-unauth set so
+# substantive answers can override promo overlays while hard logout
+# signals (session expired, from_logout=1, the persistent login-btn-header
+# chrome) still block persistence regardless of any incidental answer-like
+# text on the page.
+_DOUBAO_PERSISTENCE_SOFT_UNAUTH_MARKERS = (
+    "\u0037\u5929\u514d\u767b\u5f55",  # 7天免登录 (promo banner)
+    "\u767b\u5f55\u4ee5\u89e3\u9501\u66f4\u591a\u529f\u80fd",  # promo banner
+)
+_DOUBAO_PERSISTENCE_HARD_UNAUTH_MARKERS = (
+    "\u4f1a\u8bdd\u8fc7\u671f\uff0c\u8bf7\u91cd\u65b0\u767b\u5f55",  # 会话过期
     "from_logout=1",
     "login-btn-header",
+)
+_DOUBAO_PERSISTENCE_STRONG_UNAUTH_MARKERS = (
+    _DOUBAO_PERSISTENCE_SOFT_UNAUTH_MARKERS
+    + _DOUBAO_PERSISTENCE_HARD_UNAUTH_MARKERS
 )
 
 _DOUBAO_PERSISTENCE_STATE_LOGOUT_RE = re.compile(
@@ -219,16 +235,72 @@ def doubao_persistence_auth_reason(
     """Return a Doubao auth failure that must block DONE persistence."""
     if (llm_name or "").lower() != "doubao":
         return None
+    # Refs #963 production evidence (run 25951168887, query 184406 retry at
+    # 2026-05-16 03:04:24): after a successful auto_login + requeue, Doubao
+    # streamed a real 1866-char answer into ``.flow-markdown-body``, the
+    # scraper extracted it cleanly, and then this function rejected the
+    # result because the page also carried the promo banner string
+    # "登录以解锁更多功能". The previous gate let strong-unauth markers win
+    # before either the AUTH_OK marker or the substantive-answer probe
+    # could, throwing away the valid response and re-marking the account
+    # expired. That cycle is what production tagged as
+    # ``doubao_post_reauth_doubao_not_logged_in``.
+    #
+    # Gate order is now: hard logout (state-level + visible-dialog +
+    # session-expired) → AUTH_OK_MARKER → substantive answer → soft promo
+    # banners. Soft markers ("7天免登录" / "登录以解锁更多功能") are
+    # tier-up promos Doubao overlays even on authenticated answers, so a
+    # substantive ``.flow-markdown-body`` body wins over them. Hard
+    # signals (``is_login:false`` / ``error_code:13`` / ``user_id:0`` /
+    # ``from_logout=1`` / ``login-btn-header`` chrome / visible login
+    # dialog) still block persistence regardless of any answer-like text
+    # on the page, because they prove the session is actually logged out.
+    hard_auth_reason = _doubao_hard_persistence_auth_reason(
+        raw_text, response_html
+    )
+    if hard_auth_reason:
+        return hard_auth_reason
+    if response_html and DOUBAO_AUTH_OK_MARKER in response_html:
+        return None
+    if _doubao_has_substantive_answer(raw_text, response_html):
+        return None
     strong_auth_reason = _doubao_strong_persistence_auth_reason(
         raw_text, response_html
     )
     if strong_auth_reason:
         return strong_auth_reason
-    if response_html and DOUBAO_AUTH_OK_MARKER in response_html:
-        return None
-    if _doubao_has_substantive_answer(raw_text, response_html):
-        return None
     return doubao_auth_state_reason(raw_text, response_html)
+
+
+def _doubao_hard_persistence_auth_reason(
+    text: str | None,
+    html: str | None = None,
+) -> str | None:
+    """Hard logout evidence that overrides even substantive answers.
+
+    Hard signals prove the session is in a logged-out state regardless of
+    any answer-like text on the page: JS state markers (``is_login:false``,
+    ``error_code:13``, ``user_id:0``), the persistent header chrome
+    (``login-btn-header``, ``from_logout=1``, ``会话过期，请重新登录``),
+    and an actually-visible login dialog. Soft promo banners
+    (``7天免登录`` / ``登录以解锁更多功能``) are intentionally NOT in this
+    set — they coexist with real answers as tier-up pushes and would
+    otherwise reject legitimate responses.
+    """
+    visible_html = _strip_hidden_doubao_auth_chrome(html)
+    combined = "\n".join(part for part in (text or "", visible_html) if part)
+    if not combined.strip():
+        return "doubao_auth_state_missing"
+    if any(
+        marker in combined
+        for marker in _DOUBAO_PERSISTENCE_HARD_UNAUTH_MARKERS
+    ):
+        return "doubao_not_logged_in"
+    if _DOUBAO_PERSISTENCE_STATE_LOGOUT_RE.search(combined):
+        return "doubao_not_logged_in"
+    if _doubao_has_visible_login_dialog(combined):
+        return "doubao_not_logged_in"
+    return None
 
 
 def _doubao_has_substantive_answer(

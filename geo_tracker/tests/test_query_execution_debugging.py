@@ -937,6 +937,101 @@ def test_doubao_persistence_gate_allows_executor_auth_ok_marker():
     assert doubao_persistence_auth_reason("doubao", raw_text, response_html) is None
 
 
+# Refs #963 production evidence (server-diagnostics run 25951168887,
+# query 184406 retry at 2026-05-16 03:04:24): after auto_login succeeded
+# for Doubao account 39 and the requeued query streamed a real 1866-char
+# answer into .flow-markdown-body, the persistence gate threw the answer
+# away because the same page carried the promo banner "登录以解锁更多功能".
+# Production retry_reason came back as
+# ``doubao_post_reauth_doubao_not_logged_in:0`` and the account was
+# immediately marked expired again. The promo is a tier-up push Doubao
+# overlays on authenticated responses, not a hard logout signal — a
+# substantive ``.flow-markdown-body`` body proves authentication and
+# must win over the overlay. Hard logout signals (``is_login:false``,
+# ``error_code:13``, ``user_id:0``, ``from_logout=1``,
+# ``login-btn-header`` chrome, visible login dialog) are still allowed
+# to override the answer, because they prove the session is actually
+# logged out.
+def test_doubao_persistence_gate_keeps_answer_over_soft_promo_banner():
+    """A real ``.flow-markdown-body`` answer wins over the soft promo overlay."""
+    from geo_tracker.agent.response_validation import doubao_persistence_auth_reason
+
+    # Reproduces the exact production page state from query 184406:
+    # a substantive answer body AND the "登录以解锁更多功能" promo dialog.
+    raw_text = (
+        "选企业级 AI 数据脱敏工具的核心注意要点："
+        "1. 数据安全：脱敏过程必须在本地完成，避免敏感数据外泄。"
+        "2. 准确性：需要在不同业务场景下验证脱敏准确率。"
+        "3. 可逆性：根据业务需求选择支持/不支持反脱敏的模式。"
+    )
+    response_html = (
+        "<main><div class='flow-markdown-body'>"
+        + raw_text
+        + "</div></main>"
+        "<div class='promo-overlay'>登录以解锁更多功能</div>"
+        "<div class='promo-overlay'>7天免登录</div>"
+    )
+
+    assert doubao_persistence_auth_reason("doubao", raw_text, response_html) is None
+
+
+def test_doubao_persistence_gate_rejects_promo_banner_without_answer():
+    """Without a substantive answer, the soft promo still flags logout."""
+    from geo_tracker.agent.response_validation import doubao_persistence_auth_reason
+
+    # No flow-markdown-body content; just the promo overlay text.
+    raw_text = ""
+    response_html = (
+        "<div class='promo-overlay'>"
+        "登录以解锁更多功能"
+        "</div>"
+    )
+
+    assert (
+        doubao_persistence_auth_reason("doubao", raw_text, response_html)
+        == "doubao_not_logged_in"
+    )
+
+
+def test_doubao_persistence_gate_hard_state_overrides_substantive_answer():
+    """``is_login:false`` JS state must still reject even with a real answer."""
+    from geo_tracker.agent.response_validation import doubao_persistence_auth_reason
+
+    raw_text = "bestCoffer answer-like content with enough characters to count"
+    response_html = (
+        "<main><div class='flow-markdown-body'>"
+        + raw_text
+        + "</div></main>"
+        "<script>window.__state__={is_login:false,user_id:0}</script>"
+    )
+
+    assert (
+        doubao_persistence_auth_reason("doubao", raw_text, response_html)
+        == "doubao_not_logged_in"
+    )
+
+
+def test_doubao_persistence_gate_visible_login_dialog_overrides_answer():
+    """A visible login dialog must still reject even with a real answer."""
+    from geo_tracker.agent.response_validation import doubao_persistence_auth_reason
+
+    raw_text = "bestCoffer answer-like content with enough characters to count"
+    response_html = (
+        "<main><div class='flow-markdown-body'>"
+        + raw_text
+        + "</div></main>"
+        "<div role='dialog'>"
+        "  <input placeholder='手机号' />"
+        "  <button class='login-button'>登录</button>"
+        "</div>"
+    )
+
+    assert (
+        doubao_persistence_auth_reason("doubao", raw_text, response_html)
+        == "doubao_not_logged_in"
+    )
+
+
 @pytest.mark.asyncio
 async def test_doubao_no_response_login_dialog_sets_auth_failure_reason(monkeypatch):
     _install_fake_playwright(monkeypatch)
