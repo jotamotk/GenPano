@@ -1,0 +1,84 @@
+name: PR Body Lint
+
+# Agent-agnostic enforcement: rejects PRs whose body skips the required sections
+# defined in AGENTS.md (Linked Work, Root Cause Gate, Verification Evidence
+# Ledger). Branch protection on `main` should require this check.
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  lint-body:
+    name: Lint PR Body
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Write PR body to file
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          # Write the raw body to a file (avoids shell expansion of backticks etc.).
+          mkdir -p .lint-tmp
+          printf '%s' "$PR_BODY" > .lint-tmp/pr_body.md
+          echo "Body length: $(wc -c < .lint-tmp/pr_body.md) bytes"
+
+      - name: Run PR body lint
+        id: lint
+        shell: bash
+        run: |
+          set +e
+          python3 .github/scripts/lint_pr_body.py --body-file .lint-tmp/pr_body.md \
+            > .lint-tmp/lint_output.txt 2>&1
+          EXIT_CODE=$?
+          set -e
+          echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+          echo "---- lint output ----"
+          cat .lint-tmp/lint_output.txt
+          echo "---- end lint output ----"
+          # Always upload artifact path; conditional comment posted below.
+
+      - name: Comment on PR if lint failed
+        if: ${{ steps.lint.outputs.exit_code != '0' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          {
+            echo "## PR body lint failed"
+            echo ""
+            echo "The PR body does not satisfy the contract in [AGENTS.md](../blob/main/AGENTS.md)."
+            echo "CI is blocking merge until the following are fixed:"
+            echo ""
+            echo '```'
+            cat .lint-tmp/lint_output.txt
+            echo '```'
+            echo ""
+            echo "**Required sections** (must be present as \`## \` headers):"
+            echo "- \`## Linked Work\` with \`Business Goal:\` and \`Final Success Evidence:\` filled in"
+            echo "- \`## Root Cause Gate\` with \`Direct trigger:\`, \`Underlying product/system root cause:\`, \`Evidence proving it:\` — or \`Classification: not an incident - <reason>\` to mark this as a non-incident PR"
+            echo "- \`## Verification Evidence Ledger\` with at least one \`- [x]\` item and one https:// link"
+            echo ""
+            echo "Edit the PR description and CI will re-run automatically."
+          } > .lint-tmp/comment.md
+          gh pr comment "$PR_NUMBER" --repo "$REPO" --body-file .lint-tmp/comment.md
+
+      - name: Fail the workflow if lint failed
+        if: ${{ steps.lint.outputs.exit_code != '0' }}
+        run: |
+          echo "PR body lint failed — see the comment posted to this PR."
+          exit 1

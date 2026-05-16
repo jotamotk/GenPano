@@ -1,8 +1,18 @@
 FROM python:3.11-slim
 
 # 安装系统依赖（Playwright Chromium + Camoufox Firefox 共用）
+# Refs #963: ``tzdata`` is required by Firefox / glibc to resolve named
+# timezones like "Asia/Shanghai" — without it, JS
+# ``Intl.DateTimeFormat().resolvedOptions().timeZone`` falls back to
+# "UTC" regardless of any ``TZ`` env we pass to the Camoufox subprocess.
+# Doubao's risk-control reads JS timezone and compares against the
+# exit-IP geo; a Chinese qg residential IP paired with a UTC JS timezone
+# is the canonical "you're using a proxy" signal, which gets us into
+# the silent-rejection state where the page never leaves /home and we
+# end up with ``doubao_homepage_content`` failures even though qg +
+# block_webrtc are both in place.
 RUN apt-get update && apt-get install -y \
-    wget curl gnupg ca-certificates \
+    wget curl gnupg ca-certificates tzdata \
     libglib2.0-0 libnss3 libnspr4 libdbus-1-3 \
     libatk1.0-0 libatk-bridge2.0-0 libcups2 \
     libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 \

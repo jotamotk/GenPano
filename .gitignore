@@ -13,7 +13,9 @@ venv/
 .claude/
 
 # Agent/session artifacts
-CLAUDE.md
+# Note: top-level CLAUDE.md is a tracked pointer file to AGENTS.md (the canonical
+# contract). Session/scratch CLAUDE notes belong elsewhere (under docs/ or in
+# .claude/). Do NOT re-ignore CLAUDE.md without also updating AGENTS.md guidance.
 docs/ADMIN_CLAUDE_CODE_SESSIONS.md
 docs/CLAUDE_CODE_SESSIONS*.md
 docs/SESSION_*.md

@@ -1,20 +1,25 @@
 /*
- * DiagnosticsPage — PRD §4.7.0-a / §4.8.2 / §4.8.6
+ * DiagnosticsPage — PRD §4.7.0-a / §4.8.2 / §4.8.6 / §4.8.23 (AC-4.8-23)
  * ───────────────────────────────────────────────────
  * 全部诊断的列表视图. 每条诊断使用 <DiagnosticCard /> 渲染,
  * 严格遵守 洞察 Stack (L1 观察 / L2 解释 / L3 方向) × 三读者视角.
  *
  * Filters: severity (P0/P1/P2/P3) + type (brand/product/industry)
  * 不存在 "执行剧本" / "优化步骤" 字段, 任何剧本式建议属付费咨询业务边界 (PRD §4.8.6).
+ *
+ * Live vs mock semantics (AC-4.8-23, audit #1044 F4-2):
+ *   - 真实项目 (liveProjectId 有效): 始终用 live data, 即便为空也渲染显式空态;
+ *     绝不静默 fallback 到 mock 数据.
+ *   - 无真实项目 (demo / 未登录): 用 mock 数据, 顶部显示 "示例" 徽章.
  */
 import { useMemo, useState } from 'react';
-import { Card } from '../components/ui';
+import { Badge, Card } from '../components/ui';
 import { DiagnosticCard, LeadFormModal } from '../components/diagnostics';
 import { DIAGNOSTICS } from '../data/mock';
 import { useProject } from '../contexts/ProjectContext';
 import { useProjects } from '../hooks/useProjects';
 import { useDiagnostics, toMockShape } from '../hooks/useDiagnostics';
-import { resolveLiveProjectId } from '../lib/liveProject';
+import { isLiveProjectId, resolveLiveProjectId } from '../lib/liveProject';
 
 const SEVERITY_META = [
   { id: 'P0', label: '紧急', borderClass: 'border-l-red-500', textClass: 'text-themed-danger' },
@@ -37,14 +42,22 @@ export default function DiagnosticsPage() {
   const [leadDiagId, setLeadDiagId] = useState(null);
   const { activeProject } = useProject();
 
-  // Live data: when the user has a real backend project, prefer those
-  // diagnostics. Mock fallback when project list is empty.
+  // Live vs mock — see AC-4.8-23 / audit #1044 F4-2.
+  //   • If liveProjectId is a real UUID → always use live data (even when
+  //     empty); render distinct loading / error / empty states.
+  //   • Else (demo / pre-auth) → mock with explicit "示例" badge.
   const { data: liveProjects } = useProjects();
   const liveProjectId = resolveLiveProjectId(liveProjects, activeProject);
-  const { data: liveDiag } = useDiagnostics(liveProjectId, { limit: 200 });
+  const hasLiveProject = isLiveProjectId(liveProjectId);
+  const {
+    data: liveDiag,
+    isLoading: liveLoading,
+    isError: liveError,
+  } = useDiagnostics(liveProjectId, { limit: 200 });
   const liveItems = liveDiag?.items ?? [];
-  const useLive = liveItems.length > 0;
-  const allItems: any[] = useLive ? liveItems.map(toMockShape) : DIAGNOSTICS;
+  const allItems: any[] = hasLiveProject
+    ? liveItems.map(toMockShape)
+    : DIAGNOSTICS;
 
   const openLeadForm = (diagId) => {
     setLeadDiagId(diagId);
@@ -79,6 +92,14 @@ export default function DiagnosticsPage() {
 
   return (
     <div className="space-y-6">
+      {!hasLiveProject && (
+        <div className="flex items-center gap-2 text-[11px] text-themed-muted">
+          <Badge variant="default" size="sm">示例</Badge>
+          <span>
+            以下为示例诊断,创建项目并完成首次诊断扫描后,真实数据将出现在此处。
+          </span>
+        </div>
+      )}
       {/* Severity Summary Bar */}
       <div className="grid grid-cols-4 gap-4">
         {SEVERITY_META.map((item) => {
@@ -155,11 +176,33 @@ export default function DiagnosticsPage() {
         )}
       </div>
 
-      {/* Diagnostic Cards */}
+      {/* Diagnostic Cards. Live-data states (loading / error / empty)
+          are surfaced explicitly so a real project never shows mock
+          (AC-4.8-23, audit #1044 F4-2). */}
       <div className="space-y-3">
-        {filtered.length === 0 ? (
+        {hasLiveProject && liveLoading ? (
           <Card>
-            <div className="text-center py-8 text-themed-muted text-sm">当前筛选条件下无诊断</div>
+            <div className="text-center py-8 text-themed-muted text-sm">
+              加载诊断…
+            </div>
+          </Card>
+        ) : hasLiveProject && liveError ? (
+          <Card>
+            <div className="text-center py-8 text-themed-muted text-sm">
+              诊断加载失败,请稍后重试。
+            </div>
+          </Card>
+        ) : hasLiveProject && allItems.length === 0 ? (
+          <Card>
+            <div className="text-center py-8 text-themed-muted text-sm">
+              本项目暂无诊断。系统每日自动运行规则,有结果后将在此显示。
+            </div>
+          </Card>
+        ) : filtered.length === 0 ? (
+          <Card>
+            <div className="text-center py-8 text-themed-muted text-sm">
+              当前筛选条件下无诊断
+            </div>
           </Card>
         ) : (
           filtered.map((diag) => (

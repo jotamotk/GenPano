@@ -37,8 +37,11 @@ class Alert(Base):
             "scope IN ('user', 'operator')",
             name="ck_alerts_scope",
         ),
+        # PRD §4.8.7: 'snoozed' is a deferred-not-terminal state distinct
+        # from 'ignored'. When `snoozed_until > now()` the alert is hidden
+        # from unread counts; on expiry it auto-returns to 'unread'.
         CheckConstraint(
-            "status IN ('unread', 'read', 'ignored', 'resolved')",
+            "status IN ('unread', 'read', 'ignored', 'resolved', 'snoozed')",
             name="ck_alerts_status",
         ),
     )
@@ -63,6 +66,7 @@ class Alert(Base):
     read_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     read_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    snoozed_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     assigned_to: Mapped[str | None] = mapped_column(String(36), nullable=True)
     runbook_url: Mapped[str | None] = mapped_column(Text, nullable=True)
 

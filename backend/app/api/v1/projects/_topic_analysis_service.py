@@ -234,125 +234,23 @@ def _empty_monitoring(
 
 
 async def _count_brand_topics_total(session: AsyncSession, brand_id: int) -> int:
-    """Active topic count for a brand (user-facing analytics scope).
+    """Raw topic count for a brand (admin-surface contract).
 
-    Scope mirrors `topic_analysis/queries.py:_fact_rows` (active + non-archived)
-    so the topic count, list, and downstream evidence stay in sync. Archived
-    topics never produce fact rows, so including them here would cause ghost
-    zero-everything rows in the user-facing list (#1029, follow-up to #1034).
+    Mirrors `backend/app/admin/brand_management/db.py:632` exactly — no status
+    filter — so the app-surface "Total topics" subline equals the number
+    operators see in the admin Brand Management page (#985 D4.A, Refs #983).
     """
     try:
-        cols = await legacy_table_columns(session, "topics")
-    except Exception:
-        return 0
-    if not cols or "id" not in cols or "brand_id" not in cols:
-        return 0
-    where_clauses = ["brand_id = :brand_id"]
-    if "status" in cols:
-        where_clauses.append("COALESCE(status, 'active') <> 'archived'")
-    sql = text(f"SELECT COUNT(*) AS topic_count FROM topics WHERE {' AND '.join(where_clauses)}")
-    try:
-        result = await session.execute(sql, {"brand_id": brand_id})
+        result = await session.execute(
+            text("SELECT COUNT(*) AS topic_count FROM topics WHERE brand_id = :brand_id"),
+            {"brand_id": brand_id},
+        )
         row = result.mappings().first()
     except Exception:
         return 0
     if row is None:
         return 0
     return int(row.get("topic_count") or 0)
-
-
-def _merge_missing_brand_topics(
-    topics: list[TopicMonitoringRow],
-    listing: list[dict[str, Any]],
-    *,
-    associated_brand: str | None,
-) -> list[TopicMonitoringRow]:
-    """Append brand topics without evidence so the user-facing list matches
-    admin (#1029). Topics already present (with evidence) keep their metrics
-    and position; missing topics appear after them with zero-valued metrics.
-    """
-    if not listing:
-        return topics
-    present = {item.topic_id for item in topics}
-    merged: list[TopicMonitoringRow] = list(topics)
-    for row in listing:
-        tid = _as_int(row.get("topic_id"))
-        if tid is None or tid in present:
-            continue
-        present.add(tid)
-        merged.append(
-            TopicMonitoringRow(
-                topic_id=tid,
-                topic_name=row.get("topic_name") or f"topic-{tid}",
-                dimension=row.get("topic_dimension"),
-                associated_brand=associated_brand,
-                status=row.get("topic_status"),
-                prompt_count=0,
-                query_count=0,
-                response_count=0,
-                success_rate=None,
-                engine_coverage=[],
-                mention_rate=None,
-                visibility_rate=None,
-                sov=None,
-                avg_rank=None,
-                avg_geo_score=None,
-                sentiment_distribution={"positive": 0, "neutral": 0, "negative": 0},
-                citation_count=0,
-                citation_rate=None,
-                last_collected=None,
-            )
-        )
-    return merged
-
-
-async def _fetch_brand_topics_listing(session: AsyncSession, brand_id: int) -> list[dict[str, Any]]:
-    """Active topic rows for a brand (id, text, category, status).
-
-    Scope mirrors `topic_analysis/queries.py:_fact_rows` (active + non-archived)
-    so the topic count, list, and downstream evidence stay in sync. Archived
-    topics never produce fact rows, so including them here would cause ghost
-    zero-everything rows in the user-facing list (#1029, follow-up to #1034).
-    Returns ``[]`` when the legacy ``topics`` table is missing or the query
-    fails.
-    """
-    try:
-        cols = await legacy_table_columns(session, "topics")
-    except Exception:
-        return []
-    if not cols or "id" not in cols or "brand_id" not in cols:
-        return []
-    text_expr = _topic_name_expr(cols)
-    category_expr = "category" if "category" in cols else "NULL"
-    status_expr = "status" if "status" in cols else "NULL"
-    created_expr = "created_at" if "created_at" in cols else "NULL"
-    order_clause = (
-        "ORDER BY created_at DESC NULLS LAST, id DESC"
-        if "created_at" in cols
-        else "ORDER BY id DESC"
-    )
-    where_clauses = ["t.brand_id = :brand_id"]
-    if "status" in cols:
-        where_clauses.append("COALESCE(t.status, 'active') <> 'archived'")
-    where_sql = " AND ".join(where_clauses)
-    sql = text(
-        f"""
-        SELECT
-            t.id AS topic_id,
-            {text_expr} AS topic_name,
-            {category_expr} AS topic_dimension,
-            {status_expr} AS topic_status,
-            {created_expr} AS topic_created_at
-        FROM topics t
-        WHERE {where_sql}
-        {order_clause}
-        """
-    )
-    try:
-        rows = (await session.execute(sql, {"brand_id": int(brand_id)})).mappings().all()
-    except Exception:
-        return []
-    return [dict(r) for r in rows]
 
 
 def _topic_aggregates(
@@ -572,32 +470,13 @@ async def get_topic_monitoring(
         return _empty_monitoring(project, brand_id=brand_id)
     rows = await _fact_rows(session, project, filters=filters, brand_id_override=brand_id)
     brand_names = await resolve_brand_names(session, [brand_id])
-    associated_brand = brand_names.get(brand_id)
     topics, summary, intent_matrix = _topic_aggregates(
         rows,
         project=project,
         filters=filters,
-        associated_brand=associated_brand,
+        associated_brand=brand_names.get(brand_id),
     )
     summary.topic_count_total = await _count_brand_topics_total(session, brand_id)
-    # Merge in brand topics without evidence so the list matches admin's count
-    # (#1029). Summary.topic_count stays as the with-evidence count; the list
-    # itself shows every topic so operators can spot coverage gaps.
-    # Only skip the merge for filters that narrow the *topic set* itself
-    # (dimensions/intents/prompt_scope map to topic attributes). Response/query
-    # scope filters (date range, engines, segment, profile) still let
-    # evidence-less topics surface — follow-up to #1034 where the broader
-    # `filters.explicit` gate suppressed the merge on the default page load
-    # (90-day range + all engines preselected).
-    filters_narrow_topic_set = (
-        bool(filters.dimensions) or bool(filters.intents) or bool(filters.prompt_scope)
-    )
-    if not filters_narrow_topic_set:
-        topics = _merge_missing_brand_topics(
-            topics,
-            await _fetch_brand_topics_listing(session, brand_id),
-            associated_brand=associated_brand,
-        )
     state = "ok" if summary.query_count or (topics and not filters.explicit) else "empty"
     out = TopicMonitoringOut(
         project_id=project.id,
