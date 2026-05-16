@@ -104,6 +104,11 @@ async def unread_count(session: AsyncSession, *, user: User) -> dict[str, Any]:
     }
 
 
+_VALID_ALERT_STATUSES: frozenset[str] = frozenset(
+    {"unread", "read", "ignored", "resolved", "snoozed"}
+)
+
+
 async def patch_alert_status(
     session: AsyncSession,
     *,
@@ -115,11 +120,27 @@ async def patch_alert_status(
     """Update an alert's status. Multi-tenant guard: alert.project must be
     owned by user.
 
+    Audit #1044 B3-4: validate new_status against the canonical set
+    BEFORE assigning to the ORM, raising HTTP 422 with a clean message
+    rather than relying on the DB CHECK constraint to throw an opaque
+    integrity error on COMMIT. The router-level Pydantic Literal
+    already filters incoming requests, but internal callers
+    (admin tools, background tasks) bypass that gate — this defensive
+    check covers them too.
+
     When `new_status='snoozed'`, `snoozed_until` MUST be a future
     timestamp — callers should use the `snooze_alert` helper which
     centralizes the duration logic. For all other transitions, leaving
     `snoozed_until` untouched preserves any prior snooze window history.
     """
+    from app.core.errors import validation_error
+
+    if new_status not in _VALID_ALERT_STATUSES:
+        raise validation_error(
+            "status",
+            f"must be one of {sorted(_VALID_ALERT_STATUSES)}",
+        )
+
     user_projects = (
         select(Project.id).where(and_(Project.user_id == user.id, Project.deleted_at.is_(None)))
     ).scalar_subquery()

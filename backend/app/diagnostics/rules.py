@@ -1632,16 +1632,25 @@ class ProductFeatureNegativeRule(BaseRule):
         today = date.today()
         from_d = datetime.combine(today - timedelta(days=29), datetime.min.time())
 
+        # Audit #1044 B1-8: ProductFeatureMention has no brand_id column;
+        # use IN-subquery on brand_name (case/whitespace tolerant) so
+        # we (a) don't cartesian-multiply the count by N BrandMention
+        # rows per brand, and (b) survive brand_name variants like
+        # "OpenAI" vs "Open AI" present in the same brand_id.
+        brand_names_subq = (
+            select(func.lower(func.trim(BrandMention.brand_name)))
+            .where(BrandMention.brand_id == project.primary_brand_id)
+            .distinct()
+        )
         stmt = (
             select(
                 ProductFeatureMention.feature_name,
                 func.count(ProductFeatureMention.id),
                 func.sum(case((ProductFeatureMention.feature_sentiment == "negative", 1), else_=0)),
             )
-            .join(BrandMention, BrandMention.brand_name == ProductFeatureMention.brand_name)
             .where(
                 and_(
-                    BrandMention.brand_id == project.primary_brand_id,
+                    func.lower(func.trim(ProductFeatureMention.brand_name)).in_(brand_names_subq),
                     ProductFeatureMention.created_at >= from_d,
                 )
             )
@@ -2013,9 +2022,18 @@ class ProductRemissionRule(BaseRule):
         prior_from = datetime.combine(today - timedelta(days=59), datetime.min.time())
         prior_to = datetime.combine(today - timedelta(days=30), datetime.min.time())
 
+        # Audit #1044 B1-8: avoid JOIN-by-brand_name cartesian inflation
+        # by using a case/whitespace-tolerant IN-subquery on the brand's
+        # known names from BrandMention.
+        brand_names_subq = (
+            select(func.lower(func.trim(BrandMention.brand_name)))
+            .where(BrandMention.brand_id == project.primary_brand_id)
+            .distinct()
+        )
+
         async def _features(_from: datetime, _to: datetime | None) -> dict[str, int]:
             cond = [
-                BrandMention.brand_id == project.primary_brand_id,
+                func.lower(func.trim(ProductFeatureMention.brand_name)).in_(brand_names_subq),
                 ProductFeatureMention.created_at >= _from,
             ]
             if _to is not None:
@@ -2025,7 +2043,6 @@ class ProductRemissionRule(BaseRule):
                     ProductFeatureMention.feature_name,
                     func.count(ProductFeatureMention.id),
                 )
-                .join(BrandMention, BrandMention.brand_name == ProductFeatureMention.brand_name)
                 .where(and_(*cond))
                 .group_by(ProductFeatureMention.feature_name)
             )
