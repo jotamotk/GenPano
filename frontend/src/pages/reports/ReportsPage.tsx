@@ -33,6 +33,7 @@ import { useLocale } from '../../contexts/LocaleContext';
 import { useProjects } from '../../hooks/useProjects';
 import { isLiveProjectId } from '../../hooks/useReports';
 import { GenerateModal } from './components/GenerateModal';
+import { LiveReportDetail } from './components/LiveReportDetail';
 import { ReportDetail } from './components/ReportDetail';
 import { REPORTS, SECTION_MATRIX, SECTION_ORDER } from './lib/data';
 import { deltaSign, deltaToneClass, panoGrade, panoGradeToneClass } from './lib/exporters';
@@ -44,6 +45,7 @@ export default function ReportsPage() {
   const { t, locale, formatDate, formatBrand, formatNumber, formatDateRange } = useLocale();
   const [activeTab, setActiveTab] = useState('all');
   const [selectedId, setSelectedId] = useState(null);
+  const [selectedLiveId, setSelectedLiveId] = useState<string | null>(null);
   const [showGenerate, setShowGenerate] = useState(false);
   const { data: liveProjects } = useProjects();
   const liveProjectId =
@@ -70,6 +72,16 @@ export default function ReportsPage() {
     [activeTab]
   );
 
+  if (selectedLiveId && isLiveProjectId(liveProjectId)) {
+    return (
+      <LiveReportDetail
+        projectId={liveProjectId as string}
+        reportId={selectedLiveId}
+        onBack={() => setSelectedLiveId(null)}
+      />
+    );
+  }
+
   if (selectedId) {
     const report = REPORTS.find((r) => r.id === selectedId);
     if (!report) return null;
@@ -94,8 +106,9 @@ export default function ReportsPage() {
       </div>
 
       {/* Live banner — real backend reports (Phase RP). Renders null
-          when there's no live project, so demo sessions are unaffected. */}
-      <ReportsLiveBanner />
+          when there's no live project, so demo sessions are unaffected.
+          Clicking 查看 opens LiveReportDetail (audit #1044 F4-3). */}
+      <ReportsLiveBanner onSelect={setSelectedLiveId} />
 
       {/* Tabs */}
       <Tabs tabs={tabs} active={activeTab} onChange={setActiveTab} />
