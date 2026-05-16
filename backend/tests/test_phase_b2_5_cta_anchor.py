@@ -277,13 +277,15 @@ async def test_lead_diagnostic_report_uses_strengthened_cta(db_session, project)
 
 
 @pytest.mark.asyncio
-async def test_on_demand_skips_optional_cta(db_session, project):
-    """on_demand reports mark cta as 'optional' — builder skips
-    'optional' variants, so on_demand has no cta section."""
+async def test_on_demand_includes_cta(db_session, project):
+    """on_demand reports include the CTA section (variant='full') —
+    matches the frontend mock matrix and provides a conversion surface
+    for API/MCP-initiated reports too (Codex review #1061)."""
     from app.reports import build_report
 
     payload = await build_report(db_session, project=project, report_type="on_demand")
     section_types = [s["section_type"] for s in payload["sections"]]
-    assert "cta" not in section_types
-    # anchor_actions IS present (variant='all', not optional)
+    assert "cta" in section_types
     assert "anchor_actions" in section_types
+    cta = next(s for s in payload["sections"] if s["section_type"] == "cta")
+    assert cta["variant"] == "full"

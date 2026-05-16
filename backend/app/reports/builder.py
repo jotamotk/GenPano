@@ -44,7 +44,10 @@ SECTION_MATRIX: dict[str, dict[str, str]] = {
         "competitor_comparison": "optional",
         "diagnostic_summary": "full",
         "anchor_actions": "all",
-        "cta": "optional",
+        # Codex #1061 review: FE mock matrix has on_demand.cta=full; the
+        # consulting CTA is part of the spec's conversion surface for
+        # API/MCP-generated on-demand reports too.
+        "cta": "full",
     },
     # lead_diagnostic uses dedicated lead_view; full SECTION_MATRIX bypassed
     "lead_diagnostic": {
