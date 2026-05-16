@@ -85,6 +85,7 @@ from app.api.v1.projects.contracts.rollups import (
     _rollup_pano_geo,
     _rollup_sentiment,
     _rollup_sov,
+    _rollup_topic_product,
 )
 
 
@@ -517,25 +518,22 @@ async def _first_class_analyzer_fact_rollup(
     return metric_evidence, counts, reason_codes
 
 
-async def _analyzer_fact_rollup(
+async def _load_in_scope_packages(
     session: AsyncSession,
     *,
     brand_id: int,
     from_date: date,
     to_date: date,
     target_response_ids: set[int],
-) -> tuple[dict[str, Any], dict[str, int], list[str]]:
+) -> list[dict[str, Any]]:
+    """Fetch analyzer fact packages for in-scope responses.
+
+    Shared by the first-class and legacy rollup paths so both can surface
+    package-derived evidence (e.g. `topic_product`, issue #1039) without
+    duplicating the filter/scope logic.
+    """
     if not target_response_ids:
-        return {}, {}, []
-    first_class = await _first_class_analyzer_fact_rollup(
-        session,
-        brand_id=brand_id,
-        from_date=from_date,
-        to_date=to_date,
-        target_response_ids=target_response_ids,
-    )
-    if first_class[0]:
-        return first_class
+        return []
     rows = (
         await session.execute(
             select(ResponseAnalysis.raw_analysis_json).where(
@@ -560,6 +558,56 @@ async def _analyzer_fact_rollup(
         if not _package_date_in_window(package, from_date, to_date):
             continue
         packages.append(package)
+    return packages
+
+
+async def _analyzer_fact_rollup(
+    session: AsyncSession,
+    *,
+    brand_id: int,
+    from_date: date,
+    to_date: date,
+    target_response_ids: set[int],
+) -> tuple[dict[str, Any], dict[str, int], list[str]]:
+    if not target_response_ids:
+        return {}, {}, []
+    first_class = await _first_class_analyzer_fact_rollup(
+        session,
+        brand_id=brand_id,
+        from_date=from_date,
+        to_date=to_date,
+        target_response_ids=target_response_ids,
+    )
+    packages = await _load_in_scope_packages(
+        session,
+        brand_id=brand_id,
+        from_date=from_date,
+        to_date=to_date,
+        target_response_ids=target_response_ids,
+    )
+    if first_class[0]:
+        # Issue #1039: the SQL-driven first-class rollup does not have a
+        # native `topic_product` source yet, so surface it from the package
+        # payload when available. Without this entry the frontend product
+        # gate (`canUseMetricEvidence(data, 'product')`) keeps the products
+        # page empty.
+        metric_evidence, counts, reason_codes = first_class
+        topic_product_evidence = _rollup_topic_product(packages) if packages else None
+        if topic_product_evidence is not None:
+            metric_evidence = {**metric_evidence, "topic_product": topic_product_evidence}
+            counts = {
+                **counts,
+                "analyzer_topic_chain_count": int(
+                    topic_product_evidence.get("topic_chain_count") or 0
+                ),
+                "analyzer_product_fact_count": int(
+                    topic_product_evidence.get("product_fact_count") or 0
+                ),
+            }
+            reason_codes = _unique(
+                list(reason_codes) + list(topic_product_evidence.get("reason_codes") or [])
+            )
+        return metric_evidence, counts, reason_codes
 
     if not packages:
         return {}, {}, []
@@ -571,6 +619,12 @@ async def _analyzer_fact_rollup(
         "citation": _rollup_citations(packages),
         "pano_geo": _rollup_pano_geo(packages),
     }
+    # Issue #1039: include `topic_product` only when at least one package
+    # carries it (older v3 / issue_602_v1 fixtures without the key keep
+    # their pre-existing metric-evidence shape unchanged).
+    topic_product_evidence = _rollup_topic_product(packages)
+    if topic_product_evidence is not None:
+        metric_evidence["topic_product"] = topic_product_evidence
     reason_codes = _unique(
         [
             reason
@@ -613,6 +667,13 @@ async def _analyzer_fact_rollup(
             metric_evidence["citation"].get("unresolved_count") or 0
         ),
     }
+    if topic_product_evidence is not None:
+        counts["analyzer_topic_chain_count"] = int(
+            topic_product_evidence.get("topic_chain_count") or 0
+        )
+        counts["analyzer_product_fact_count"] = int(
+            topic_product_evidence.get("product_fact_count") or 0
+        )
     return metric_evidence, counts, reason_codes
 
 
