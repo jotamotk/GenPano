@@ -28,31 +28,39 @@ const SEVERITY_BG: Record<string, string> = {
   P3: '#64748b',
 };
 
-function formatRelative(iso: string): string {
-  try {
-    const d = new Date(iso);
-    const ms = Date.now() - d.getTime();
-    const m = Math.floor(ms / 60_000);
-    if (m < 1) return '刚刚';
-    if (m < 60) return `${m} 分钟前`;
-    const h = Math.floor(m / 60);
-    if (h < 24) return `${h} 小时前`;
-    const dy = Math.floor(h / 24);
-    if (dy < 30) return `${dy} 天前`;
-    return d.toLocaleDateString();
-  } catch {
-    return iso;
-  }
+function useFormatRelative() {
+  const { t } = useLocale();
+  return (iso: string): string => {
+    try {
+      const d = new Date(iso);
+      const ms = Date.now() - d.getTime();
+      const m = Math.floor(ms / 60_000);
+      if (m < 1) return t('alerts.relative_time.just_now');
+      if (m < 60) return t('alerts.relative_time.minutes', { n: m });
+      const h = Math.floor(m / 60);
+      if (h < 24) return t('alerts.relative_time.hours', { n: h });
+      const dy = Math.floor(h / 24);
+      if (dy < 30) return t('alerts.relative_time.days', { n: dy });
+      return d.toLocaleDateString();
+    } catch {
+      return iso;
+    }
+  };
 }
 
-function snoozeLabel(hours: number): string {
-  if (hours < 24) return `${hours} 小时`;
-  const days = Math.round(hours / 24);
-  return `${days} 天`;
+function useSnoozeLabel() {
+  const { t } = useLocale();
+  return (hours: number): string => {
+    if (hours < 24) return t('alerts.snooze.hours', { n: hours });
+    const days = Math.round(hours / 24);
+    return t('alerts.snooze.days', { n: days });
+  };
 }
 
 export default function AlertsPage() {
   const { t } = useLocale();
+  const formatRelative = useFormatRelative();
+  const snoozeLabel = useSnoozeLabel();
   const [statusFilter, setStatusFilter] = useState<'unread' | 'read' | 'all'>('unread');
   const [severityFilter, setSeverityFilter] = useState<string | 'all'>('all');
   const [snoozeOpenFor, setSnoozeOpenFor] = useState<string | null>(null);
@@ -75,13 +83,13 @@ export default function AlertsPage() {
 
   return (
     <div className="max-w-4xl space-y-6">
-      <div className="flex items-start justify-between">
+      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
         <div>
           <h2 className="text-xl font-brand font-bold text-themed-primary">
-            {t('topbar.alerts.aria') || '提醒'}
+            {t('alerts.page_title')}
           </h2>
           <p className="text-sm text-themed-muted mt-1">
-            P0 / P1 诊断 + 监测中断 + 引用归因下滑等关键事件
+            {t('alerts.page_subtitle')}
           </p>
         </div>
         <Button
@@ -90,14 +98,14 @@ export default function AlertsPage() {
           onClick={() => markAll.mutate()}
           disabled={markAll.isPending || items.length === 0}
         >
-          全部标为已读
+          {t('alerts.actions.mark_all_read')}
         </Button>
       </div>
 
       {/* Filter bar */}
       <Card className="p-3" onClick={undefined} style={{}}>
-        <div className="flex items-center gap-3 text-xs">
-          <span className="text-themed-muted">状态</span>
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-xs">
+          <span className="text-themed-muted">{t('alerts.filter.status_label')}</span>
           {(['unread', 'read', 'all'] as const).map((s) => (
             <button
               key={s}
@@ -109,10 +117,14 @@ export default function AlertsPage() {
                   : 'text-themed-muted hover:text-themed-primary hover:bg-themed-subtle'
               }`}
             >
-              {s === 'unread' ? '未读' : s === 'read' ? '已读' : '全部'}
+              {s === 'unread'
+                ? t('alerts.filter.status_unread')
+                : s === 'read'
+                ? t('alerts.filter.status_read')
+                : t('alerts.filter.status_all')}
             </button>
           ))}
-          <span className="ml-4 text-themed-muted">严重度</span>
+          <span className="sm:ml-4 text-themed-muted">{t('alerts.filter.severity_label')}</span>
           {(['all', 'P0', 'P1', 'P2', 'P3'] as const).map((s) => (
             <button
               key={s}
@@ -124,7 +136,7 @@ export default function AlertsPage() {
                   : 'text-themed-muted hover:text-themed-primary hover:bg-themed-subtle'
               }`}
             >
-              {s === 'all' ? '全部' : s}
+              {s === 'all' ? t('alerts.filter.severity_all') : s}
             </button>
           ))}
         </div>
@@ -133,20 +145,20 @@ export default function AlertsPage() {
       {/* List */}
       {isLoading ? (
         <Card className="p-6 text-center text-themed-muted text-sm" onClick={undefined} style={{}}>
-          加载中…
+          {t('alerts.state.loading')}
         </Card>
       ) : isError ? (
         <Card className="p-6 text-center text-themed-muted text-sm" onClick={undefined} style={{}}>
-          加载失败，请稍后再试。
+          {t('alerts.state.error')}
         </Card>
       ) : items.length === 0 ? (
         <Card className="p-12 text-center" onClick={undefined} style={{}}>
-          <div className="text-5xl mb-3">🎉</div>
+          <div className="text-5xl mb-3" aria-hidden>🎉</div>
           <h3 className="text-base font-semibold text-themed-primary mb-1">
-            没有未读提醒
+            {t('alerts.state.empty_title')}
           </h3>
           <p className="text-sm text-themed-muted">
-            P0 / P1 诊断和重要事件会在这里出现。
+            {t('alerts.state.empty_body')}
           </p>
         </Card>
       ) : (
@@ -155,32 +167,36 @@ export default function AlertsPage() {
             {items.map((alert) => (
               <li
                 key={alert.id}
-                className={`flex items-start gap-4 p-4 transition-colors ${
+                className={`flex flex-col sm:flex-row sm:items-start gap-3 sm:gap-4 p-4 transition-colors ${
                   alert.status === 'unread' ? 'bg-themed-accent-subtle/40' : ''
                 }`}
               >
-                <span
-                  className="shrink-0 mt-0.5 px-2 py-0.5 rounded-pill text-xs font-bold text-white tabular-nums"
-                  style={{ background: SEVERITY_BG[alert.severity] || '#64748b' }}
-                >
-                  {alert.severity}
-                </span>
-                <div className="flex-1 min-w-0">
-                  <div className="text-sm font-medium text-themed-primary">
-                    {alert.title}
-                  </div>
-                  {alert.body && (
-                    <div className="text-xs text-themed-muted mt-1 line-clamp-2">
-                      {alert.body}
+                <div className="flex items-start gap-3 sm:contents">
+                  <span
+                    className="shrink-0 mt-0.5 px-2 py-0.5 rounded-pill text-xs font-bold text-white tabular-nums"
+                    style={{ background: SEVERITY_BG[alert.severity] || '#64748b' }}
+                  >
+                    {alert.severity}
+                  </span>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium text-themed-primary">
+                      {alert.title}
                     </div>
-                  )}
-                  <div className="flex items-center gap-3 mt-2 text-[11px] text-themed-faint">
-                    <span>{formatRelative(alert.triggered_at)}</span>
-                    <span>来源: {alert.source}</span>
-                    {alert.brand_id != null && <span>品牌: {alert.brand_id}</span>}
+                    {alert.body && (
+                      <div className="text-xs text-themed-muted mt-1 line-clamp-2">
+                        {alert.body}
+                      </div>
+                    )}
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-2 text-[11px] text-themed-faint">
+                      <span>{formatRelative(alert.triggered_at)}</span>
+                      <span>{t('alerts.meta.source_label')}: {alert.source}</span>
+                      {alert.brand_id != null && (
+                        <span>{t('alerts.meta.brand_label')}: {alert.brand_id}</span>
+                      )}
+                    </div>
                   </div>
                 </div>
-                <div className="flex items-center gap-1 shrink-0 relative">
+                <div className="flex flex-wrap items-center gap-1 shrink-0 relative self-start sm:self-auto">
                   {alert.status === 'unread' && (
                     <button
                       type="button"
@@ -189,7 +205,7 @@ export default function AlertsPage() {
                       }
                       className="text-xs px-2 py-1 rounded-btn text-themed-muted hover:text-themed-primary hover:bg-themed-subtle"
                     >
-                      标为已读
+                      {t('alerts.actions.mark_read')}
                     </button>
                   )}
                   {/* B3-3: Snooze defers a non-urgent alert. Backend hides
@@ -207,7 +223,9 @@ export default function AlertsPage() {
                         className="text-xs px-2 py-1 rounded-btn text-themed-muted hover:text-themed-primary hover:bg-themed-subtle"
                         aria-expanded={snoozeOpenFor === alert.id}
                       >
-                        {alert.status === 'snoozed' ? '稍后再处理 · 已暂缓' : '稍后再处理'}
+                        {alert.status === 'snoozed'
+                          ? t('alerts.actions.snoozed')
+                          : t('alerts.actions.snooze')}
                       </button>
                       {snoozeOpenFor === alert.id && (
                         <div
@@ -215,7 +233,7 @@ export default function AlertsPage() {
                           role="menu"
                         >
                           <div className="text-[10px] text-themed-muted px-2 py-1">
-                            暂缓时长
+                            {t('alerts.snooze.menu_title')}
                           </div>
                           {SNOOZE_PRESET_HOURS.map((h) => (
                             <button
@@ -234,7 +252,7 @@ export default function AlertsPage() {
                   )}
                   {alert.status === 'snoozed' && alert.snoozed_until && (
                     <span className="text-[10px] text-themed-faint px-1">
-                      至 {new Date(alert.snoozed_until).toLocaleString()}
+                      {t('alerts.snooze.until_prefix')} {new Date(alert.snoozed_until).toLocaleString()}
                     </span>
                   )}
                   {alert.status !== 'resolved' && (
@@ -245,7 +263,7 @@ export default function AlertsPage() {
                       }
                       className="text-xs px-2 py-1 rounded-btn text-themed-muted hover:text-themed-primary hover:bg-themed-subtle"
                     >
-                      已解决
+                      {t('alerts.actions.resolve')}
                     </button>
                   )}
                   {alert.status === 'unread' && (
@@ -256,7 +274,7 @@ export default function AlertsPage() {
                       }
                       className="text-xs px-2 py-1 rounded-btn text-themed-muted hover:text-themed-primary hover:bg-themed-subtle"
                     >
-                      忽略
+                      {t('alerts.actions.ignore')}
                     </button>
                   )}
                 </div>

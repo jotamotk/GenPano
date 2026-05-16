@@ -44,6 +44,24 @@ vi.mock('../contexts/ProjectContext', () => ({
   useProject: projectContext.useProject,
 }))
 
+vi.mock('../contexts/LocaleContext', async () => {
+  // Translate via the real zh-CN dict so assertions like /本项目暂无诊断/
+  // continue to match after literals move into messages.js.
+  const real = (await vi.importActual('../i18n/messages.js')) as {
+    MESSAGES: Record<string, unknown>
+    resolveKey: (obj: unknown, key: string) => unknown
+    formatMessage: (template: string, params?: Record<string, unknown>) => string
+  }
+  return {
+    useLocale: () => ({
+      t: (key: string, params?: Record<string, unknown>) => {
+        const v = real.resolveKey(real.MESSAGES['zh-CN'], key)
+        return typeof v === 'string' ? real.formatMessage(v, params) : key
+      },
+    }),
+  }
+})
+
 afterEach(() => {
   vi.clearAllMocks()
 })
@@ -160,5 +178,31 @@ describe('DiagnosticsPage live vs mock semantics (AC-4.8-23 / audit #1044 F4-2)'
     // assert at least one to confirm the mock path engaged.
     const cards = screen.queryAllByTestId('diagnostic-card')
     expect(cards.length).toBeGreaterThan(0)
+  })
+
+  it('renders severity labels (P0=紧急 etc.) from i18n dict, not hardcoded constants', async () => {
+    projectContext.useProject.mockReturnValue({
+      activeProject: { id: liveProjectId },
+    })
+    projectsHook.useProjects.mockReturnValue({ data: [{ id: liveProjectId }] })
+    diagnosticsHooks.useDiagnostics.mockReturnValue({
+      data: {
+        items: [
+          { id: 'd-p0', severity: 'P0', type: 'brand', title: 'a', evidence: {} },
+          { id: 'd-p1', severity: 'P1', type: 'product', title: 'b', evidence: {} },
+        ],
+        total: 2,
+      },
+      isLoading: false,
+      isError: false,
+    })
+
+    await renderPage()
+
+    // Severity summary bar uses i18n keys diagnostics.severity.P0..P3
+    expect(screen.getByText('紧急')).toBeInTheDocument()
+    expect(screen.getByText('重要')).toBeInTheDocument()
+    expect(screen.getByText('关注')).toBeInTheDocument()
+    expect(screen.getByText('信息')).toBeInTheDocument()
   })
 })

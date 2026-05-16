@@ -16,25 +16,17 @@ import { useMemo, useState } from 'react';
 import { Badge, Card } from '../components/ui';
 import { DiagnosticCard, LeadFormModal } from '../components/diagnostics';
 import { DIAGNOSTICS } from '../data/mock';
+import { useLocale } from '../contexts/LocaleContext';
 import { useProject } from '../contexts/ProjectContext';
 import { useProjects } from '../hooks/useProjects';
 import { useDiagnostics, toMockShape } from '../hooks/useDiagnostics';
 import { isLiveProjectId, resolveLiveProjectId } from '../lib/liveProject';
 
-const SEVERITY_META = [
-  { id: 'P0', label: '紧急', borderClass: 'border-l-red-500', textClass: 'text-themed-danger' },
-  { id: 'P1', label: '重要', borderClass: 'border-l-amber-500', textClass: 'text-themed-warning' },
-  { id: 'P2', label: '关注', borderClass: '', textClass: 'text-themed-accent' },
-  { id: 'P3', label: '信息', borderClass: 'border-l-gray-300', textClass: 'text-themed-muted' },
-];
-
-const TYPE_META = [
-  { id: 'brand', label: '品牌' },
-  { id: 'product', label: '产品' },
-  { id: 'industry', label: '行业' },
-];
+const SEVERITY_IDS = ['P0', 'P1', 'P2', 'P3'] as const;
+const TYPE_IDS = ['brand', 'product', 'industry'] as const;
 
 export default function DiagnosticsPage() {
+  const { t } = useLocale();
   const [expandedId, setExpandedId] = useState(null);
   const [filterSev, setFilterSev] = useState('all');
   const [filterType, setFilterType] = useState('all');
@@ -65,17 +57,17 @@ export default function DiagnosticsPage() {
   };
 
   const counts = useMemo(() => {
-    const c = {};
-    SEVERITY_META.forEach((s) => {
-      c[s.id] = allItems.filter((d) => d.severity === s.id).length;
+    const c: Record<string, number> = {};
+    SEVERITY_IDS.forEach((id) => {
+      c[id] = allItems.filter((d) => d.severity === id).length;
     });
     return c;
   }, [allItems]);
 
   const typeCounts = useMemo(() => {
-    const c = {};
-    TYPE_META.forEach((t) => {
-      c[t.id] = allItems.filter((d) => d.type === t.id).length;
+    const c: Record<string, number> = {};
+    TYPE_IDS.forEach((id) => {
+      c[id] = allItems.filter((d) => d.type === id).length;
     });
     return c;
   }, [allItems]);
@@ -94,27 +86,25 @@ export default function DiagnosticsPage() {
     <div className="space-y-6">
       {!hasLiveProject && (
         <div className="flex items-center gap-2 text-[11px] text-themed-muted">
-          <Badge variant="default" size="sm">示例</Badge>
-          <span>
-            以下为示例诊断,创建项目并完成首次诊断扫描后,真实数据将出现在此处。
-          </span>
+          <Badge variant="default" size="sm">{t('diagnostics.example_badge')}</Badge>
+          <span>{t('diagnostics.example_body')}</span>
         </div>
       )}
-      {/* Severity Summary Bar */}
-      <div className="grid grid-cols-4 gap-4">
-        {SEVERITY_META.map((item) => {
-          const isActive = filterSev === item.id;
+      {/* Severity Summary Bar — 2 cols on mobile, 4 on sm+ */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4">
+        {SEVERITY_IDS.map((id) => {
+          const isActive = filterSev === id;
           const accentColor =
-            item.id === 'P0'
+            id === 'P0'
               ? 'var(--color-danger)'
-              : item.id === 'P1'
+              : id === 'P1'
               ? 'var(--color-warning)'
-              : item.id === 'P2'
+              : id === 'P2'
               ? 'var(--color-accent)'
               : 'var(--color-border)';
           return (
             <Card
-              key={item.id}
+              key={id}
               className={`border-l-4 cursor-pointer transition-all ${
                 isActive ? 'ring-2' : 'hover:shadow-md'
               }`}
@@ -122,10 +112,14 @@ export default function DiagnosticsPage() {
                 borderLeftColor: accentColor,
                 ...(isActive ? { boxShadow: `0 0 0 2px ${accentColor}` } : {}),
               }}
-              onClick={() => setFilterSev(isActive ? 'all' : item.id)}
+              onClick={() => setFilterSev(isActive ? 'all' : id)}
             >
-              <div className="text-themed-muted text-xs font-medium mb-2">{item.label}</div>
-              <div className="text-4xl font-bold text-themed-primary tabular-nums">{counts[item.id]}</div>
+              <div className="text-themed-muted text-xs font-medium mb-2">
+                {t(`diagnostics.severity.${id}`)}
+              </div>
+              <div className="text-3xl sm:text-4xl font-bold text-themed-primary tabular-nums">
+                {counts[id]}
+              </div>
             </Card>
           );
         })}
@@ -133,7 +127,7 @@ export default function DiagnosticsPage() {
 
       {/* Type Filter Chips */}
       <div className="flex items-center gap-2 flex-wrap">
-        <span className="text-[11px] text-themed-muted mr-1">类型:</span>
+        <span className="text-[11px] text-themed-muted mr-1">{t('diagnostics.filter.type_label')}:</span>
         <button
           type="button"
           onClick={() => setFilterType('all')}
@@ -143,22 +137,22 @@ export default function DiagnosticsPage() {
               : 'border-themed-card text-themed-muted hover:text-themed-primary'
           }`}
         >
-          全部 ({allItems.length})
+          {t('diagnostics.filter.all')} ({allItems.length})
         </button>
-        {TYPE_META.map((t) => {
-          const active = filterType === t.id;
+        {TYPE_IDS.map((id) => {
+          const active = filterType === id;
           return (
             <button
-              key={t.id}
+              key={id}
               type="button"
-              onClick={() => setFilterType(active ? 'all' : t.id)}
+              onClick={() => setFilterType(active ? 'all' : id)}
               className={`text-[11px] px-2.5 py-1 rounded-full border transition-all ${
                 active
                   ? 'border-themed-strong text-themed-primary bg-themed-badge'
                   : 'border-themed-card text-themed-muted hover:text-themed-primary'
               }`}
             >
-              {t.label} ({typeCounts[t.id] || 0})
+              {t(`diagnostics.type.${id}`)} ({typeCounts[id] || 0})
             </button>
           );
         })}
@@ -171,7 +165,7 @@ export default function DiagnosticsPage() {
             }}
             className="text-[11px] text-themed-accent font-medium hover:opacity-80 ml-auto"
           >
-            清除全部筛选 ×
+            {t('diagnostics.filter.clear_all')}
           </button>
         )}
       </div>
@@ -183,25 +177,25 @@ export default function DiagnosticsPage() {
         {hasLiveProject && liveLoading ? (
           <Card>
             <div className="text-center py-8 text-themed-muted text-sm">
-              加载诊断…
+              {t('diagnostics.state.loading')}
             </div>
           </Card>
         ) : hasLiveProject && liveError ? (
           <Card>
             <div className="text-center py-8 text-themed-muted text-sm">
-              诊断加载失败,请稍后重试。
+              {t('diagnostics.state.error')}
             </div>
           </Card>
         ) : hasLiveProject && allItems.length === 0 ? (
           <Card>
             <div className="text-center py-8 text-themed-muted text-sm">
-              本项目暂无诊断。系统每日自动运行规则,有结果后将在此显示。
+              {t('diagnostics.state.empty_live')}
             </div>
           </Card>
         ) : filtered.length === 0 ? (
           <Card>
             <div className="text-center py-8 text-themed-muted text-sm">
-              当前筛选条件下无诊断
+              {t('diagnostics.state.empty_filtered')}
             </div>
           </Card>
         ) : (
