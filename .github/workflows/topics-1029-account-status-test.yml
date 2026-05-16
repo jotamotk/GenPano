@@ -79,9 +79,11 @@ jobs:
             "\\echo '--- pre-state snapshot ---'" \
             "SELECT id, llm_name, status, last_used_at, cookies_updated_at, consecutive_fails FROM llm_accounts WHERE id IN (20, 16) ORDER BY id;" \
             "\\echo '--- applying UPDATE (guard: status=expired only) ---'" \
-            "UPDATE llm_accounts SET status = 'active', consecutive_fails = 0, cooldown_until = NULL, updated_at = NOW() WHERE id IN (20, 16) AND status = 'expired';" \
+            "-- NOTE: llm_accounts has no updated_at column (only created_at + cookies_updated_at)" \
+            "-- so we drop the updated_at = NOW() from the brief's SQL." \
+            "UPDATE llm_accounts SET status = 'active', consecutive_fails = 0, cooldown_until = NULL WHERE id IN (20, 16) AND status = 'expired';" \
             "\\echo '--- post-state snapshot ---'" \
-            "SELECT id, llm_name, status, consecutive_fails, cooldown_until, updated_at FROM llm_accounts WHERE id IN (20, 16) ORDER BY id;" \
+            "SELECT id, llm_name, status, consecutive_fails, cooldown_until, last_used_at FROM llm_accounts WHERE id IN (20, 16) ORDER BY id;" \
             "COMMIT;" \
             > /tmp/acct_update.sql
           docker cp /tmp/acct_update.sql genpano-postgres-1:/tmp/acct_update.sql 2>&1 || true
