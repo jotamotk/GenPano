@@ -41,7 +41,8 @@ Cursor, Aider, Devin, human contributors) MUST follow these.
 
 Full ruleset: ${PROJECT}/AGENTS.md
 Key sections: "Evidence-First Debugging", "Business Goal And Root Cause
-Gates", "Evidence-First Shipping", "## Enforcement"
+Gates", "Evidence-First Shipping", "Orchestrator And Subagent
+Discipline", "## Enforcement"
 
 == Hard rules ==
 
@@ -69,12 +70,16 @@ Gates", "Evidence-First Shipping", "## Enforcement"
    been "fixed" twice and the user still reports the symptom, REVERT all
    prior fixes before attempting a third attempt. Do not patch forward.
 
-6. ORCHESTRATOR DISCIPLINE. When dispatching a subagent via the Agent tool:
-   - First dispatch for a bug-fix task is INVESTIGATE ONLY (no code).
-   - Subagent prompts MUST include "Read AGENTS.md Evidence-First Debugging
-     section before proceeding" or equivalent rule reference.
-   - Do NOT pre-bake hypotheses into the prompt ("Hypothesis X is correct,
-     fix at file:Y" is an anti-pattern).
+6. ORCHESTRATOR DISCIPLINE. When dispatching a subagent via the Agent tool,
+   follow AGENTS.md \`### Orchestrator And Subagent Discipline\` (canonical).
+   Headline rules:
+   - First dispatch for a bug-fix task is INVESTIGATE ONLY (no Edit/Write).
+   - Subagent prompts MUST contain the literal string "AGENTS.md" plus the
+     relevant section name (e.g. "Read AGENTS.md Evidence-First Debugging").
+   - Do NOT pre-bake hypotheses ("fix at file:line" is an anti-pattern).
+   - Prefer invoking a skill from \`.claude/skills/\` (e.g.
+     \`/dispatch-subagent\`, \`/evidence-first-debug\`) so the rule travels
+     with the call instead of relying on this digest.
 
 == CI enforcement (merged as #1067) ==
 
