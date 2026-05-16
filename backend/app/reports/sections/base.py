@@ -33,7 +33,13 @@ class ReportContext:
 
 @dataclass
 class SectionData:
-    """Output of a single section render."""
+    """Output of a single section render.
+
+    `narrative` (PRD §4.7.3 / B2-4): a paragraph-length prose layer
+    distinct from the stat-heavy `summary`. Populated by
+    `app.reports.narrator.narrate` after `render()` returns; sections
+    themselves should leave it as None.
+    """
 
     section_type: str
     title: str
@@ -42,6 +48,7 @@ class SectionData:
     tables: list[dict[str, Any]] = field(default_factory=list)
     charts: list[dict[str, Any]] = field(default_factory=list)
     chosen_variant: str = "full"
+    narrative: str | None = None
 
 
 class BaseSection:
