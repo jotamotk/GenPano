@@ -8,6 +8,14 @@ body:
     attributes:
       value: |
         Use this template for one deliverable, not one agent role. A task should normally map to one branch and one PR.
+
+        ## 验收原则 / Acceptance Principle
+
+        **只有业务目标达成才能请求人类验收。**
+
+        代码 merge / 部署 / CI 绿 / 单元测试通过 / API 字段非空 / 后端 readback 正常 — **都只是过程指标，不构成验收依据**。验收依据是用户在 live 环境上能肉眼看到业务结果。
+
+        Lead hat 在过程指标全绿后**才能**请求人类验收，且验收成立必须由人类视觉确认；视觉确认前 acceptance matrix 的业务目标层任何一行都不能打勾。
   - type: dropdown
     id: priority
     attributes:
@@ -26,6 +34,24 @@ body:
       label: Priority Rationale
       description: Explain the impact, deadline, blocked work, or why this can safely wait.
       placeholder: "This is P1 because..."
+    validations:
+      required: true
+  - type: textarea
+    id: business-goal
+    attributes:
+      label: 业务目标 / Business Goal
+      description: |
+        State the user-visible outcome that must be true on the live environment for this issue to be considered done.
+        Write it as: "用户在 <URL/route> 做 <action> 后，<visible result>"。
+        This is NOT "API returns X", "tests pass", or "code merged" — those go in the Acceptance Matrix as process indicators.
+
+        Restate the verification principle inline so anyone opening this issue sees it first:
+
+        > 只有业务目标达成才能请求人类验收。代码 merge / 部署 / CI 绿 / API 字段非空，都只是过程指标，不构成验收依据。
+      placeholder: |
+        用户在 `http://116.62.36.173/<route>` <某个动作>后，<肉眼可见的结果>。
+
+        > 验收原则: 只有业务目标达成才能请求人类验收。代码 merge / 部署 / CI 绿 / 单元测试通过 / API 字段非空，都只是过程指标，不构成验收依据。验收依据是用户 hard refresh 那个 URL 后能<具体看到什么>。
     validations:
       required: true
   - type: dropdown
@@ -66,9 +92,9 @@ body:
   - type: textarea
     id: goal
     attributes:
-      label: Goal
-      description: State the deliverable outcome in one or two sentences.
-      placeholder: "Fix the Admin retry error classification for..."
+      label: Technical Deliverable
+      description: State the engineering output in one or two sentences. This should be a means to the Business Goal above, not a substitute for it.
+      placeholder: "Add /v1/projects/{id}/citations/top-pages endpoint and wire frontend to it, so that..."
     validations:
       required: true
   - type: textarea
@@ -139,11 +165,22 @@ body:
     id: acceptance
     attributes:
       label: Acceptance Matrix
-      description: Translate acceptance from PRD/user decisions before implementation. Every row needs a source.
+      description: |
+        Split rows into two layers. The Business Goal layer rows are the only ones that, when ticked, justify "Business success proven". The Process Indicator rows are necessary but not sufficient.
       value: |
-        | AC | Source | User Path | Machine Check | Evidence Required | Status |
+        ### 业务目标层 / Business Goal Layer (必须达成才能验收)
+        Each row here must trace to the Business Goal field above. A row in this section ticks ONLY after a human visually confirms the result on the live environment.
+
+        | AC | User-Visible Result | Live URL/Route | User Action | Evidence (screenshot/Playwright) | Status |
         | --- | --- | --- | --- | --- | --- |
-        | AC-1 |  |  |  |  | pending |
+        | BG-1 |  |  |  |  | pending |
+
+        ### 过程指标层 / Process Indicator Layer (必要但不充分)
+        These rows prove the engineering plumbing is in place. They do NOT, by themselves, justify human acceptance — only the Business Goal Layer does.
+
+        | AC | Source | Machine Check | Evidence Required | Status |
+        | --- | --- | --- | --- | --- |
+        | P-1 |  |  |  | pending |
 
         Coverage Gaps:
         | Source Requirement | Missing Coverage | Decision Needed |
@@ -190,19 +227,24 @@ body:
     id: verification
     attributes:
       label: Verification Evidence Ledger
-      description: Every checked item needs command/run, exit/conclusion, key output, scope covered, artifact/link when available, and commit SHA.
+      description: |
+        Every checked Process Indicator row needs command/run, exit/conclusion, key output, scope covered, artifact/link when available, and commit SHA.
+        The User-Symptom Replay section records the human verification that justifies ticking the Business Goal Layer.
       value: |
         | Check | Command/Run | Exit/Conclusion | Key Output | Scope Covered | Artifact/Link | Commit |
         | --- | --- | --- | --- | --- | --- | --- |
         | Local |  |  |  |  |  |  |
         | CI/CD |  |  |  |  |  |  |
         | Playwright/E2E |  |  |  |  |  |  |
+        | Live API readback |  |  |  |  |  |  |
 
-        User-Symptom Replay:
+        User-Symptom Replay (required to tick any Business Goal Layer row):
         - Exact route/row/brand/query/request/action:
         - Expected visible result:
+        - Human verifier (who confirmed visually):
+        - Verification timestamp:
+        - Screenshot/Playwright trace link:
         - E2E tier used: Tier 0 | Tier 1 | Tier 2 | Tier 3
-        - Evidence or blocker:
         - Completion state: Business success proven | Diagnostic progress only | Blocked / decision needed
     validations:
       required: true
@@ -231,8 +273,10 @@ body:
     id: handoff
     attributes:
       label: Handoff
-      description: What should this deliverable pass to review, QA, release, or the next task?
-      placeholder: "Return changed routes, test command output, evidence links, and known risks."
+      description: |
+        What should this deliverable pass to review, QA, release, or the next task?
+        Lead hat: after process indicators are green, request user visual verification BEFORE declaring "Business success proven".
+      placeholder: "Return changed routes, test command output, evidence links, and known risks. Note when user visual verification is requested vs confirmed."
     validations:
       required: true
   - type: textarea
@@ -245,5 +289,6 @@ body:
         - Reason:
         - Linked PR/commit or replacement/canonical issue:
         - Verification evidence:
+        - User visual confirmation: yes (link) | no — explain why closure is OK without it
     validations:
       required: false

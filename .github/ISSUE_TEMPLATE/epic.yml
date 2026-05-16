@@ -9,6 +9,14 @@ body:
     attributes:
       value: |
         Use this template only when Fast Path is not enough. Split child issues by deliverable, not by agent role.
+
+        ## 验收原则 / Acceptance Principle
+
+        **只有业务目标达成才能请求人类验收。**
+
+        代码 merge / 部署 / CI 绿 / 单元测试通过 / 子 issue 全 closed — **都只是过程指标，不构成验收依据**。验收依据是用户在 live 环境上能肉眼看到 Epic 整体的业务结果（即 Business Goal 字段描述的那个 user-visible outcome）。
+
+        Lead hat 在所有子 issue 落地、Build & Deploy 完成、live API readback 一致后**才能**请求人类视觉验收；视觉确认前 Acceptance Translation 表的 Business Result Gate 不能宣告"已达成"。
   - type: dropdown
     id: priority
     attributes:
