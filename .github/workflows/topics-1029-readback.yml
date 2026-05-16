@@ -14,6 +14,11 @@ on:
         description: "BestCoffer canonical brand id"
         required: true
         default: "24"
+  push:
+    branches:
+      - claude/investigate-issue-1029-readback-Ny8TZ
+    paths:
+      - '.github/workflows/topics-1029-readback.yml'
 
 concurrency:
   group: topics-1029-readback
@@ -25,9 +30,10 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      pull-requests: write
 
     env:
-      BRAND_ID: ${{ inputs.brand_id }}
+      BRAND_ID: ${{ github.event.inputs.brand_id || '24' }}
       SERVER_HOST: ${{ secrets.SERVER_HOST }}
       SERVER_USER: ${{ secrets.SERVER_USER }}
       SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
@@ -206,3 +212,27 @@ SQL
           name: topics-1029-readback
           path: /tmp/topics_1029_readback.txt
           if-no-files-found: warn
+
+      - name: Post readback to PR #1077 as comment
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: 1077
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -s /tmp/topics_1029_readback.txt ]; then
+            echo "readback file missing or empty; skipping PR comment"
+            exit 0
+          fi
+          {
+            echo "## DB readback result (issue #1029)"
+            echo ""
+            echo "**Run**: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo ""
+            echo '```'
+            cat /tmp/topics_1029_readback.txt
+            echo '```'
+          } > /tmp/readback-comment.md
+          gh pr comment "$PR_NUMBER" --repo "$REPO" --body-file /tmp/readback-comment.md
