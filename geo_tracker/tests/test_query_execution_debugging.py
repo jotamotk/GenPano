@@ -7019,7 +7019,21 @@ def test_luban_service_id_fallback_has_kill_switch():
 
 
 def test_luban_service_id_fallback_disabled_by_default_in_deploy():
-    """Deploy default should be "disabled" — keyword API only."""
+    """Deploy default should be "fallback ENABLED" — fail-open safe default.
+
+    Rationale: a worker log at 2026-05-16 15:26:46 UTC showed the LubanSMS
+    keyword API regressing again with
+    ``{'code': 400, 'msg': '未知错误', 'Repeated': 'false'}``. With the
+    kill switch ON (PR #1074's original default of '1') and the keyword
+    API broken, there is NO usable SMS path for Doubao auto_login →
+    new-account registration, blocking #963.
+
+    The safer default is fail-open: keep the service-id fallback ENABLED
+    by default ('0') so the system stays resilient to keyword-API
+    regressions. Operators can still set the
+    ``LUBANSMS_DOUBAO_DISABLE_SERVICE_ID_FALLBACK`` repo variable to '1'
+    to re-disable the fallback when the keyword API is confirmed stable.
+    """
     from pathlib import Path
 
     deploy = (
@@ -7031,11 +7045,16 @@ def test_luban_service_id_fallback_disabled_by_default_in_deploy():
         "container picks it up — otherwise the env stays unset on "
         "production and the fallback keeps firing."
     )
-    # The default value when no repo variable is set is "1" (disabled).
-    assert "DISABLE_SERVICE_ID_FALLBACK || '1'" in deploy, (
-        "deploy.yml default must be '1' (fallback disabled, keyword API "
-        "only) per operator instruction on 2026-05-16. Flipping the repo "
-        "variable to '0' re-enables the fallback cleanly."
+    # The default value when no repo variable is set is "0" (fallback
+    # ENABLED) — fail-open after the 2026-05-16 15:26:46 UTC keyword API
+    # regression. Operators set the repo var to '1' to disable when
+    # keyword API is confirmed stable.
+    assert "DISABLE_SERVICE_ID_FALLBACK || '0'" in deploy, (
+        "deploy.yml default must be '0' (fallback ENABLED, fail-open) "
+        "after the 2026-05-16 15:26:46 UTC keyword API regression "
+        "(code=400, msg='未知错误'). Flipping the repo variable to '1' "
+        "re-disables the fallback when the keyword API is confirmed "
+        "stable."
     )
 
 
