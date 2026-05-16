@@ -7,13 +7,13 @@ name: Topics #1029 Readback
 #
 # This workflow only runs SELECTs inside a READ ONLY transaction. No writes.
 #
-# Poll iteration marker (forces fresh push): 2026-05-16T15:35:00Z iter=4c
-# Deep failure diagnostic for stuck topics 162..170: dump retry_reason,
-# sample failed query rows, system-wide 24h failure pattern, llm_accounts
-# state, llm_responses success rate.
-# 4c: collapse all SQL into ONE psql heredoc with ON_ERROR_STOP=off so
-# individual SQL errors don't kill the diagnostic. Nested heredocs over
-# SSH stdin were truncating after first inner heredoc.
+# Poll iteration marker (forces fresh push): 2026-05-16T15:38:00Z iter=4d
+# Deep failure diagnostic for stuck topics 162..170 — iter4c discovered:
+# - llm_accounts uses column 'llm_name' not 'target_llm'
+# - section 1-3 already succeeded with clear data; section 4 aborted txn
+# Iter4d: fix column name, split each SQL into its own implicit txn so
+# section X failing doesn't abort sections X+1..N (no explicit
+# BEGIN/ROLLBACK; ON_ERROR_STOP=off keeps psql alive across statements).
 
 on:
   workflow_dispatch:
@@ -87,32 +87,28 @@ jobs:
           # Iter4b nested-heredoc-over-SSH-stdin failed (truncation after
           # \d queries). Iter4c pipes the SQL via printf and runs it through
           # one non-stop psql -f invocation. No inner heredoc -> no truncation.
+          # No explicit BEGIN/ROLLBACK so each statement is its own
+          # auto-commit-style txn; ON_ERROR_STOP=off lets psql keep going
+          # after a column-missing error in one query. Read-only by intent —
+          # only SELECTs and \d below.
           printf '%s\n' "\\pset pager off" \
             "\\set ON_ERROR_STOP off" \
-            "BEGIN TRANSACTION READ ONLY;" \
-            "\\echo '=== schema: queries ==='" \
-            "\\d queries" \
-            "\\echo '=== schema: llm_accounts ==='" \
-            "\\d llm_accounts" \
-            "\\echo '=== 1. retry_reason distribution (failed queries on stuck topics 162..170) ==='" \
-            "SELECT q.target_llm, q.retry_reason, COUNT(*) AS n FROM queries q JOIN prompts p ON p.id = q.prompt_id WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170) AND q.status = 'failed' GROUP BY q.target_llm, q.retry_reason ORDER BY n DESC;" \
-            "\\echo '=== 2. Sample failed queries (20 most recent on stuck topics) ==='" \
-            "SELECT q.id, q.target_llm, q.status, q.retry_count, q.retry_reason, q.scheduled_at, q.queued_at, q.started_at, q.finished_at, q.account_id, q.profile_id, q.latency_ms FROM queries q JOIN prompts p ON p.id = q.prompt_id WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170) AND q.status = 'failed' ORDER BY q.finished_at DESC NULLS LAST LIMIT 20;" \
-            "\\echo '=== 3. System-wide 24h failure pattern (all brands, top 30) ==='" \
-            "SELECT target_llm, retry_reason, COUNT(*) AS n FROM queries WHERE status = 'failed' AND finished_at >= NOW() - INTERVAL '24 hours' GROUP BY target_llm, retry_reason ORDER BY n DESC LIMIT 30;" \
-            "\\echo '=== 4a. llm_accounts state (id, target_llm, status, last_used_at, updated_at) ==='" \
-            "SELECT id, target_llm, status, last_used_at, updated_at FROM llm_accounts ORDER BY target_llm, id LIMIT 60;" \
-            "\\echo '=== 4b. llm_accounts SELECT * sample ==='" \
-            "SELECT * FROM llm_accounts LIMIT 3;" \
+            "\\echo '=== 4a. llm_accounts state (id, llm_name, status, last_used_at) ==='" \
+            "SELECT id, llm_name, status, last_used_at, cookies_updated_at, query_count_today, daily_limit, consecutive_fails, cooldown_until FROM llm_accounts ORDER BY llm_name, id LIMIT 60;" \
+            "\\echo '=== 4b. llm_accounts cookies state (NULL vs has) ==='" \
+            "SELECT id, llm_name, status, CASE WHEN cookies_json IS NULL THEN 'NULL' WHEN cookies_json = '' THEN 'empty' ELSE 'has-' || length(cookies_json)::text || 'B' END AS cookies, cookies_updated_at, query_count_today, consecutive_fails FROM llm_accounts ORDER BY llm_name, id;" \
             "\\echo '=== 4c. llm_accounts target_llm + status counts ==='" \
-            "SELECT target_llm, status, COUNT(*) AS n FROM llm_accounts GROUP BY target_llm, status ORDER BY target_llm, status;" \
+            "SELECT llm_name, status, COUNT(*) AS n FROM llm_accounts GROUP BY llm_name, status ORDER BY llm_name, status;" \
+            "\\echo '=== 4d. accounts cooldown / consecutive_fails (high signal for auth issues) ==='" \
+            "SELECT llm_name, COUNT(*) FILTER (WHERE cooldown_until IS NOT NULL AND cooldown_until > NOW()) AS in_cooldown_now, COUNT(*) FILTER (WHERE consecutive_fails >= 3) AS gte3_consec_fails, COUNT(*) FILTER (WHERE last_used_at >= NOW() - INTERVAL '1 hour') AS used_in_1h, COUNT(*) AS total FROM llm_accounts GROUP BY llm_name ORDER BY llm_name;" \
             "\\echo '=== 5. Recent llm_responses success rate per LLM (1h + 24h) ==='" \
             "SELECT q.target_llm, COUNT(*) FILTER (WHERE r.collected_at >= NOW() - INTERVAL '1 hour') AS responses_1h, COUNT(*) FILTER (WHERE r.collected_at >= NOW() - INTERVAL '24 hours') AS responses_24h, COUNT(*) FILTER (WHERE r.analysis_status='done' AND r.collected_at >= NOW() - INTERVAL '24 hours') AS analyzed_24h FROM llm_responses r JOIN queries q ON r.query_id = q.id GROUP BY q.target_llm ORDER BY q.target_llm;" \
             "\\echo '=== 6. Updated per-topic pipeline state ==='" \
             "SELECT p.topic_id, COUNT(q.id) AS queries_total, COUNT(q.id) FILTER (WHERE q.status = 'pending') AS pending, COUNT(q.id) FILTER (WHERE q.status = 'running') AS running, COUNT(q.id) FILTER (WHERE q.status = 'done') AS done, COUNT(q.id) FILTER (WHERE q.status = 'failed') AS failed, COUNT(r.id) AS llm_responses FROM prompts p JOIN queries q ON q.prompt_id = p.id LEFT JOIN llm_responses r ON r.query_id = q.id WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170) GROUP BY p.topic_id ORDER BY p.topic_id;" \
-            "\\echo '=== 7. Top-6 failed query IDs ==='" \
+            "\\echo '=== 7. Top-6 failed query IDs (for worker log grep) ==='" \
             "SELECT q.id, q.target_llm, q.retry_reason FROM queries q JOIN prompts p ON p.id = q.prompt_id WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170) AND q.status='failed' ORDER BY q.finished_at DESC NULLS LAST LIMIT 6;" \
-            "ROLLBACK;" \
+            "\\echo '=== 8. chatgpt account 17 detail (the loop account in section 2) ==='" \
+            "SELECT id, llm_name, status, last_used_at, query_count_today, daily_limit, consecutive_fails, cooldown_until, cookies_updated_at, CASE WHEN cookies_json IS NULL THEN 'NULL' WHEN cookies_json = '' THEN 'empty' ELSE 'has-' || length(cookies_json)::text || 'B' END AS cookies FROM llm_accounts WHERE id = 17;" \
             > /tmp/diag_1029.sql
           docker cp /tmp/diag_1029.sql genpano-postgres-1:/tmp/diag_1029.sql 2>&1 || true
           docker compose exec -T postgres psql -U genpano -d genpano -X -f /tmp/diag_1029.sql 2>&1 || true
