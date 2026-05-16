@@ -775,6 +775,26 @@ class GuestQueryExecutor:
                     "disable_coop": True,
                     "i_know_what_im_doing": True,
                 }
+                # Refs #963 doubao_homepage_content follow-up: a qg.net
+                # Chinese residential exit IP paired with the worker
+                # container's UTC timezone is the canonical "you're using a
+                # proxy" signal — Doubao's JS reads
+                # ``Intl.DateTimeFormat().resolvedOptions().timeZone`` (or
+                # ``new Date().getTimezoneOffset()``) and compares against
+                # the exit IP geo. Mismatch → silent rejection, page never
+                # leaves /home, scraper falls back to homepage UI text.
+                # Pin Camoufox to Shanghai geo + timezone for Doubao so JS
+                # geo matches qg exit-IP geo. The Dockerfile installs
+                # ``tzdata`` so Firefox can actually resolve
+                # ``Asia/Shanghai``; without it the env TZ silently no-ops.
+                if llm == "doubao":
+                    camoufox_kwargs["config"] = {
+                        "timezone": "Asia/Shanghai",
+                        "geolocation:longitude": 121.4737,
+                        "geolocation:latitude": 31.2304,
+                        "geolocation:accuracy": 100,
+                    }
+                    camoufox_kwargs["env"] = {**os.environ, "TZ": "Asia/Shanghai"}
                 # Refs #963: when the qg.net rotating-IP proxy is configured
                 # and the LLM is Doubao, swap out the static worker IP for
                 # a fresh residential / mobile IP per query. The worker's
