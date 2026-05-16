@@ -1,0 +1,86 @@
+name: Issue Body Lint
+
+# Agent-agnostic feedback layer for issues. The web UI already enforces
+# `validations.required: true` on the issue templates, but the GitHub REST API
+# bypasses that. This workflow runs the same checks on every opened/edited issue
+# and comments with the gaps. It does NOT fail or block — issues are not gated.
+
+on:
+  issues:
+    types: [opened, edited]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  lint-issue:
+    name: Lint Issue Body (feedback only)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Write issue body and labels to files
+        env:
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          ISSUE_LABELS: ${{ toJson(github.event.issue.labels) }}
+        shell: bash
+        run: |
+          mkdir -p .lint-tmp
+          printf '%s' "$ISSUE_BODY" > .lint-tmp/issue_body.md
+          # Convert the labels JSON array to a comma-separated string of names.
+          printf '%s' "$ISSUE_LABELS" | python3 -c "import json,sys; data=json.load(sys.stdin); print(','.join(l.get('name','') for l in data))" > .lint-tmp/labels.txt
+          echo "Body length: $(wc -c < .lint-tmp/issue_body.md) bytes"
+          echo "Labels: $(cat .lint-tmp/labels.txt)"
+
+      - name: Run issue body lint
+        id: lint
+        shell: bash
+        run: |
+          set +e
+          LABELS=$(cat .lint-tmp/labels.txt)
+          python3 .github/scripts/lint_issue_body.py \
+            --type auto \
+            --labels "$LABELS" \
+            --body-file .lint-tmp/issue_body.md \
+            > .lint-tmp/lint_output.txt 2>&1
+          EXIT_CODE=$?
+          set -e
+          echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+          echo "---- lint output ----"
+          cat .lint-tmp/lint_output.txt
+          echo "---- end lint output ----"
+
+      - name: Comment on issue if lint failed
+        if: ${{ steps.lint.outputs.exit_code != '0' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          {
+            echo "## Issue body lint — feedback only"
+            echo ""
+            echo "This is a non-blocking notice. The issue body is missing fields that the"
+            echo "[AGENTS.md](../blob/main/AGENTS.md) contract expects for its detected type."
+            echo "Fill these in so downstream agents have a clear execution contract:"
+            echo ""
+            echo '```'
+            cat .lint-tmp/lint_output.txt
+            echo '```'
+            echo ""
+            echo "If this is intentional (e.g. a quick raw human-input note awaiting Lead triage), ignore."
+          } > .lint-tmp/comment.md
+          gh issue comment "$ISSUE_NUMBER" --repo "$REPO" --body-file .lint-tmp/comment.md
+
+      # Workflow always succeeds — issue lint is feedback only, never a gate.
+      - name: Never fail (issue lint is feedback only)
+        run: echo "Issue lint complete. Feedback posted if needed."

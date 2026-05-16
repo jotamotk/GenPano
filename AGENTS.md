@@ -1,3 +1,19 @@
+# AGENTS.md — canonical contract for ALL agents in this repository
+
+**This file is the canonical contract for ALL agents working in this repository, including Claude (Code/Anthropic API), Codex (OpenAI), Cursor, Aider, Devin, and any future agent — as well as human contributors.**
+
+Agent-specific config files (`CLAUDE.md`, `.cursorrules`, `.codex/`, `.devin/`, etc.) MUST point here and not duplicate rules. If a rule appears only in an agent-specific config, that is a bug — file an issue.
+
+**Enforcement layers** (Section "Enforcement" below has the details):
+
+1. **GitHub CI (primary, agent-agnostic)**: `.github/workflows/pr-body-lint.yml` rejects PRs whose body omits Root Cause Gate / Verification Evidence / Business Goal. Branch protection requires this check to pass. No agent can bypass.
+2. **GitHub issue templates**: `validations.required: true` enforces fields when issues are opened via the web UI. `issue-body-lint.yml` provides feedback on issues opened via the API.
+3. **Agent-specific automation** (best-effort): each agent's config layer (Claude SessionStart hook, etc.) injects this file's rules into the agent's context. If this layer fails for a given agent, Layer 1 still catches.
+
+If you are an agent reading this for the first time in a session: **before you write any code for a bug fix**, follow the four-step Evidence-First Debugging checklist below. Code-reading is not evidence.
+
+---
+
 # Agent Operating Notes
 
 These rules are the first stop for Codex-style agents working in this repo.
@@ -390,3 +406,47 @@ Before changing any Admin UI:
   update, import, and LLM generation flows in the frontend prototype.
 - Budget ceiling inputs should accept numbers directly instead of being a fixed
   select list.
+
+## Enforcement
+
+The rules above are enforced in CI so that no agent — Claude, Codex, Cursor,
+Aider, Devin, or human — can ship a PR that skips Root Cause Gate, Business
+Goal, or Verification Evidence. Enforcement lives in the GitHub layer because
+that is the only point every agent must pass through.
+
+**Layer 1: `.github/workflows/pr-body-lint.yml`** (gate)
+
+- Triggers on `pull_request: [opened, edited, synchronize, reopened]`.
+- Validator: `.github/scripts/lint_pr_body.py` (Python 3.12 stdlib, no deps).
+- The PR body must contain three `## ` sections:
+  - `## Linked Work` with `Business Goal:` and `Final Success Evidence:`
+  - `## Root Cause Gate` with `Direct trigger:`, `Underlying product/system root cause:`, `Evidence proving it:` — OR `Classification: not an incident - <reason>` (single value, not the template's `|`-separated stub).
+  - `## Verification Evidence Ledger` with at least one `- [x]` item and one `https://` URL.
+- Placeholder text (TODO, TBD, PLACEHOLDER, xxx, ..., bare N/A, and the issue
+  template's literal Chinese stubs like `用户在 \`http://116.62.36.173/<route>\``)
+  is rejected as if the field were empty.
+- Failure: the workflow posts a comment on the PR listing each missing/empty
+  field and fails the check. Branch protection on `main` (set in repo Settings →
+  Branches) must list `Lint PR Body` as a required status check; without that,
+  the lint runs but does not block merge.
+
+**Layer 2: `.github/workflows/issue-body-lint.yml`** (feedback)
+
+- Triggers on `issues: [opened, edited]`.
+- Validator: `.github/scripts/lint_issue_body.py`.
+- Detects issue type from labels (`type:human`, `type:epic`, `type:task`) and
+  body markers. Validates required fields per template.
+- Comments on the issue with gaps but **never fails the workflow** — this layer
+  is feedback only, because failing on human-authored issues is too aggressive.
+
+**Adding a new required field**
+
+1. Add the field to the relevant issue template under `.github/ISSUE_TEMPLATE/`
+   with `validations.required: true` (web UI enforcement).
+2. Add the field name to `REQUIRED_FIELDS_BY_TYPE` in
+   `.github/scripts/lint_issue_body.py` (or to `REQUIRED_FIELDS` /
+   `REQUIRED_SECTIONS` in `lint_pr_body.py` for PR fields).
+3. Update `.github/PULL_REQUEST_TEMPLATE.md` if it's a PR field.
+4. Smoke-test locally: `python3 .github/scripts/lint_pr_body.py --help` and run
+   against `.github/PULL_REQUEST_TEMPLATE.md` (must fail) and a known-good body
+   (must pass).
