@@ -965,6 +965,21 @@ class BaseSMSLoginHandler(ABC):
                 "block_images": False,
                 "os": "windows",
                 "locale": "zh-CN" if is_domestic else "en-US",
+                # Refs #963 Q-184988 follow-up (5202 captcha-denial on a
+                # freshly registered Doubao account 711158 going through a
+                # rotating qg IP): WebRTC STUN bypasses HTTP proxies and
+                # leaks the worker's static egress IP to Doubao regardless
+                # of the qg lease. Doubao's risk control sees
+                # HTTP-IP=qg-residential, WebRTC-IP=worker-static, flags
+                # the mismatch, and serves a 3D image-selection captcha
+                # whose image is then refused at the IP level (5202).
+                # Registration is the most IP-sensitive flow because the
+                # account-side risk profile gets seeded right here.
+                # ``disable_coop`` lets cross-origin captcha iframes be
+                # interacted with when one does fire.
+                "block_webrtc": True,
+                "disable_coop": True,
+                "i_know_what_im_doing": True,
             }
             if self._launch_fingerprint is not None:
                 camoufox_kwargs["fingerprint"] = self._launch_fingerprint
@@ -997,6 +1012,12 @@ class BaseSMSLoginHandler(ABC):
                     "--use-gl=swiftshader",
                     "--no-zygote",
                     "--window-size=1920,1080",
+                    # Refs #963: force WebRTC through the proxy (or none)
+                    # so the worker's static egress IP doesn't leak via
+                    # STUN. The Camoufox path disables WebRTC entirely;
+                    # the Chromium fallback uses the Chromium-equivalent
+                    # policy flag so symmetric behaviour holds either way.
+                    "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
                 ],
             }
             if qg_lease is not None:

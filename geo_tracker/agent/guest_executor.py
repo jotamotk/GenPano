@@ -759,6 +759,21 @@ class GuestQueryExecutor:
                     "block_images": _block_heavy_resources(),
                     "os": "windows",
                     "locale": "zh-CN" if is_domestic else "en-US",
+                    # Refs #963 Q-184988 follow-up (5202 captcha-denial on a
+                    # freshly registered Doubao account 711158 going through
+                    # a rotating qg IP): WebRTC STUN bypasses HTTP proxies
+                    # and leaks the worker's static egress IP to Doubao
+                    # regardless of the qg lease. Doubao's risk control sees
+                    # HTTP-IP=qg-residential, WebRTC-IP=worker-static, flags
+                    # the mismatch, and serves a 3D image-selection captcha
+                    # whose image is then refused at the IP level (5202).
+                    # Disabling WebRTC entirely (media.peerconnection.enabled
+                    # = false) closes the leak so Doubao only ever sees the
+                    # qg IP. ``disable_coop`` lets cross-origin captcha
+                    # iframes be interacted with when one does fire.
+                    "block_webrtc": True,
+                    "disable_coop": True,
+                    "i_know_what_im_doing": True,
                 }
                 # Refs #963: when the qg.net rotating-IP proxy is configured
                 # and the LLM is Doubao, swap out the static worker IP for
@@ -840,6 +855,13 @@ class GuestQueryExecutor:
                         "--disable-background-timer-throttling",
                         "--disable-backgrounding-occluded-windows",
                         "--disable-renderer-backgrounding",
+                        # Refs #963: force WebRTC through the proxy (or
+                        # none) so the worker's static egress IP doesn't
+                        # leak via STUN. The Camoufox path disables WebRTC
+                        # entirely via media.peerconnection.enabled=false;
+                        # the Chromium fallback uses the Chromium-equivalent
+                        # policy flag so symmetric behaviour holds either way.
+                        "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
                     ],
                 )
                 logger.info(f"[{llm}] Playwright 启动成功")
