@@ -1,0 +1,190 @@
+name: Doubao Retry + Verify (mutating)
+
+# Refs #963 final closeout gate: triggers a controlled Doubao retry on
+# a specific failed query, polls until terminal status, then dumps
+# (status, retry_reason, response_id, resp_count) to an issue #963
+# comment. Mutating — resets ONE Doubao query row to pending and
+# dispatches via celery, exactly the same way the existing
+# ``server-diagnostics.yml bestcoffer_batch`` mode does. Unlike the
+# bestcoffer_batch path, this workflow is scoped to a single
+# operator-specified query so there's no batch-side-effect risk.
+#
+# Triggers:
+# - workflow_dispatch with ``query_id`` input (manual one-off retry)
+# - push on ``claude/retry-doubao`` so the Claude session can validate
+#   the deployed fix end-to-end without admin UI access.
+
+on:
+  workflow_dispatch:
+    inputs:
+      query_id:
+        description: "Doubao query id to retry"
+        required: true
+        default: "184971"
+      poll_seconds:
+        description: "Max seconds to wait for the retry to finish"
+        required: false
+        default: "600"
+  push:
+    branches:
+      - 'claude/retry-doubao'
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  retry-and-verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: SSH retry + poll + dump
+        id: ssh
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+          QUERY_ID: ${{ github.event.inputs.query_id || '184971' }}
+          POLL_SECONDS: ${{ github.event.inputs.poll_seconds || '600' }}
+          GH_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s' "$SERVER_SSH_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H "$SERVER_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+          output=$(ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=accept-new \
+            -o ServerAliveInterval=30 -o ServerAliveCountMax=4 \
+            "$SERVER_USER@$SERVER_HOST" \
+            "QUERY_ID=${QUERY_ID} POLL_SECONDS=${POLL_SECONDS} GH_RUN_ID=${GH_RUN_ID} bash -s" <<'REMOTE'
+          set -uo pipefail
+          cd /opt/genpano
+
+          [[ "${QUERY_ID}" =~ ^[0-9]+$ ]] || { echo "ERROR: QUERY_ID must be integer"; exit 1; }
+          [[ "${POLL_SECONDS}" =~ ^[0-9]+$ ]] || { echo "ERROR: POLL_SECONDS must be integer"; exit 1; }
+          [ "${POLL_SECONDS}" -ge 60 ] || { echo "ERROR: POLL_SECONDS too low"; exit 1; }
+          [ "${POLL_SECONDS}" -le 1800 ] || { echo "ERROR: POLL_SECONDS too high"; exit 1; }
+
+          psql_cmd() {
+            docker compose exec -T postgres psql -X -v ON_ERROR_STOP=1 -U genpano -d genpano -P pager=off "$@" </dev/null
+          }
+
+          echo "=== Container build identity ==="
+          docker compose images worker 2>/dev/null | head -3 || true
+
+          echo ""
+          echo "=== Target query BEFORE retry ==="
+          psql_cmd -c "
+            SELECT id, target_llm, status, retry_reason, retry_count, account_id,
+                   queued_at, finished_at,
+                   (SELECT COUNT(*) FROM llm_responses r WHERE r.query_id=q.id) AS resp_count
+            FROM queries q WHERE id=${QUERY_ID};
+          "
+
+          echo ""
+          echo "=== Reset Q-${QUERY_ID} to pending and dispatch ==="
+          psql_cmd -c "
+            UPDATE queries q
+            SET status='pending',
+                retry_count = COALESCE(retry_count, 0) + 1,
+                queued_at = NOW(),
+                started_at = NULL,
+                finished_at = NULL,
+                latency_ms = NULL,
+                retry_reason = 'doubao_retry_verify:${GH_RUN_ID}'
+            WHERE id=${QUERY_ID}
+            RETURNING id, status, retry_count, retry_reason;
+          "
+
+          docker compose exec -T -e QUERY_ID="${QUERY_ID}" worker python - <<'PY'
+          import os
+          from geo_tracker.tasks.celery_tasks import execute_query
+          qid = int(os.environ["QUERY_ID"])
+          # Doubao queue
+          execute_query.apply_async(args=[qid], queue="llm_doubao")
+          print(f"dispatched query_id={qid} queue=llm_doubao")
+          PY
+
+          echo ""
+          echo "=== Poll Q-${QUERY_ID} until terminal status (max ${POLL_SECONDS}s) ==="
+          deadline=$((SECONDS + POLL_SECONDS))
+          while true; do
+            row=$(psql_cmd -At -F $'\t' -c "
+              SELECT status, retry_reason, retry_count,
+                     (SELECT COUNT(*) FROM llm_responses r WHERE r.query_id=q.id) AS resp_count
+              FROM queries q WHERE id=${QUERY_ID};
+            ")
+            status="$(printf '%s\n' "$row" | awk -F'\t' '{print $1}')"
+            echo "[$(date +%H:%M:%S)] row: ${row}"
+            case "${status}" in
+              done|failed|completed) break ;;
+            esac
+            if [ "${SECONDS}" -ge "${deadline}" ]; then
+              echo "POLL_TIMEOUT (${POLL_SECONDS}s elapsed, status still ${status})"
+              break
+            fi
+            sleep 10
+          done
+
+          echo ""
+          echo "=== Final Q-${QUERY_ID} ==="
+          psql_cmd -c "
+            SELECT q.id, q.target_llm, q.status, q.retry_reason, q.retry_count,
+                   q.account_id, q.queued_at, q.finished_at, q.latency_ms,
+                   (SELECT COUNT(*) FROM llm_responses r WHERE r.query_id=q.id) AS resp_count,
+                   (SELECT MAX(id) FROM llm_responses r WHERE r.query_id=q.id) AS latest_response_id,
+                   (SELECT MAX(LENGTH(COALESCE(raw_text,''))) FROM llm_responses r WHERE r.query_id=q.id) AS latest_response_len
+            FROM queries q WHERE id=${QUERY_ID};
+          "
+
+          echo ""
+          echo "=== Latest doubao snapshot/screenshot files for this query ==="
+          docker compose exec -T worker sh -c "ls -lat /data/screenshots/query_${QUERY_ID}_doubao_*.{json,html,png} 2>/dev/null | head -10" </dev/null || true
+
+          echo ""
+          echo "=== Worker log tail (last 80 lines mentioning doubao) ==="
+          docker compose logs --tail 800 worker 2>&1 | grep -iE "doubao|qg|query_${QUERY_ID}" | tail -80 || true
+          REMOTE
+          )
+
+          {
+            echo "$output"
+          } > /tmp/doubao-retry-output.txt
+
+          {
+            echo "## Doubao retry+verify"
+            echo ""
+            echo "Query: ${QUERY_ID}"
+            echo ""
+            echo '```'
+            head -2000 /tmp/doubao-retry-output.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Post result as issue #963 comment
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const queryId = process.env.QUERY_ID || '184971';
+            let body = `## Doubao retry+verify (Q-${queryId})\n\n`;
+            try {
+              const out = fs.readFileSync('/tmp/doubao-retry-output.txt', 'utf-8');
+              const max = 50000;
+              const trimmed = out.length > max ? out.slice(0, max) + '\n…[truncated]' : out;
+              body += '```\n' + trimmed + '\n```';
+            } catch (e) {
+              body += '⚠️ failed to read output: ' + String(e);
+            }
+            await github.rest.issues.createComment({
+              issue_number: 963,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body,
+            });
+            core.notice('Posted retry-verify dump to #963');
+        env:
+          QUERY_ID: ${{ github.event.inputs.query_id || '184971' }}
