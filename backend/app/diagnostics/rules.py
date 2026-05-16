@@ -84,6 +84,27 @@ class BaseRule:
         raise NotImplementedError
 
 
+def _project_age_days(project: Project) -> int:
+    """Days since project.created_at. Returns 0 when the column is None
+    so callers err on the side of "fresh project" (suppress absence
+    rules). PRD §4.8.1 / audit #1044 B1-13: 'absence' rules
+    (wiki_missing / attribution_anchor_low / same_group_share_low)
+    should not fire on a brand-new project because day-1 data is
+    expected to be empty — that's onboarding state, not a problem."""
+    created = getattr(project, "created_at", None)
+    if created is None:
+        return 0
+    now = datetime.now(UTC).replace(tzinfo=None)
+    if hasattr(created, "tzinfo") and created.tzinfo is not None:
+        # Normalize to naive UTC since BrandMention.created_at + DB
+        # defaults in this codebase use naive UTC throughout.
+        created = created.astimezone(UTC).replace(tzinfo=None)
+    return int(max(0, (now - created).days))
+
+
+_ABSENCE_RULE_MIN_AGE_DAYS = 30
+
+
 # ─────────────────────────────────────────────────────────────────
 
 
@@ -1088,6 +1109,9 @@ class WikiMissingRule(BaseRule):
     async def evaluate(self, session: AsyncSession, project: Project) -> list[DiagnosticPayload]:
         if project.primary_brand_id is None:
             return []
+        # Audit #1044 B1-13: don't fire on day-1 onboarding state.
+        if _project_age_days(project) < _ABSENCE_RULE_MIN_AGE_DAYS:
+            return []
         today = date.today()
         from_d = datetime.combine(today - timedelta(days=29), datetime.min.time())
         wiki_domains = ["wikipedia.org", "baike.baidu.com", "zh.wikipedia.org", "en.wikipedia.org"]
@@ -1318,7 +1342,10 @@ class CitationGrowthSurgeRule(BaseRule):
 
         cur = await _count(cur_from, None)
         prior = await _count(prior_from, prior_to)
-        if prior < 5:  # noisy below 5
+        # Audit #1044 B1-12: floor raised from 5 → 20. Below 20 citations,
+        # 100% growth is just 6 → 12, which is signal-poor and pollutes
+        # P3 with noise on small brands.
+        if prior < 20:
             return []
         if cur < prior:
             return []
@@ -1443,6 +1470,9 @@ class AttributionAnchorLowRule(BaseRule):
 
     async def evaluate(self, session: AsyncSession, project: Project) -> list[DiagnosticPayload]:
         if project.primary_brand_id is None:
+            return []
+        # Audit #1044 B1-13: don't fire on day-1 onboarding state.
+        if _project_age_days(project) < _ABSENCE_RULE_MIN_AGE_DAYS:
             return []
         today = date.today()
         from_d = datetime.combine(today - timedelta(days=29), datetime.min.time())
@@ -1714,8 +1744,13 @@ class PersonaKeywordChangeRule(BaseRule):
         prior = await _top_drivers(prior_from, prior_to)
         if len(cur) < 5 or len(prior) < 5:
             return []
+        # Audit #1044 B1-10: Jaccard distance — symmetric, scales 0..100
+        # for any size of either set. Old formula `1 - overlap/len(cur)`
+        # was asymmetric: shrinking cur shifted the denominator and
+        # produced spurious churn (or hid real churn).
+        union_size = len(cur | prior)
         overlap = len(cur & prior)
-        churn_pct = (1 - overlap / max(len(cur), 1)) * 100.0
+        churn_pct = (1 - overlap / max(union_size, 1)) * 100.0
         if churn_pct < 70.0:
             return []
         return [
@@ -1771,10 +1806,15 @@ class NarrativeDriftRule(BaseRule):
             return []
         today = date.today()
         from_d = datetime.combine(today - timedelta(days=29), datetime.min.time())
-        # Use BrandMention.brand_name as a join bridge to ResponseAnalysis;
-        # response_analyses doesn't directly carry brand_id.
-        # Count distinct (driver_text, polarity='positive') sentiment drivers as a proxy.
-        stmt = (
+        # Audit #1044 B1-11: switched to *concentration* (distinct drivers
+        # per mention) rather than absolute distinct count. Large brands
+        # naturally accumulate hundreds of distinct positive drivers in
+        # 30d; absolute thresholds permanently flag them. The product
+        # signal we want is "how dispersed is the narrative *relative to
+        # volume*". A brand with 100 mentions and 90 distinct drivers is
+        # dispersed; one with 1000 mentions and 90 distinct drivers is
+        # focused.
+        distinct_stmt = (
             select(func.count(func.distinct(SentimentDriver.driver_text)))
             .join(BrandMention, BrandMention.id == SentimentDriver.mention_id)
             .where(
@@ -1785,15 +1825,34 @@ class NarrativeDriftRule(BaseRule):
                 )
             )
         )
+        total_stmt = (
+            select(func.count(SentimentDriver.id))
+            .join(BrandMention, BrandMention.id == SentimentDriver.mention_id)
+            .where(
+                and_(
+                    BrandMention.brand_id == project.primary_brand_id,
+                    SentimentDriver.created_at >= from_d,
+                    SentimentDriver.polarity == "positive",
+                )
+            )
+        )
         try:
-            distinct_drivers = int((await session.execute(stmt)).scalar_one() or 0)
+            distinct_drivers = int((await session.execute(distinct_stmt)).scalar_one() or 0)
+            total_drivers = int((await session.execute(total_stmt)).scalar_one() or 0)
         except Exception:
             return []
-        # Empirical threshold: > 30 distinct positive drivers in 30d means
-        # the LLM has no consolidated narrative.
-        if distinct_drivers <= 30:
+        # Need at least 30 total drivers before the ratio is meaningful.
+        if total_drivers < 30:
             return []
-        severity = "P2" if distinct_drivers <= 50 else "P1"
+        dispersion = distinct_drivers / total_drivers  # in (0, 1]
+        # High dispersion → LLM keeps inventing new descriptors instead
+        # of repeating the same ones. Empirical anchors:
+        #   < 0.50  : focused (top drivers repeat enough)
+        #   0.50-0.70 : drifting (P2)
+        #   >= 0.70 : dispersed (P1)
+        if dispersion < 0.50:
+            return []
+        severity = "P2" if dispersion < 0.70 else "P1"
         return [
             DiagnosticPayload(
                 rule_id=self.rule_id,
@@ -1801,11 +1860,15 @@ class NarrativeDriftRule(BaseRule):
                 category=self.category,
                 severity=severity,
                 type="brand",
-                title=f"narrative dispersed across {distinct_drivers} positive drivers",
+                title=(
+                    f"narrative dispersion {dispersion * 100:.0f}% "
+                    f"({distinct_drivers} distinct / {total_drivers} mentions, 30d)"
+                ),
                 description=(
-                    "The LLM's positive description of the brand is spread thin "
-                    "across many distinct sentiment drivers. Without a consistent "
-                    "frame, brand recall is fragile."
+                    "The LLM's positive description of the brand is spread thin: "
+                    "the ratio of distinct sentiment drivers to total positive "
+                    "mentions is high, meaning the model keeps inventing new "
+                    "descriptors rather than reinforcing a consistent frame."
                 ),
                 focus_area="narrative_consistency",
                 direction=(
@@ -1814,9 +1877,11 @@ class NarrativeDriftRule(BaseRule):
                 ),
                 reader_hints=["branding"],
                 evidence={
-                    "metric": "distinct_positive_drivers_30d",
-                    "current_value": distinct_drivers,
-                    "threshold": 30,
+                    "metric": "positive_driver_dispersion_30d",
+                    "current_value": round(dispersion, 3),
+                    "distinct_drivers": distinct_drivers,
+                    "total_drivers": total_drivers,
+                    "threshold": 0.50,
                 },
                 if_untreated=(
                     "Without narrative consolidation, brand association weakens; "
@@ -2022,6 +2087,9 @@ class SameGroupShareLowRule(BaseRule):
 
     async def evaluate(self, session: AsyncSession, project: Project) -> list[DiagnosticPayload]:
         if project.primary_brand_id is None:
+            return []
+        # Audit #1044 B1-13: don't fire on day-1 onboarding state.
+        if _project_age_days(project) < _ABSENCE_RULE_MIN_AGE_DAYS:
             return []
         # Find the brand's group, if any
         group_stmt = select(BrandGroupMember.group_id).where(
