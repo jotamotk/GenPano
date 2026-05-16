@@ -6238,3 +6238,24 @@ def test_luban_service_id_env_wired_into_provider_factory():
     )
     # And the value is passed through to the provider factory.
     assert 'factory_kwargs["service_id"]' in source
+
+
+# Refs #963 production evidence (server-diagnostics run 25955749209 at
+# 2026-05-16 07:07:50 → 07:11:01): after all the fingerprint / routing /
+# persistence-gate fixes shipped, account 44 still failed with
+# retry_reason=doubao_homepage_content (cookies accepted enough to
+# submit the prompt but the response was silently suppressed by Doubao —
+# typical shadow-ban behaviour). Because doubao_homepage_content was NOT
+# in EXPIRED_ACCOUNT_REASONS, the worker kept re-picking the same broken
+# cookies forever and the auto_login → LubanSMS service_id fallback
+# never fired. Pin that the reason is now classified as expired so the
+# self-healing chain can move the account through expired → auto_login
+# → fresh fingerprint+cookies → working query.
+def test_doubao_homepage_content_marked_as_expired_reason():
+    from geo_tracker.pool.account_pool import EXPIRED_ACCOUNT_REASONS
+
+    assert "doubao_homepage_content" in EXPIRED_ACCOUNT_REASONS, (
+        "doubao_homepage_content must trigger account-expired so the "
+        "self-healing chain (auto_login → service_id fallback → fresh "
+        "fingerprint+cookies) can replace cookies that Doubao shadow-bans."
+    )

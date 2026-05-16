@@ -50,6 +50,22 @@ EXPIRED_ACCOUNT_REASONS = frozenset(
         "cookies_expired",
         "doubao_not_logged_in",
         "doubao_auth_state_missing",
+        # Refs #963 production evidence (server-diagnostics run 25955749209
+        # at 2026-05-16 07:07:50–07:11:01): after all the fingerprint /
+        # routing / persistence-gate fixes deployed, the worker submitted
+        # the prompt successfully ("已确认消息发送成功") on account 44 but
+        # Doubao stopped responding — page reverted to the home shell and
+        # the scraper bailed with retry_reason=doubao_homepage_content.
+        # This is the same symptom as a server-side shadow-ban: cookies are
+        # accepted enough to submit, but the session is not actually live.
+        # Without expiring the account, the worker keeps re-picking the
+        # same broken cookies forever (account stays "active") and never
+        # triggers auto_login → the LubanSMS service_id fallback we just
+        # shipped never gets a chance to register a fresh account with a
+        # persisted fingerprint. Treat ``doubao_homepage_content`` as an
+        # expired-login signal so the next acquisition cycle queues a
+        # re-login.
+        "doubao_homepage_content",
         "login_redirect",
         "session_expired",
         "token_invalidated",
