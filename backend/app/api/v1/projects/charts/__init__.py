@@ -25,6 +25,7 @@ from app.api.v1.projects.charts._contracts import (
     _missing_analyzer_metric_evidence,
     _with_chart_contract,
 )
+from app.api.v1.projects.charts._domain_tier_heuristic import _classify_untiered_domain
 from app.api.v1.projects.charts.authority import (
     _target_authority_points_from_facts,
     _with_authority_trend_contract,
@@ -58,6 +59,7 @@ __all__ = [
     "_chart_contract_update",
     "_chart_counts",
     "_chart_has_data",
+    "_classify_untiered_domain",
     "_contract_metric_blocked",
     "_dt_range",
     "_engine_metric_rows_from_facts",
