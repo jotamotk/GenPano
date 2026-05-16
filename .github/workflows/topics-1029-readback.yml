@@ -7,8 +7,10 @@ name: Topics #1029 Readback
 #
 # This workflow only runs SELECTs inside a READ ONLY transaction. No writes.
 #
-# Poll iteration marker (forces fresh push): 2026-05-16T15:06:10Z iter=3
-# Polling pipeline progress for stuck topics 162..170 at 3-minute intervals.
+# Poll iteration marker (forces fresh push): 2026-05-16T15:30:00Z iter=4
+# Deep failure diagnostic for stuck topics 162..170: dump retry_reason,
+# sample failed query rows, system-wide 24h failure pattern, llm_accounts
+# state, llm_responses success rate.
 
 on:
   workflow_dispatch:
@@ -74,58 +76,117 @@ jobs:
           echo "=== Captured at ==="
           date -u +"%Y-%m-%dT%H:%M:%SZ"
 
-          echo "=== Pipeline progress poll (iteration 3) for stuck topics 162..170 ==="
+          echo "=== Schema preflight: queries + llm_accounts column list ==="
+          docker compose exec -T postgres psql -U genpano -d genpano -X -c "\d queries" 2>&1 | head -60
+          echo "---"
+          docker compose exec -T postgres psql -U genpano -d genpano -X -c "\d llm_accounts" 2>&1 | head -60
+
+          echo
+          echo "=== Failure diagnostic (iter 4) for stuck topics 162..170 ==="
           docker compose exec -T postgres psql -U genpano -d genpano -v ON_ERROR_STOP=1 -X <<SQL
           \set ON_ERROR_STOP on
           BEGIN TRANSACTION READ ONLY;
 
-          \echo '--- Per-topic metrics ---'
-          WITH topic_metrics AS (
-            SELECT
-              p.topic_id,
-              COUNT(q.id) AS queries_total,
-              COUNT(q.id) FILTER (WHERE q.status = 'pending') AS queries_pending,
-              COUNT(q.id) FILTER (WHERE q.status = 'running') AS queries_running,
-              COUNT(q.id) FILTER (WHERE q.status = 'done') AS queries_done,
-              COUNT(q.id) FILTER (WHERE q.status = 'failed') AS queries_failed,
-              COUNT(r.id) AS llm_responses,
-              COUNT(r.id) FILTER (WHERE r.analysis_status = 'done') AS successful_response_count
-            FROM prompts p
-            JOIN queries q ON q.prompt_id = p.id
-            LEFT JOIN llm_responses r ON r.query_id = q.id
-            WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170)
-            GROUP BY p.topic_id
-          )
-          SELECT * FROM topic_metrics ORDER BY topic_id;
+          \echo '--- 1. retry_reason distribution (failed queries on stuck topics 162..170) ---'
+          SELECT q.target_llm, q.retry_reason, COUNT(*) AS n
+          FROM queries q
+          JOIN prompts p ON p.id = q.prompt_id
+          WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170)
+            AND q.status = 'failed'
+          GROUP BY q.target_llm, q.retry_reason
+          ORDER BY n DESC;
 
-          \echo '--- Aggregate totals ---'
-          WITH topic_metrics AS (
-            SELECT
-              p.topic_id,
-              COUNT(q.id) AS queries_total,
-              COUNT(q.id) FILTER (WHERE q.status = 'pending') AS queries_pending,
-              COUNT(q.id) FILTER (WHERE q.status = 'running') AS queries_running,
-              COUNT(q.id) FILTER (WHERE q.status = 'done') AS queries_done,
-              COUNT(q.id) FILTER (WHERE q.status = 'failed') AS queries_failed,
-              COUNT(r.id) AS llm_responses,
-              COUNT(r.id) FILTER (WHERE r.analysis_status = 'done') AS successful_response_count
-            FROM prompts p
-            JOIN queries q ON q.prompt_id = p.id
-            LEFT JOIN llm_responses r ON r.query_id = q.id
-            WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170)
-            GROUP BY p.topic_id
-          )
+          \echo '--- 2. Sample failed queries (20 most recent on stuck topics) ---'
+          SELECT q.id, q.target_llm, q.status, q.retry_count, q.retry_reason,
+                 q.scheduled_at, q.queued_at, q.started_at, q.finished_at,
+                 q.account_id, q.profile_id, q.latency_ms
+          FROM queries q
+          JOIN prompts p ON p.id = q.prompt_id
+          WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170)
+            AND q.status = 'failed'
+          ORDER BY q.finished_at DESC NULLS LAST
+          LIMIT 20;
+
+          \echo '--- 3. System-wide 24h failure pattern (all brands, top 30) ---'
+          SELECT target_llm, retry_reason, COUNT(*) AS n
+          FROM queries
+          WHERE status = 'failed'
+            AND finished_at >= NOW() - INTERVAL '24 hours'
+          GROUP BY target_llm, retry_reason
+          ORDER BY n DESC
+          LIMIT 30;
+
+          \echo '--- 4. llm_accounts state (try common column names; tolerate missing) ---'
+          SELECT id, target_llm, status,
+                 COALESCE(last_used_at::text, 'never') AS last_used,
+                 updated_at
+          FROM llm_accounts
+          ORDER BY target_llm, id
+          LIMIT 40;
+
+          \echo '--- 5. Recent llm_responses success rate per LLM (1h + 24h) ---'
+          SELECT q.target_llm,
+                 COUNT(*) FILTER (WHERE r.collected_at >= NOW() - INTERVAL '1 hour') AS responses_1h,
+                 COUNT(*) FILTER (WHERE r.collected_at >= NOW() - INTERVAL '24 hours') AS responses_24h,
+                 COUNT(*) FILTER (WHERE r.analysis_status='done' AND r.collected_at >= NOW() - INTERVAL '24 hours') AS analyzed_24h
+          FROM llm_responses r
+          JOIN queries q ON r.query_id = q.id
+          GROUP BY q.target_llm
+          ORDER BY q.target_llm;
+
+          \echo '--- 6. Updated per-topic pipeline state (re-baseline after polling) ---'
           SELECT
-            SUM(queries_pending) AS total_pending,
-            SUM(queries_running) AS total_running,
-            SUM(queries_done) AS total_done,
-            SUM(queries_failed) AS total_failed,
-            SUM(llm_responses) AS total_llm_responses,
-            SUM(successful_response_count) AS total_successful
-          FROM topic_metrics;
+            p.topic_id,
+            COUNT(q.id) AS queries_total,
+            COUNT(q.id) FILTER (WHERE q.status = 'pending') AS pending,
+            COUNT(q.id) FILTER (WHERE q.status = 'running') AS running,
+            COUNT(q.id) FILTER (WHERE q.status = 'done') AS done,
+            COUNT(q.id) FILTER (WHERE q.status = 'failed') AS failed,
+            COUNT(r.id) AS llm_responses
+          FROM prompts p
+          JOIN queries q ON q.prompt_id = p.id
+          LEFT JOIN llm_responses r ON r.query_id = q.id
+          WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170)
+          GROUP BY p.topic_id
+          ORDER BY p.topic_id;
 
           ROLLBACK;
           SQL
+
+          echo
+          echo "=== Failed query IDs (3 representative samples for worker log grep) ==="
+          docker compose exec -T postgres psql -U genpano -d genpano -tA -X -c "
+            SELECT q.id, q.target_llm, q.retry_reason
+            FROM queries q
+            JOIN prompts p ON p.id = q.prompt_id
+            WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170)
+              AND q.status='failed'
+            ORDER BY q.finished_at DESC NULLS LAST
+            LIMIT 6;
+          " 2>&1
+
+          echo
+          echo "=== Worker logs (last 30m) — error/fail/auth/cookie/exception keywords ==="
+          docker compose logs worker --since 30m 2>&1 \
+            | grep -iE 'execute_query|error|fail|warn|trace|exception|account|cookie|auth|401|429|captcha|quota|rate.limit' \
+            | tail -200
+
+          echo
+          echo "=== Worker logs per failed query_id — last 30m grep for each top-3 ID ==="
+          IDS=$(docker compose exec -T postgres psql -U genpano -d genpano -tA -X -c "
+            SELECT q.id
+            FROM queries q
+            JOIN prompts p ON p.id = q.prompt_id
+            WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170)
+              AND q.status='failed'
+            ORDER BY q.finished_at DESC NULLS LAST
+            LIMIT 3;
+          " 2>/dev/null | tr -d '\r' | head -3)
+          for qid in $IDS; do
+            echo "--- query_id=$qid ---"
+            docker compose logs worker --since 30m 2>&1 | grep -E "(\\b|_)$qid(\\b|_|[^0-9])" | tail -40 || echo "(no log lines for $qid)"
+            echo
+          done
 
           echo "=== Readback complete ==="
           REMOTE
@@ -152,12 +213,19 @@ jobs:
             exit 0
           fi
           {
-            echo "## DB readback result (issue #1029)"
+            echo "## Worker failure diagnostic readback (issue #1029, iter 4)"
             echo ""
             echo "**Run**: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo "**Branch**: \`${{ github.ref_name }}\`"
+            echo ""
+            echo "<details><summary>Raw SQL + worker log output (click)</summary>"
             echo ""
             echo '```'
-            cat /tmp/topics_1029_readback.txt
+            # Strip ANSI; cap to ~55KB to stay under GitHub's 64KB comment limit.
+            sed 's/\x1b\[[0-9;]*m//g' /tmp/topics_1029_readback.txt | head -c 55000
+            echo ''
             echo '```'
+            echo ""
+            echo "</details>"
           } > /tmp/readback-comment.md
           gh pr comment "$PR_NUMBER" --repo "$REPO" --body-file /tmp/readback-comment.md
