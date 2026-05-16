@@ -234,17 +234,25 @@ def _empty_monitoring(
 
 
 async def _count_brand_topics_total(session: AsyncSession, brand_id: int) -> int:
-    """Raw topic count for a brand (admin-surface contract).
+    """Active topic count for a brand (user-facing analytics scope).
 
-    Mirrors `backend/app/admin/brand_management/db.py:632` exactly — no status
-    filter — so the app-surface "Total topics" subline equals the number
-    operators see in the admin Brand Management page (#985 D4.A, Refs #983).
+    Scope mirrors `topic_analysis/queries.py:_fact_rows` (active + non-archived)
+    so the topic count, list, and downstream evidence stay in sync. Archived
+    topics never produce fact rows, so including them here would cause ghost
+    zero-everything rows in the user-facing list (#1029, follow-up to #1034).
     """
     try:
-        result = await session.execute(
-            text("SELECT COUNT(*) AS topic_count FROM topics WHERE brand_id = :brand_id"),
-            {"brand_id": brand_id},
-        )
+        cols = await legacy_table_columns(session, "topics")
+    except Exception:
+        return 0
+    if not cols or "id" not in cols or "brand_id" not in cols:
+        return 0
+    where_clauses = ["brand_id = :brand_id"]
+    if "status" in cols:
+        where_clauses.append("COALESCE(status, 'active') <> 'archived'")
+    sql = text(f"SELECT COUNT(*) AS topic_count FROM topics WHERE {' AND '.join(where_clauses)}")
+    try:
+        result = await session.execute(sql, {"brand_id": brand_id})
         row = result.mappings().first()
     except Exception:
         return 0
@@ -299,12 +307,14 @@ def _merge_missing_brand_topics(
 
 
 async def _fetch_brand_topics_listing(session: AsyncSession, brand_id: int) -> list[dict[str, Any]]:
-    """Raw topic rows for a brand (id, text, category, status).
+    """Active topic rows for a brand (id, text, category, status).
 
-    Mirrors `_count_brand_topics_total`'s scope (no status filter) so the
-    app-surface topic LIST matches the admin Topic Plan listing, not just the
-    count. Returns ``[]`` when the legacy ``topics`` table is missing or the
-    query fails (#1029).
+    Scope mirrors `topic_analysis/queries.py:_fact_rows` (active + non-archived)
+    so the topic count, list, and downstream evidence stay in sync. Archived
+    topics never produce fact rows, so including them here would cause ghost
+    zero-everything rows in the user-facing list (#1029, follow-up to #1034).
+    Returns ``[]`` when the legacy ``topics`` table is missing or the query
+    fails.
     """
     try:
         cols = await legacy_table_columns(session, "topics")
@@ -321,6 +331,10 @@ async def _fetch_brand_topics_listing(session: AsyncSession, brand_id: int) -> l
         if "created_at" in cols
         else "ORDER BY id DESC"
     )
+    where_clauses = ["t.brand_id = :brand_id"]
+    if "status" in cols:
+        where_clauses.append("COALESCE(t.status, 'active') <> 'archived'")
+    where_sql = " AND ".join(where_clauses)
     sql = text(
         f"""
         SELECT
@@ -330,7 +344,7 @@ async def _fetch_brand_topics_listing(session: AsyncSession, brand_id: int) -> l
             {status_expr} AS topic_status,
             {created_expr} AS topic_created_at
         FROM topics t
-        WHERE t.brand_id = :brand_id
+        WHERE {where_sql}
         {order_clause}
         """
     )
