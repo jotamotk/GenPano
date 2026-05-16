@@ -19,6 +19,12 @@ Scenarios:
       issue_602_v1 fixtures)
       → expected: PR #1043 preserves backwards-compat by OMITTING
         `topic_product` from `metric_formula_evidence`
+  (d) raw_analysis_json is `{"analyzer_fact_package_v3": {...}}` carrying
+      a non-empty `products[]` array (BestCoffer prod shape)
+      → expected (post-issue-#1049): `_as_v3_package` derives a
+        `topic_product` sub-block from `products[]`, so the rollup
+        emits `topic_product.formula_status == "ok"` and the gate
+        PASSES even though the v3 schema never carried that key directly.
 
 Usage:
   uv run python backend/scripts/inspect_products_response.py
@@ -77,6 +83,142 @@ from app.db import _upstream_stubs  # noqa: E402, F401
 # BestCoffer brand_id per `tests/test_issue_744_bestcoffer_chart_aggregates.py:113`
 # and `tests/test_issue_711_analyzer_v3_fact_contract.py:38`.
 BESTCOFFER_BRAND_ID = 24
+
+
+def _v3_package_with_products(
+    *,
+    response_id: int,
+    product_count: int,
+) -> dict[str, Any]:
+    """Minimal `analyzer_fact_package_v3` fixture mirroring BestCoffer prod
+    shape, where `raw_analysis_json` carries the durable v3 contract
+    (`geo_tracker/analyzer/fact_contract.py::build_response_fact_package_v3`)
+    and never the legacy `analyzer_fact_packages` block.
+
+    The v3 schema pre-dates the per-response `topic_product` sub-block;
+    `_as_v3_package` (issue #1049) derives it from the `products[]` array.
+    """
+    products = [
+        {
+            "product_name": f"BestCoffer Product {i + 1}",
+            "brand_id": BESTCOFFER_BRAND_ID,
+            "feature_name": None,
+            "sentiment": None,
+            "snippets": [],
+            "formula_status": "ok",
+        }
+        for i in range(product_count)
+    ]
+    return {
+        "analyzer_version": "v3",
+        "response_id": response_id,
+        "query_id": response_id + 1,
+        "prompt_id": response_id + 2,
+        "topic_id": response_id + 3,
+        "project_ids": [],
+        "source_brand_id": BESTCOFFER_BRAND_ID,
+        "target_brand_id": BESTCOFFER_BRAND_ID,
+        "engine": "deepseek",
+        "collected_at": datetime.now().isoformat(),
+        "analysis_started_at": datetime.now().isoformat(),
+        "analysis_completed_at": datetime.now().isoformat(),
+        "provider": "openai",
+        "model": "gpt-4.1-mini",
+        "prompt_version": "issue-1049-inspect",
+        "raw_output_sha256": f"sha{response_id}",
+        "idempotency_key": f"{response_id}:v3:sha{response_id}",
+        "eligibility": {
+            "eligible": True,
+            "success_response": True,
+            "invalid_reason": None,
+            "missing_reason_codes": [],
+        },
+        "coverage": {
+            "eligible_response_count_basis": 1,
+            "analyzed": True,
+            "parse_status": "ok",
+            "validation_errors": [],
+        },
+        "entities": {
+            "target": {
+                "brand_id": BESTCOFFER_BRAND_ID,
+                "canonical_name": "BestCoffer",
+                "mentioned": True,
+                "mention_count": 1,
+            },
+            "configured_competitors": [],
+            "response_named_brands": [],
+        },
+        "visibility": {
+            "is_visible": True,
+            "rank": 1,
+            "position_type": "ranked_list",
+            "visibility_score": 1.0,
+            "formula_status": "ok",
+            "reason_codes": [],
+        },
+        "sov": {
+            "numerator_target_mentions": 1,
+            "denominator_competitive_mentions": 1,
+            "denominator_brand_ids": [],
+            "denominator_raw_names": [],
+            "formula_status": "ok",
+            "reason_codes": [],
+            "sample_response_ids": [response_id],
+        },
+        "sentiment": {
+            "label": "positive",
+            "score": 0.8,
+            "drivers": [],
+            "source_quotes": [],
+            "formula_status": "ok",
+            "reason_codes": [],
+        },
+        "citations": {
+            "total_citations": 0,
+            "attributed_citations": [],
+            "unresolved_citations": [],
+            "domains": [],
+            "source_types": [],
+            "formula_status": "ok",
+            "reason_codes": [],
+        },
+        "rank": {
+            "best_rank": 1,
+            "rank_bucket": "top_3",
+            "rank_basis": "position_rank",
+            "formula_status": "ok",
+            "reason_codes": [],
+        },
+        "topic": {
+            "topic_id": response_id + 3,
+            "topic_name": "BestCoffer espresso workflow",
+            "dimension": "product",
+            "associated_brand_id": BESTCOFFER_BRAND_ID,
+            "prompt_id": response_id + 2,
+            "query_id": response_id + 1,
+        },
+        "products": products,
+        "topic_metrics": {
+            "visible": True,
+            "visibility_rate_basis": 1,
+            "sentiment_basis": 1,
+            "citation_basis": 0,
+            "rank_basis": 1,
+            "formula_status": "ok",
+            "reason_codes": [],
+        },
+        "geo_pano": {
+            "visibility_component": "ok",
+            "sentiment_component": "ok",
+            "sov_component": "ok",
+            "citation_component": "ok",
+            "geo_score": None,
+            "pano_score": None,
+            "formula_status": "ok",
+            "reason_codes": [],
+        },
+    }
 
 
 def _topic_product_packages(
@@ -171,6 +313,7 @@ async def _seed_common_evidence(
     product_fact_count: int,
     include_topic_product: bool,
     topic_chain_count: int = 1,
+    v3_payload: bool = False,
 ) -> None:
     """Seed the minimum tables the contract builder & products service read.
 
@@ -217,20 +360,29 @@ async def _seed_common_evidence(
                 created_at=now - timedelta(days=1),
             )
         )
+        if v3_payload:
+            raw_json = {
+                "analyzer_fact_package_v3": _v3_package_with_products(
+                    response_id=rid,
+                    product_count=product_fact_count,
+                )
+            }
+        else:
+            raw_json = {
+                "analyzer_fact_packages": _topic_product_packages(
+                    response_id=rid,
+                    product_fact_count=product_fact_count,
+                    topic_chain_count=topic_chain_count,
+                    include_topic_product=include_topic_product,
+                )
+            }
         session.add(
             ResponseAnalysis(
                 response_id=rid,
                 target_brand_mentioned=True,
                 sentiment_score=0.6,
                 analyzed_at=now - timedelta(days=1),
-                raw_analysis_json={
-                    "analyzer_fact_packages": _topic_product_packages(
-                        response_id=rid,
-                        product_fact_count=product_fact_count,
-                        topic_chain_count=topic_chain_count,
-                        include_topic_product=include_topic_product,
-                    )
-                },
+                raw_analysis_json=raw_json,
                 created_at=now - timedelta(days=1),
             )
         )
@@ -307,6 +459,7 @@ async def _run_scenario(
     product_fact_count: int,
     include_topic_product: bool,
     topic_chain_count: int = 1,
+    v3_payload: bool = False,
 ) -> dict[str, Any]:
     """Spin up a fresh SQLite DB, seed it, call get_products(), return dump."""
     with tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False) as tmp:
@@ -326,6 +479,7 @@ async def _run_scenario(
                 product_fact_count=product_fact_count,
                 include_topic_product=include_topic_product,
                 topic_chain_count=topic_chain_count,
+                v3_payload=v3_payload,
             )
 
         # Re-open a fresh session for the actual service call so the
@@ -409,6 +563,22 @@ async def main() -> None:
             response_ids=[5000, 5001, 5002],
             product_fact_count=0,
             include_topic_product=False,
+        )
+    )
+    # Scenario (d) — Issue #1049: v3 payload (BestCoffer prod shape) with
+    # non-empty products[]. Pre-fix this returned `topic_product` missing
+    # because v3 schema never carried that key. Post-fix `_as_v3_package`
+    # derives it from products[], so the gate PASSes.
+    summaries.append(
+        await _run_scenario(
+            "(d)",
+            "raw_analysis_json carries analyzer_fact_package_v3 with "
+            "products[] (BestCoffer prod shape) — Issue #1049 derivation "
+            "should make the gate PASS",
+            response_ids=[6000, 6001, 6002],
+            product_fact_count=2,
+            include_topic_product=False,  # ignored when v3_payload=True
+            v3_payload=True,
         )
     )
 

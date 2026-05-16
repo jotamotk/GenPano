@@ -161,6 +161,53 @@ def _as_v3_package(payload: dict[str, Any]) -> dict[str, Any] | None:
             sov.setdefault("sample_response_ids", [response_id])
         normalized["sov"] = sov
 
+    # Issue #1049: v3 packages pre-date the per-response `topic_product`
+    # sub-block emitted by `geo_tracker/analyzer/fact_contract.py::_topic_product_package`
+    # (fact_contract.py:803-820). The `_rollup_topic_product` aggregator
+    # (rollups.py:302-366) skips packages without that key, so v3-only
+    # projects (e.g. BestCoffer prod) end up with no `topic_product`
+    # entry in `metric_formula_evidence` and the frontend
+    # `canUseMetricEvidence(data, 'product')` gate returns false, leaving
+    # the products page blank. Derive a `topic_product` sub-block here
+    # from v3's existing `products` array (built by `_v3_products` at
+    # fact_contract.py:460-472 — non-empty `product_name` only) and the
+    # `topic`/`topic_id`/`prompt_id`/`query_id` chain, so the rollup
+    # loop picks the package up unchanged.
+    if "topic_product" not in normalized:
+        products = normalized.get("products")
+        product_fact_count = (
+            sum(1 for entry in products if isinstance(entry, dict) and entry.get("product_name"))
+            if isinstance(products, list)
+            else 0
+        )
+        topic_chain = normalized.get("topic_chain")
+        if isinstance(topic_chain, list):
+            topic_chain_count = len(topic_chain)
+        else:
+            topic_info = normalized.get("topic")
+            has_chain = (
+                isinstance(topic_info, dict)
+                and topic_info.get("topic_id") is not None
+                and topic_info.get("prompt_id") is not None
+                and topic_info.get("query_id") is not None
+            )
+            if not has_chain:
+                has_chain = (
+                    normalized.get("topic_id") is not None
+                    and normalized.get("prompt_id") is not None
+                    and normalized.get("query_id") is not None
+                )
+            topic_chain_count = 1 if has_chain else 0
+        topic_product_status = FORMULA_OK_STATUS if product_fact_count > 0 else "empty"
+        normalized["topic_product"] = {
+            "status": topic_product_status,
+            "topic_chain_count": topic_chain_count,
+            "product_fact_count": product_fact_count,
+            "topic_chain_missing_response_ids": [],
+            "product_status": topic_product_status,
+            "reason_codes": [],
+        }
+
     return normalized
 
 
