@@ -200,7 +200,7 @@ jobs:
           ORDER BY successful_response_count DESC, prompt_count DESC, t.id;
 
           ROLLBACK;
-SQL
+          SQL
 
           echo "=== Readback complete ==="
           REMOTE
