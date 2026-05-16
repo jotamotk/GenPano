@@ -72,12 +72,8 @@ def _topic_product_only_package(
 
 def test_rollup_topic_product_with_product_facts_returns_ok() -> None:
     packages = [
-        _topic_product_only_package(
-            response_id=5001, topic_chain_count=1, product_fact_count=3
-        ),
-        _topic_product_only_package(
-            response_id=5002, topic_chain_count=1, product_fact_count=2
-        ),
+        _topic_product_only_package(response_id=5001, topic_chain_count=1, product_fact_count=3),
+        _topic_product_only_package(response_id=5002, topic_chain_count=1, product_fact_count=2),
     ]
     out = _rollup_topic_product(packages)
     assert out is not None
@@ -110,9 +106,7 @@ def test_rollup_topic_product_with_no_packages_having_key_returns_none() -> None
 
 def test_rollup_topic_product_with_all_zero_counts_is_empty() -> None:
     packages = [
-        _topic_product_only_package(
-            response_id=5001, topic_chain_count=0, product_fact_count=0
-        ),
+        _topic_product_only_package(response_id=5001, topic_chain_count=0, product_fact_count=0),
     ]
     out = _rollup_topic_product(packages)
     assert out is not None
@@ -151,9 +145,7 @@ def test_rollup_topic_product_aggregates_reason_codes_and_missing_chain_ids() ->
 
 def test_rollup_topic_product_sample_response_ids_capped() -> None:
     packages = [
-        _topic_product_only_package(
-            response_id=5000 + i, topic_chain_count=1, product_fact_count=1
-        )
+        _topic_product_only_package(response_id=5000 + i, topic_chain_count=1, product_fact_count=1)
         for i in range(10)
     ]
     out = _rollup_topic_product(packages)
@@ -235,9 +227,7 @@ async def test_products_emits_topic_product_evidence(
     Without this, the frontend `canUseMetricEvidence(data, 'product')`
     returns false and the page renders empty.
     """
-    project = Project(
-        user_id=user.id, name="Issue 1039", primary_brand_id=42, industry_id=1
-    )
+    project = Project(user_id=user.id, name="Issue 1039", primary_brand_id=42, industry_id=1)
     db_session.add(project)
     await db_session.commit()
     await db_session.refresh(project, ["competitors"])
