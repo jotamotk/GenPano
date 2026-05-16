@@ -271,14 +271,37 @@ class BaseSMSLoginHandler(ABC):
             # ``LUBANSMS_<PLATFORM>_SERVICE_ID`` env var to the provider so
             # it can fall back automatically when keyword allocation fails.
             # For doubao the value is provided by operator as "666056".
+            #
+            # Refs #963 follow-up (2026-05-16): the keyword API has
+            # recovered, so the operator wants us off the service-id
+            # fallback path. Adding a per-platform kill switch
+            # ``LUBANSMS_<PLATFORM>_DISABLE_SERVICE_ID_FALLBACK`` so we
+            # can flip the fallback off via secret/env without redeploy
+            # whenever the keyword API is healthy, and back on cleanly
+            # when it regresses. Leaving the service_id env var itself in
+            # place so a future re-enable is a one-line config change
+            # ("DISABLE=" → not set) rather than re-pasting 666056.
             factory_kwargs: dict = {}
             if self.sms_provider_factory is LubanSMSProvider:
-                service_id_env = (
-                    f"LUBANSMS_{self.platform.upper()}_SERVICE_ID"
+                disable_env = (
+                    f"LUBANSMS_{self.platform.upper()}"
+                    "_DISABLE_SERVICE_ID_FALLBACK"
                 )
-                service_id = os.getenv(service_id_env)
-                if service_id:
-                    factory_kwargs["service_id"] = service_id
+                disable_flag = (os.getenv(disable_env) or "").strip().lower()
+                fallback_disabled = disable_flag in ("1", "true", "yes", "on")
+                if not fallback_disabled:
+                    service_id_env = (
+                        f"LUBANSMS_{self.platform.upper()}_SERVICE_ID"
+                    )
+                    service_id = os.getenv(service_id_env)
+                    if service_id:
+                        factory_kwargs["service_id"] = service_id
+                else:
+                    logger.info(
+                        "[%s] LubanSMS service-id fallback disabled via %s",
+                        self.platform,
+                        disable_env,
+                    )
             sms_provider = self.sms_provider_factory(**factory_kwargs)
 
             # ── 获取初始手机号 ──────────────────────────────────────────
