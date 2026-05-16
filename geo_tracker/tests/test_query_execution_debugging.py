@@ -6289,6 +6289,58 @@ def test_luban_service_id_env_wired_into_provider_factory():
     assert 'factory_kwargs["service_id"]' in source
 
 
+# Refs #963 follow-up (2026-05-16): operator confirmed the LubanSMS
+# keyword API has recovered. Add a kill switch
+# ``LUBANSMS_<PLATFORM>_DISABLE_SERVICE_ID_FALLBACK`` so registrations
+# go through the keyword API exclusively when it's healthy, without
+# needing a code change or secret rotation. Default behaviour on
+# production is "disabled" (i.e. the fallback path is OFF until the
+# keyword API regresses again).
+def test_luban_service_id_fallback_has_kill_switch():
+    """Operators must be able to turn the service-id fallback off via env."""
+    from pathlib import Path
+
+    base_source = (
+        Path(__file__).resolve().parent.parent / "agent" / "sms_login" / "base.py"
+    ).read_text(encoding="utf-8")
+    assert "DISABLE_SERVICE_ID_FALLBACK" in base_source, (
+        "BaseSMSLoginHandler must check a per-platform "
+        "LUBANSMS_<PLATFORM>_DISABLE_SERVICE_ID_FALLBACK env var so the "
+        "service-id fallback can be turned off when the keyword API is "
+        "healthy, without rotating the SERVICE_ID secret or shipping "
+        "code."
+    )
+    # The flag must take precedence over the SERVICE_ID env var so an
+    # operator-set kill switch wins over a lingering 666056 secret.
+    disable_idx = base_source.index("DISABLE_SERVICE_ID_FALLBACK")
+    service_id_idx = base_source.find("_SERVICE_ID\"", disable_idx)
+    assert service_id_idx > disable_idx, (
+        "The kill-switch check must run BEFORE the service_id env read "
+        "so the disable flag short-circuits the service_id wiring."
+    )
+
+
+def test_luban_service_id_fallback_disabled_by_default_in_deploy():
+    """Deploy default should be "disabled" — keyword API only."""
+    from pathlib import Path
+
+    deploy = (
+        Path(__file__).resolve().parent.parent.parent
+        / ".github" / "workflows" / "deploy.yml"
+    ).read_text(encoding="utf-8")
+    assert "LUBANSMS_DOUBAO_DISABLE_SERVICE_ID_FALLBACK" in deploy, (
+        "deploy.yml must wire the kill switch through so the worker "
+        "container picks it up — otherwise the env stays unset on "
+        "production and the fallback keeps firing."
+    )
+    # The default value when no repo variable is set is "1" (disabled).
+    assert "DISABLE_SERVICE_ID_FALLBACK || '1'" in deploy, (
+        "deploy.yml default must be '1' (fallback disabled, keyword API "
+        "only) per operator instruction on 2026-05-16. Flipping the repo "
+        "variable to '0' re-enables the fallback cleanly."
+    )
+
+
 # Refs #963 production evidence (server-diagnostics run 25955749209 at
 # 2026-05-16 07:07:50 → 07:11:01): after all the fingerprint / routing /
 # persistence-gate fixes shipped, account 44 still failed with
@@ -6648,4 +6700,124 @@ def test_playwright_fallback_forces_webrtc_through_proxy():
             "instead of leaking the worker's egress IP. The Camoufox path "
             "achieves this via block_webrtc=True; the Chromium path needs "
             "the Chromium-equivalent flag for symmetry."
+        )
+
+
+# Refs #963 follow-up to PR #1051: after WebRTC was blocked,
+# ``doubao_homepage_content`` kept firing twice in a row on Doubao
+# (queries silently rejected; page never left /home and never reached
+# /chat/{id}). The single saved HTML wasn't enough to root-cause —
+# we needed to know whether the IP-geo / JS-geo lined up, whether
+# WebRTC was actually disabled, and whether the submit reached Doubao.
+# Augment ``_save_runtime_snapshot`` to capture browser fingerprint +
+# timezone + RTCPeerConnection availability + on-chat-page flag, then
+# wire the homepage_content path to save all three artifacts (HTML,
+# screenshot, runtime snapshot) on every failure.
+def test_runtime_snapshot_captures_doubao_fingerprint_diagnostics():
+    """The runtime snapshot must include fingerprint fields for #963 triage."""
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parent.parent
+        / "agent" / "guest_executor.py"
+    ).read_text(encoding="utf-8")
+    snapshot_idx = source.index("async def _save_runtime_snapshot")
+    snapshot_block = source[snapshot_idx:snapshot_idx + 10000]
+    for marker in (
+        "fingerprint:",
+        "timezoneOffset",
+        "rtcPeerConnectionAvailable",
+        "onChatPage",
+        "userMessageBubbleCount",
+        "Intl.DateTimeFormat()",
+    ):
+        assert marker in snapshot_block, (
+            f"_save_runtime_snapshot must include `{marker}` in its page "
+            "evaluate so #963 doubao_homepage_content failures dump enough "
+            "fingerprint / timezone / WebRTC / submit-state info to root-"
+            "cause without admin shell access on the worker."
+        )
+
+
+# Refs #963 doubao_homepage_content follow-up: a qg.net Chinese
+# residential exit IP paired with the worker container's UTC timezone
+# is the canonical "you're using a proxy" signal. Pin Camoufox to
+# Shanghai geo + timezone for Doubao on both the query path and the
+# auto_login path so JS-side geo matches qg exit-IP geo. The Dockerfile
+# must also install ``tzdata`` so Firefox can actually resolve named
+# timezones — without it the env TZ silently no-ops.
+def test_camoufox_doubao_launches_pin_china_timezone_and_geolocation():
+    """Both Doubao Camoufox launches must override timezone + geolocation."""
+    from pathlib import Path
+
+    for relpath in (
+        ("agent", "sms_login", "base.py"),
+        ("agent", "guest_executor.py"),
+    ):
+        source_path = Path(__file__).resolve().parent.parent.joinpath(*relpath)
+        source = source_path.read_text(encoding="utf-8")
+        # Both files set kwargs in a Doubao-gated block. Look for the
+        # config / env overrides near the Doubao platform check.
+        assert '"timezone": "Asia/Shanghai"' in source, (
+            f"{'/'.join(relpath)} must pin Camoufox config timezone to "
+            "Asia/Shanghai for Doubao — otherwise Firefox falls back to "
+            "the container's UTC timezone and Doubao's risk control "
+            "catches the IP-geo / JS-geo mismatch."
+        )
+        assert '"geolocation:longitude"' in source, (
+            f"{'/'.join(relpath)} must pin Camoufox geolocation for "
+            "Doubao so navigator.geolocation reads as Shanghai, "
+            "consistent with the qg residential exit IP."
+        )
+        assert '"TZ": "Asia/Shanghai"' in source, (
+            f"{'/'.join(relpath)} must pass TZ=Asia/Shanghai to the "
+            "Firefox subprocess env. The Camoufox ``config`` parameter "
+            "sets the JS Intl timezone, but the env TZ also affects "
+            "lower-level C library calls and is the standard belt-and-"
+            "braces approach to keeping the entire subprocess coherent."
+        )
+
+
+def test_worker_dockerfile_installs_tzdata():
+    """tzdata is needed for Firefox to resolve named timezones."""
+    from pathlib import Path
+
+    dockerfile = (
+        Path(__file__).resolve().parent.parent.parent
+        / "geo_tracker" / "Dockerfile"
+    )
+    content = dockerfile.read_text(encoding="utf-8")
+    assert "tzdata" in content, (
+        "geo_tracker/Dockerfile must install tzdata in the apt-get "
+        "block — without it, Firefox/glibc cannot resolve names like "
+        "Asia/Shanghai and JS Intl.DateTimeFormat falls back to UTC "
+        "regardless of any TZ env we pass. This silently no-ops the "
+        "timezone fix for Doubao."
+    )
+
+
+def test_doubao_homepage_content_path_saves_all_three_artifacts():
+    """homepage_content failures must persist HTML + screenshot + runtime snapshot."""
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parent.parent
+        / "agent" / "guest_executor.py"
+    ).read_text(encoding="utf-8")
+    # Find the homepage_content save-site, not the earlier qg-cleanup
+    # ip_block_reasons set that also references the string literal. The
+    # save-site is identified by the assignment to ``homepage_reason``.
+    homepage_idx = source.index('homepage_reason = f"{llm_name}_homepage_content"')
+    homepage_block = source[homepage_idx:homepage_idx + 2500]
+    for marker in (
+        "_save_html",
+        "_save_screenshot",
+        "_save_runtime_snapshot",
+    ):
+        assert marker in homepage_block, (
+            "doubao_homepage_content path must call "
+            f"`{marker}` so #963 triage has HTML + screenshot + runtime "
+            "snapshot for every silently-rejected query, not just the "
+            "HTML it had before. Saving only one artifact left us unable "
+            "to root-cause when the failure recurred."
         )
