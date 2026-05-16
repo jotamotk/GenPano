@@ -1,0 +1,256 @@
+name: Topics #1029 Re-dispatch + Watch
+
+# Re-dispatch correction experiment for issue #1029.
+#
+# Context: Prior workflow on branch claude/fix-issue-1029-final-verdict-Ny8TZ
+# reset 44 failed queries (26 chatgpt + 18 deepseek) for topics 162..170 back
+# to status='pending', but the dispatch_many python script ran on the HOST
+# instead of inside the backend container, producing ModuleNotFoundError:
+# No module named 'app'. The reset queries are now in DB-stuck state without
+# corresponding Celery tasks.
+#
+# However, the post-readback also showed 5 chatgpt queries currently in
+# status='running' — leftover Celery tasks from PR #1087's earlier
+# dispatch_many that workers are mid-flight on. Their outcome is the real
+# verdict signal: success means cookies work; failure with auth-like
+# retry_reasons means cookies are dead.
+#
+# This workflow:
+#  Step A: Capture the 5 chatgpt queries currently running.
+#  Step B: Re-dispatch the 44 reset queries via dispatch_many INSIDE the
+#          backend container (fixing the host-vs-container error).
+#  Step C: Sleep 300s for worker turnaround.
+#  Step D: Post-readback (status counts, llm_responses, retry_reasons,
+#          account state, per-topic successful_response_count).
+#
+# Verdict logic (in PR comment after run):
+#  - SUCCESS: at least one topic 162..170 has successful_response_count > 0,
+#    OR queries.status='done' > 0 for chatgpt/deepseek.
+#  - COOKIES-DEAD: all 5 originally-running failed AND newly-dispatched failed
+#    with auth-like retry_reasons.
+#  - WORKER-STALL: newly-dispatched queries didn't move from pending.
+#  - MIXED: some succeed some fail.
+#
+# Doubao is explicitly excluded (separate issue #963).
+# llm_accounts has NO updated_at column (per PR #1077 readback).
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches:
+      - claude/fix-issue-1029-redispatch-watch-Ny8TZ
+    paths:
+      - '.github/workflows/topics-1029-redispatch-watch.yml'
+
+concurrency:
+  group: topics-1029-redispatch-watch
+  cancel-in-progress: false
+
+jobs:
+  redispatch-watch:
+    name: Re-dispatch reset queries inside backend container + watch the 5 running ones
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: write
+
+    env:
+      SERVER_HOST: ${{ secrets.SERVER_HOST }}
+      SERVER_USER: ${{ secrets.SERVER_USER }}
+      SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+
+    steps:
+      - name: Set up SSH
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "${SERVER_SSH_KEY}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H "${SERVER_HOST}" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Step A..D — capture running, re-dispatch in container, wait, post-readback
+        shell: bash
+        run: |
+          set -euo pipefail
+          ssh \
+            -i ~/.ssh/id_rsa \
+            -o StrictHostKeyChecking=accept-new \
+            "${SERVER_USER}@${SERVER_HOST}" \
+            "bash -s" <<'REMOTE' | tee /tmp/topics_1029_redispatch_watch.txt
+          # Don't fail-fast: emit full diagnostic trail so artifact + PR
+          # comment is complete even on partial failure.
+          set +e
+          cd /opt/genpano
+
+          echo "=== Captured at ==="
+          date -u +"%Y-%m-%dT%H:%M:%SZ"
+
+          echo
+          echo "=== Step A. Capture the 5 chatgpt queries currently running ==="
+          # These are leftover Celery tasks from PR #1087's earlier dispatch_many
+          # that workers are mid-flight on. Their outcome is the real verdict
+          # signal — they'll either succeed (cookies work) or fail (cookies dead).
+          printf '%s\n' \
+            "\\pset pager off" \
+            "\\set ON_ERROR_STOP off" \
+            "SELECT q.id, q.target_llm, q.account_id, q.started_at, q.queued_at" \
+            "FROM queries q" \
+            "JOIN prompts p ON p.id = q.prompt_id" \
+            "WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170)" \
+            "  AND q.status = 'running'" \
+            "ORDER BY q.started_at;" \
+            > /tmp/capture_running.sql
+          docker cp /tmp/capture_running.sql genpano-postgres-1:/tmp/capture_running.sql 2>&1 || true
+          docker compose exec -T postgres psql -U genpano -d genpano -X -f /tmp/capture_running.sql 2>&1 < /dev/null
+          capture_rc=$?
+          echo "CAPTURE_RC=${capture_rc}"
+
+          echo
+          echo "=== Step B. Re-dispatch the 44 reset queries via dispatch_many INSIDE backend container ==="
+          # Build python via printf to avoid nesting heredocs inside the outer
+          # SSH heredoc. The python file is copied into the backend container
+          # and executed there (fixes prior ModuleNotFoundError: No module named 'app').
+          printf '%s\n' \
+            "import asyncio" \
+            "from app.db.session import AsyncSessionLocal" \
+            "from sqlalchemy import text" \
+            "from app.admin.queries.celery_dispatch import dispatch_many" \
+            "" \
+            "async def main():" \
+            "    async with AsyncSessionLocal() as session:" \
+            "        rows = await session.execute(text(\"\"\"" \
+            "            SELECT q.id, q.target_llm" \
+            "            FROM queries q" \
+            "            JOIN prompts p ON p.id = q.prompt_id" \
+            "            LEFT JOIN llm_responses r ON r.query_id = q.id" \
+            "            WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170)" \
+            "              AND q.target_llm IN ('chatgpt', 'deepseek')" \
+            "              AND q.status = 'pending'" \
+            "              AND r.id IS NULL" \
+            "            ORDER BY q.target_llm, q.id" \
+            "        \"\"\"))" \
+            "        items = [{'id': r[0], 'target_llm': r[1]} for r in rows]" \
+            "        print(f'dispatching {len(items)} reset queries')" \
+            "        dispatched, failed = dispatch_many(items)" \
+            "        print(f'dispatch_many: dispatched={dispatched} failed={failed}')" \
+            "" \
+            "asyncio.run(main())" \
+            > /tmp/redispatch.py
+          docker cp /tmp/redispatch.py genpano-backend-1:/tmp/redispatch.py 2>&1 || true
+          docker compose exec -T backend python /tmp/redispatch.py 2>&1
+          dispatch_rc=$?
+          echo "DISPATCH_RC=${dispatch_rc}"
+
+          if [ "${dispatch_rc}" != "0" ]; then
+            echo "WARNING: dispatch_many invocation returned non-zero (rc=${dispatch_rc})."
+            echo "Continuing to wait + post-readback so we still capture verdict signal"
+            echo "from the 5 originally-running queries."
+          fi
+
+          echo
+          echo "=== Step C. Wait 300s for worker turnaround ==="
+          echo "Waiting 300s for worker turnaround..."
+          sleep 300
+
+          echo
+          echo "=== Step D. Post-readback (READ ONLY) ==="
+          printf '%s\n' \
+            "\\pset pager off" \
+            "\\set ON_ERROR_STOP off" \
+            "BEGIN TRANSACTION READ ONLY;" \
+            "\\echo '--- queries status by target_llm (5 originally-running + everyone else) ---'" \
+            "SELECT q.target_llm, q.status, COUNT(*) AS n" \
+            "FROM queries q" \
+            "JOIN prompts p ON p.id = q.prompt_id" \
+            "WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170)" \
+            "  AND q.target_llm IN ('chatgpt', 'deepseek')" \
+            "GROUP BY q.target_llm, q.status" \
+            "ORDER BY q.target_llm, q.status;" \
+            "\\echo '--- llm_responses landed (responses + analyzed by target_llm) ---'" \
+            "SELECT q.target_llm, COUNT(r.id) AS responses," \
+            "       COUNT(*) FILTER (WHERE r.analysis_status = 'done') AS analyzed" \
+            "FROM queries q" \
+            "JOIN prompts p ON p.id = q.prompt_id" \
+            "LEFT JOIN llm_responses r ON r.query_id = q.id" \
+            "WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170)" \
+            "  AND q.target_llm IN ('chatgpt', 'deepseek')" \
+            "GROUP BY q.target_llm;" \
+            "\\echo '--- recent retry_reasons (failures in last 10 min) ---'" \
+            "SELECT q.target_llm, q.retry_reason, COUNT(*) AS n" \
+            "FROM queries q" \
+            "JOIN prompts p ON p.id = q.prompt_id" \
+            "WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170)" \
+            "  AND q.target_llm IN ('chatgpt', 'deepseek')" \
+            "  AND q.status = 'failed'" \
+            "  AND q.finished_at > NOW() - INTERVAL '10 minutes'" \
+            "GROUP BY q.target_llm, q.retry_reason" \
+            "ORDER BY n DESC;" \
+            "\\echo '--- account state (16, 17, 20) ---'" \
+            "SELECT id, llm_name, status, consecutive_fails, last_used_at, cooldown_until" \
+            "FROM llm_accounts" \
+            "WHERE id IN (16, 17, 20);" \
+            "\\echo '--- successful_response_count per topic (user-facing metric) ---'" \
+            "SELECT p.topic_id, COUNT(*) FILTER (WHERE r.analysis_status = 'done') AS successful" \
+            "FROM prompts p" \
+            "LEFT JOIN queries q ON q.prompt_id = p.id" \
+            "LEFT JOIN llm_responses r ON r.query_id = q.id" \
+            "WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170)" \
+            "GROUP BY p.topic_id" \
+            "ORDER BY p.topic_id;" \
+            "ROLLBACK;" \
+            > /tmp/postreadback_redispatch.sql
+          docker cp /tmp/postreadback_redispatch.sql genpano-postgres-1:/tmp/postreadback_redispatch.sql 2>&1 || true
+          docker compose exec -T postgres psql -U genpano -d genpano -X -f /tmp/postreadback_redispatch.sql 2>&1 < /dev/null
+
+          echo
+          echo "=== Re-dispatch + watch workflow complete ==="
+          REMOTE
+
+      - name: Upload run log as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: topics-1029-redispatch-watch
+          path: /tmp/topics_1029_redispatch_watch.txt
+          if-no-files-found: warn
+
+      - name: Post re-dispatch + watch result to PR as comment
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -s /tmp/topics_1029_redispatch_watch.txt ]; then
+            echo "log file missing or empty; skipping PR comment"
+            exit 0
+          fi
+          # Find the open PR for this branch; fall back to #1029-tracker PR
+          # if no head match (fall through to #1077).
+          PR_NUMBER=$(gh pr list --repo "$REPO" --head "$BRANCH" --state open --json number --jq '.[0].number' || true)
+          if [ -z "${PR_NUMBER}" ]; then
+            PR_NUMBER=1077
+          fi
+          echo "Posting comment on PR #${PR_NUMBER}"
+          {
+            echo "## Re-dispatch + watch experiment (issue #1029)"
+            echo ""
+            echo "**Run**: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo "**Branch**: \`${{ github.ref_name }}\`"
+            echo ""
+            echo "<details><summary>Raw capture + re-dispatch + post-readback output (click)</summary>"
+            echo ""
+            echo '```'
+            # Strip ANSI; cap to ~55KB to stay under GitHub's 64KB comment limit.
+            sed 's/\x1b\[[0-9;]*m//g' /tmp/topics_1029_redispatch_watch.txt | head -c 55000
+            echo ''
+            echo '```'
+            echo ""
+            echo "</details>"
+          } > /tmp/redispatch-watch-comment.md
+          gh pr comment "$PR_NUMBER" --repo "$REPO" --body-file /tmp/redispatch-watch-comment.md
