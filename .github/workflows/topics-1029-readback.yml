@@ -1,0 +1,208 @@
+name: Topics #1029 Readback
+
+# Investigation-only read-only DB readback for issue #1029.
+# Purpose: capture the actual per-topic state of BestCoffer topics so the
+# user-facing-list vs admin-count gap (4 of 13) has hard evidence, instead
+# of code-inference hypotheses (see reverts in #1065).
+#
+# This workflow only runs SELECTs inside a READ ONLY transaction. No writes.
+
+on:
+  workflow_dispatch:
+    inputs:
+      brand_id:
+        description: "BestCoffer canonical brand id"
+        required: true
+        default: "24"
+
+concurrency:
+  group: topics-1029-readback
+  cancel-in-progress: false
+
+jobs:
+  readback:
+    name: Capture per-topic readback for BestCoffer
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    env:
+      BRAND_ID: ${{ inputs.brand_id }}
+      SERVER_HOST: ${{ secrets.SERVER_HOST }}
+      SERVER_USER: ${{ secrets.SERVER_USER }}
+      SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+
+    steps:
+      - name: Validate brand_id
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${BRAND_ID}" =~ ^[0-9]+$ ]] || { echo "brand_id must be a positive integer, got '${BRAND_ID}'"; exit 1; }
+          echo "brand_id=${BRAND_ID}"
+
+      - name: Set up SSH
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "${SERVER_SSH_KEY}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H "${SERVER_HOST}" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Run readback SQL on live test environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          ssh \
+            -i ~/.ssh/id_rsa \
+            -o StrictHostKeyChecking=accept-new \
+            "${SERVER_USER}@${SERVER_HOST}" \
+            "BRAND_ID='${BRAND_ID}' bash -s" <<'REMOTE' | tee /tmp/topics_1029_readback.txt
+          set -euo pipefail
+          cd /opt/genpano
+
+          echo "=== Captured at ==="
+          date -u +"%Y-%m-%dT%H:%M:%SZ"
+
+          echo "=== Topics 1029 readback for brand_id=${BRAND_ID} ==="
+          docker compose exec -T postgres psql -U genpano -d genpano -v ON_ERROR_STOP=1 -X <<SQL
+          \set ON_ERROR_STOP on
+          BEGIN TRANSACTION READ ONLY;
+
+          \echo '--- brand row ---'
+          SELECT id, name, name_zh, name_en
+          FROM brands
+          WHERE id = ${BRAND_ID};
+
+          \echo '--- per-topic readback (unfiltered: all topics with brand_id) ---'
+          WITH topic_prompts AS (
+            SELECT t.id AS topic_id, COUNT(p.id) AS prompt_count
+            FROM topics t
+            LEFT JOIN prompts p ON p.topic_id = t.id
+            WHERE t.brand_id = ${BRAND_ID}
+            GROUP BY t.id
+          ),
+          topic_queries AS (
+            SELECT t.id AS topic_id, COUNT(q.id) AS query_count
+            FROM topics t
+            LEFT JOIN prompts p ON p.topic_id = t.id
+            LEFT JOIN queries q ON q.prompt_id = p.id
+            WHERE t.brand_id = ${BRAND_ID}
+            GROUP BY t.id
+          ),
+          topic_responses AS (
+            SELECT t.id AS topic_id,
+                   COUNT(r.id) AS response_count,
+                   COUNT(r.id) FILTER (WHERE r.analysis_status = 'done') AS successful_response_count
+            FROM topics t
+            LEFT JOIN prompts p ON p.topic_id = t.id
+            LEFT JOIN queries q ON q.prompt_id = p.id
+            LEFT JOIN llm_responses r ON r.query_id = q.id
+            WHERE t.brand_id = ${BRAND_ID}
+            GROUP BY t.id
+          )
+          SELECT
+            t.id                       AS topic_id,
+            t.text                     AS topic_name,
+            t.status                   AS status,
+            t.category                 AS dimension,
+            t.generated_by             AS generated_by,
+            t.created_at               AS created_at,
+            COALESCE(tp.prompt_count, 0)                  AS prompt_count,
+            COALESCE(tq.query_count, 0)                   AS query_count,
+            COALESCE(tr.response_count, 0)                AS response_count,
+            COALESCE(tr.successful_response_count, 0)     AS successful_response_count
+          FROM topics t
+          LEFT JOIN topic_prompts   tp ON tp.topic_id = t.id
+          LEFT JOIN topic_queries   tq ON tq.topic_id = t.id
+          LEFT JOIN topic_responses tr ON tr.topic_id = t.id
+          WHERE t.brand_id = ${BRAND_ID}
+          ORDER BY successful_response_count DESC, prompt_count DESC, t.id;
+
+          \echo '--- summary cross-checks (unfiltered scope) ---'
+          WITH per_topic AS (
+            SELECT
+              t.id,
+              t.status,
+              COUNT(DISTINCT p.id) AS prompts,
+              COUNT(DISTINCT r.id) FILTER (WHERE r.analysis_status = 'done') AS done_responses,
+              COUNT(DISTINCT r.id) AS responses
+            FROM topics t
+            LEFT JOIN prompts       p ON p.topic_id  = t.id
+            LEFT JOIN queries       q ON q.prompt_id = p.id
+            LEFT JOIN llm_responses r ON r.query_id  = q.id
+            WHERE t.brand_id = ${BRAND_ID}
+            GROUP BY t.id, t.status
+          )
+          SELECT
+            COUNT(*)                                                   AS total_topics,
+            COUNT(*) FILTER (WHERE status = 'active')                  AS active_topics,
+            COUNT(*) FILTER (WHERE status = 'archived')                AS archived_topics,
+            COUNT(*) FILTER (WHERE status = 'draft')                   AS draft_topics,
+            COUNT(*) FILTER (WHERE status = 'pending')                 AS pending_topics,
+            COUNT(*) FILTER (WHERE status NOT IN ('active','archived','draft','pending') OR status IS NULL)
+                                                                      AS other_status_topics,
+            COUNT(*) FILTER (WHERE prompts >= 1 AND responses >= 1)    AS topics_with_any_response,
+            COUNT(*) FILTER (WHERE prompts >= 1 AND done_responses >= 1) AS topics_with_done_response,
+            COALESCE(SUM(done_responses), 0)::bigint                   AS sum_successful_responses
+          FROM per_topic;
+
+          \echo '--- per-topic readback (status = active only, narrowed scope) ---'
+          WITH topic_prompts AS (
+            SELECT t.id AS topic_id, COUNT(p.id) AS prompt_count
+            FROM topics t
+            LEFT JOIN prompts p ON p.topic_id = t.id
+            WHERE t.brand_id = ${BRAND_ID} AND t.status = 'active'
+            GROUP BY t.id
+          ),
+          topic_queries AS (
+            SELECT t.id AS topic_id, COUNT(q.id) AS query_count
+            FROM topics t
+            LEFT JOIN prompts p ON p.topic_id = t.id
+            LEFT JOIN queries q ON q.prompt_id = p.id
+            WHERE t.brand_id = ${BRAND_ID} AND t.status = 'active'
+            GROUP BY t.id
+          ),
+          topic_responses AS (
+            SELECT t.id AS topic_id,
+                   COUNT(r.id) AS response_count,
+                   COUNT(r.id) FILTER (WHERE r.analysis_status = 'done') AS successful_response_count
+            FROM topics t
+            LEFT JOIN prompts p ON p.topic_id = t.id
+            LEFT JOIN queries q ON q.prompt_id = p.id
+            LEFT JOIN llm_responses r ON r.query_id = q.id
+            WHERE t.brand_id = ${BRAND_ID} AND t.status = 'active'
+            GROUP BY t.id
+          )
+          SELECT
+            t.id                       AS topic_id,
+            t.text                     AS topic_name,
+            t.status                   AS status,
+            t.category                 AS dimension,
+            t.generated_by             AS generated_by,
+            t.created_at               AS created_at,
+            COALESCE(tp.prompt_count, 0)              AS prompt_count,
+            COALESCE(tq.query_count, 0)               AS query_count,
+            COALESCE(tr.response_count, 0)            AS response_count,
+            COALESCE(tr.successful_response_count, 0) AS successful_response_count
+          FROM topics t
+          LEFT JOIN topic_prompts   tp ON tp.topic_id = t.id
+          LEFT JOIN topic_queries   tq ON tq.topic_id = t.id
+          LEFT JOIN topic_responses tr ON tr.topic_id = t.id
+          WHERE t.brand_id = ${BRAND_ID} AND t.status = 'active'
+          ORDER BY successful_response_count DESC, prompt_count DESC, t.id;
+
+          ROLLBACK;
+SQL
+
+          echo "=== Readback complete ==="
+          REMOTE
+
+      - name: Upload readback log as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: topics-1029-readback
+          path: /tmp/topics_1029_readback.txt
+          if-no-files-found: warn
