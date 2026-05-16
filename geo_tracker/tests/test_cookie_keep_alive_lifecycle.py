@@ -214,6 +214,10 @@ def test_doubao_cookie_keep_alive_uses_proxy_and_reauths_auth_loss_by_default(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ):
+    # Refs #963: DOUBAO_USE_PROXY now defaults to False (direct connect from
+    # the China-hosted worker). This test exercises the opt-in proxy path
+    # through cookie keep-alive; enable it explicitly so the assertion that
+    # the proxy_url is propagated to the executor still holds.
     _install_fake_playwright(monkeypatch)
     from geo_tracker.tasks import celery_tasks
 
@@ -265,7 +269,7 @@ def test_doubao_cookie_keep_alive_uses_proxy_and_reauths_auth_loss_by_default(
 
     monkeypatch.setenv("CLASH_PROXY_URL", "http://proxy.internal:6789")
     monkeypatch.delenv("COOKIE_KEEP_ALIVE_AUTO_RELOGIN", raising=False)
-    monkeypatch.delenv("DOUBAO_USE_PROXY", raising=False)
+    monkeypatch.setenv("DOUBAO_USE_PROXY", "1")
     monkeypatch.setattr(celery_tasks, "GuestQueryExecutor", FakeGuestQueryExecutor)
     monkeypatch.setattr(celery_tasks, "_visit_and_refresh", fake_visit_and_refresh)
     monkeypatch.setattr(celery_tasks, "should_enqueue_relogin", fake_should_enqueue_relogin)

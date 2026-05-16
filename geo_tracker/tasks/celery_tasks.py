@@ -102,7 +102,11 @@ def _keep_alive_auto_relogin_enabled() -> bool:
 
 
 def _doubao_uses_proxy_route() -> bool:
-    return _env_flag("DOUBAO_USE_PROXY", True)
+    # Refs #963: Doubao defaults to direct connect from the China-hosted
+    # worker; see ``geo_tracker.agent.guest_executor._doubao_proxy_enabled``
+    # for the routing rationale. Keep the env flag so dev/overseas hosts can
+    # opt in.
+    return _env_flag("DOUBAO_USE_PROXY", False)
 
 
 def _keep_alive_proxy_url(llm_name: str) -> str | None:
