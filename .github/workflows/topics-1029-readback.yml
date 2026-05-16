@@ -7,11 +7,13 @@ name: Topics #1029 Readback
 #
 # This workflow only runs SELECTs inside a READ ONLY transaction. No writes.
 #
-# Poll iteration marker (forces fresh push): 2026-05-16T15:32:00Z iter=4b
+# Poll iteration marker (forces fresh push): 2026-05-16T15:35:00Z iter=4c
 # Deep failure diagnostic for stuck topics 162..170: dump retry_reason,
 # sample failed query rows, system-wide 24h failure pattern, llm_accounts
-# state, llm_responses success rate. 4b: split into per-query psql calls
-# + drop pipefail so a single SQL/SIGPIPE error doesn't truncate output.
+# state, llm_responses success rate.
+# 4c: collapse all SQL into ONE psql heredoc with ON_ERROR_STOP=off so
+# individual SQL errors don't kill the diagnostic. Nested heredocs over
+# SSH stdin were truncating after first inner heredoc.
 
 on:
   workflow_dispatch:
@@ -81,150 +83,54 @@ jobs:
           echo "=== Captured at ==="
           date -u +"%Y-%m-%dT%H:%M:%SZ"
 
-          echo "=== Schema preflight: queries + llm_accounts column list ==="
-          docker compose exec -T postgres psql -U genpano -d genpano -X -c "\d queries" 2>&1 || true
-          echo "---"
-          docker compose exec -T postgres psql -U genpano -d genpano -X -c "\d llm_accounts" 2>&1 || true
+          echo "=== ALL SQL via single -c flag (iter4c) ==="
+          # Iter4b nested-heredoc-over-SSH-stdin failed (truncation after
+          # \d queries). Iter4c pipes the SQL via printf and runs it through
+          # one non-stop psql -f invocation. No inner heredoc -> no truncation.
+          printf '%s\n' "\\pset pager off" \
+            "\\set ON_ERROR_STOP off" \
+            "BEGIN TRANSACTION READ ONLY;" \
+            "\\echo '=== schema: queries ==='" \
+            "\\d queries" \
+            "\\echo '=== schema: llm_accounts ==='" \
+            "\\d llm_accounts" \
+            "\\echo '=== 1. retry_reason distribution (failed queries on stuck topics 162..170) ==='" \
+            "SELECT q.target_llm, q.retry_reason, COUNT(*) AS n FROM queries q JOIN prompts p ON p.id = q.prompt_id WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170) AND q.status = 'failed' GROUP BY q.target_llm, q.retry_reason ORDER BY n DESC;" \
+            "\\echo '=== 2. Sample failed queries (20 most recent on stuck topics) ==='" \
+            "SELECT q.id, q.target_llm, q.status, q.retry_count, q.retry_reason, q.scheduled_at, q.queued_at, q.started_at, q.finished_at, q.account_id, q.profile_id, q.latency_ms FROM queries q JOIN prompts p ON p.id = q.prompt_id WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170) AND q.status = 'failed' ORDER BY q.finished_at DESC NULLS LAST LIMIT 20;" \
+            "\\echo '=== 3. System-wide 24h failure pattern (all brands, top 30) ==='" \
+            "SELECT target_llm, retry_reason, COUNT(*) AS n FROM queries WHERE status = 'failed' AND finished_at >= NOW() - INTERVAL '24 hours' GROUP BY target_llm, retry_reason ORDER BY n DESC LIMIT 30;" \
+            "\\echo '=== 4a. llm_accounts state (id, target_llm, status, last_used_at, updated_at) ==='" \
+            "SELECT id, target_llm, status, last_used_at, updated_at FROM llm_accounts ORDER BY target_llm, id LIMIT 60;" \
+            "\\echo '=== 4b. llm_accounts SELECT * sample ==='" \
+            "SELECT * FROM llm_accounts LIMIT 3;" \
+            "\\echo '=== 4c. llm_accounts target_llm + status counts ==='" \
+            "SELECT target_llm, status, COUNT(*) AS n FROM llm_accounts GROUP BY target_llm, status ORDER BY target_llm, status;" \
+            "\\echo '=== 5. Recent llm_responses success rate per LLM (1h + 24h) ==='" \
+            "SELECT q.target_llm, COUNT(*) FILTER (WHERE r.collected_at >= NOW() - INTERVAL '1 hour') AS responses_1h, COUNT(*) FILTER (WHERE r.collected_at >= NOW() - INTERVAL '24 hours') AS responses_24h, COUNT(*) FILTER (WHERE r.analysis_status='done' AND r.collected_at >= NOW() - INTERVAL '24 hours') AS analyzed_24h FROM llm_responses r JOIN queries q ON r.query_id = q.id GROUP BY q.target_llm ORDER BY q.target_llm;" \
+            "\\echo '=== 6. Updated per-topic pipeline state ==='" \
+            "SELECT p.topic_id, COUNT(q.id) AS queries_total, COUNT(q.id) FILTER (WHERE q.status = 'pending') AS pending, COUNT(q.id) FILTER (WHERE q.status = 'running') AS running, COUNT(q.id) FILTER (WHERE q.status = 'done') AS done, COUNT(q.id) FILTER (WHERE q.status = 'failed') AS failed, COUNT(r.id) AS llm_responses FROM prompts p JOIN queries q ON q.prompt_id = p.id LEFT JOIN llm_responses r ON r.query_id = q.id WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170) GROUP BY p.topic_id ORDER BY p.topic_id;" \
+            "\\echo '=== 7. Top-6 failed query IDs ==='" \
+            "SELECT q.id, q.target_llm, q.retry_reason FROM queries q JOIN prompts p ON p.id = q.prompt_id WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170) AND q.status='failed' ORDER BY q.finished_at DESC NULLS LAST LIMIT 6;" \
+            "ROLLBACK;" \
+            > /tmp/diag_1029.sql
+          docker cp /tmp/diag_1029.sql genpano-postgres-1:/tmp/diag_1029.sql 2>&1 || true
+          docker compose exec -T postgres psql -U genpano -d genpano -X -f /tmp/diag_1029.sql 2>&1 || true
 
           echo
-          echo "=== Failure diagnostic (iter 4) — split into per-query psql calls so a single SQL error doesn't kill the diagnostic ==="
-
-          echo
-          echo '--- 1. retry_reason distribution (failed queries on stuck topics 162..170) ---'
-          docker compose exec -T postgres psql -U genpano -d genpano -X 2>&1 <<'SQL1' || true
-          BEGIN TRANSACTION READ ONLY;
-          SELECT q.target_llm, q.retry_reason, COUNT(*) AS n
-          FROM queries q
-          JOIN prompts p ON p.id = q.prompt_id
-          WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170)
-            AND q.status = 'failed'
-          GROUP BY q.target_llm, q.retry_reason
-          ORDER BY n DESC;
-          ROLLBACK;
-          SQL1
-
-          echo
-          echo '--- 2. Sample failed queries (20 most recent on stuck topics) ---'
-          docker compose exec -T postgres psql -U genpano -d genpano -X 2>&1 <<'SQL2' || true
-          BEGIN TRANSACTION READ ONLY;
-          SELECT q.id, q.target_llm, q.status, q.retry_count, q.retry_reason,
-                 q.scheduled_at, q.queued_at, q.started_at, q.finished_at,
-                 q.account_id, q.profile_id, q.latency_ms
-          FROM queries q
-          JOIN prompts p ON p.id = q.prompt_id
-          WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170)
-            AND q.status = 'failed'
-          ORDER BY q.finished_at DESC NULLS LAST
-          LIMIT 20;
-          ROLLBACK;
-          SQL2
-
-          echo
-          echo '--- 3. System-wide 24h failure pattern (all brands, top 30) ---'
-          docker compose exec -T postgres psql -U genpano -d genpano -X 2>&1 <<'SQL3' || true
-          BEGIN TRANSACTION READ ONLY;
-          SELECT target_llm, retry_reason, COUNT(*) AS n
-          FROM queries
-          WHERE status = 'failed'
-            AND finished_at >= NOW() - INTERVAL '24 hours'
-          GROUP BY target_llm, retry_reason
-          ORDER BY n DESC
-          LIMIT 30;
-          ROLLBACK;
-          SQL3
-
-          echo
-          echo '--- 4. llm_accounts state (schema-tolerant, two attempts) ---'
-          docker compose exec -T postgres psql -U genpano -d genpano -X 2>&1 <<'SQL4A' || true
-          BEGIN TRANSACTION READ ONLY;
-          SELECT id, target_llm, status, last_used_at, updated_at
-          FROM llm_accounts
-          ORDER BY target_llm, id
-          LIMIT 60;
-          ROLLBACK;
-          SQL4A
-          echo '--- 4b. llm_accounts fallback: SELECT * LIMIT 5 (if 4 errored) ---'
-          docker compose exec -T postgres psql -U genpano -d genpano -X 2>&1 <<'SQL4B' || true
-          BEGIN TRANSACTION READ ONLY;
-          SELECT * FROM llm_accounts LIMIT 5;
-          ROLLBACK;
-          SQL4B
-          echo '--- 4c. llm_accounts status+target_llm count ---'
-          docker compose exec -T postgres psql -U genpano -d genpano -X 2>&1 <<'SQL4C' || true
-          BEGIN TRANSACTION READ ONLY;
-          SELECT target_llm, status, COUNT(*) AS n FROM llm_accounts GROUP BY target_llm, status ORDER BY target_llm, status;
-          ROLLBACK;
-          SQL4C
-
-          echo
-          echo '--- 5. Recent llm_responses success rate per LLM (1h + 24h) ---'
-          docker compose exec -T postgres psql -U genpano -d genpano -X 2>&1 <<'SQL5' || true
-          BEGIN TRANSACTION READ ONLY;
-          SELECT q.target_llm,
-                 COUNT(*) FILTER (WHERE r.collected_at >= NOW() - INTERVAL '1 hour') AS responses_1h,
-                 COUNT(*) FILTER (WHERE r.collected_at >= NOW() - INTERVAL '24 hours') AS responses_24h,
-                 COUNT(*) FILTER (WHERE r.analysis_status='done' AND r.collected_at >= NOW() - INTERVAL '24 hours') AS analyzed_24h
-          FROM llm_responses r
-          JOIN queries q ON r.query_id = q.id
-          GROUP BY q.target_llm
-          ORDER BY q.target_llm;
-          ROLLBACK;
-          SQL5
-
-          echo
-          echo '--- 6. Updated per-topic pipeline state (re-baseline) ---'
-          docker compose exec -T postgres psql -U genpano -d genpano -X 2>&1 <<'SQL6' || true
-          BEGIN TRANSACTION READ ONLY;
-          SELECT
-            p.topic_id,
-            COUNT(q.id) AS queries_total,
-            COUNT(q.id) FILTER (WHERE q.status = 'pending') AS pending,
-            COUNT(q.id) FILTER (WHERE q.status = 'running') AS running,
-            COUNT(q.id) FILTER (WHERE q.status = 'done') AS done,
-            COUNT(q.id) FILTER (WHERE q.status = 'failed') AS failed,
-            COUNT(r.id) AS llm_responses
-          FROM prompts p
-          JOIN queries q ON q.prompt_id = p.id
-          LEFT JOIN llm_responses r ON r.query_id = q.id
-          WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170)
-          GROUP BY p.topic_id
-          ORDER BY p.topic_id;
-          ROLLBACK;
-          SQL6
-
-          echo
-          echo "=== Failed query IDs (3 representative samples for worker log grep) ==="
-          docker compose exec -T postgres psql -U genpano -d genpano -tA -X -c "
-            SELECT q.id, q.target_llm, q.retry_reason
-            FROM queries q
-            JOIN prompts p ON p.id = q.prompt_id
-            WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170)
-              AND q.status='failed'
-            ORDER BY q.finished_at DESC NULLS LAST
-            LIMIT 6;
-          " 2>&1
+          echo "=== Top-3 failed query IDs (extracted for log grep) ==="
+          IDS=$(docker compose exec -T postgres psql -U genpano -d genpano -tA -X -c "SELECT q.id FROM queries q JOIN prompts p ON p.id = q.prompt_id WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170) AND q.status='failed' ORDER BY q.finished_at DESC NULLS LAST LIMIT 3;" 2>/dev/null | tr -d '\r' | head -3)
+          echo "IDS=$IDS"
 
           echo
           echo "=== Worker logs (last 30m) — error/fail/auth/cookie/exception keywords ==="
-          docker compose logs worker --since 30m 2>&1 \
-            | grep -iE 'execute_query|error|fail|warn|trace|exception|account|cookie|auth|401|429|captcha|quota|rate.limit' \
-            | tail -200
+          docker compose logs worker --since 30m 2>&1 | grep -iE 'execute_query|error|fail|warn|trace|exception|account|cookie|auth|401|429|captcha|quota|rate.limit' | tail -200 || true
 
           echo
-          echo "=== Worker logs per failed query_id — last 30m grep for each top-3 ID ==="
-          IDS=$(docker compose exec -T postgres psql -U genpano -d genpano -tA -X -c "
-            SELECT q.id
-            FROM queries q
-            JOIN prompts p ON p.id = q.prompt_id
-            WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170)
-              AND q.status='failed'
-            ORDER BY q.finished_at DESC NULLS LAST
-            LIMIT 3;
-          " 2>/dev/null | tr -d '\r' | head -3)
+          echo "=== Worker logs per failed query_id ==="
           for qid in $IDS; do
             echo "--- query_id=$qid ---"
             docker compose logs worker --since 30m 2>&1 | grep -E "(\\b|_)$qid(\\b|_|[^0-9])" | tail -40 || echo "(no log lines for $qid)"
-            echo
           done
 
           echo "=== Readback complete ==="
