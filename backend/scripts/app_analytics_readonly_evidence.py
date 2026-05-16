@@ -269,6 +269,102 @@ GROUP BY coverage_bucket, sc.brand_id, sc.brand_name
 ORDER BY coverage_bucket, citation_rows DESC, domains DESC
 LIMIT 80;
 
+\\echo '--- cited responses date distribution (issue #1021 authority-trend probe) ---'
+WITH target_cited_responses AS (
+  SELECT DISTINCT
+    cs.response_id,
+    r.collected_at AS response_collected_at,
+    q.finished_at AS query_finished_at,
+    q.created_at AS query_created_at,
+    cs.created_at AS citation_created_at,
+    bm.created_at AS mention_created_at
+  FROM citation_sources cs
+  JOIN brand_mentions bm ON bm.id = cs.mention_id
+  LEFT JOIN llm_responses r ON r.id = cs.response_id
+  LEFT JOIN queries q ON q.id = r.query_id
+  WHERE bm.brand_id = {config.brand_id}
+    AND cs.domain IS NOT NULL
+    AND {response_date_expr}
+      BETWEEN '{date_from}'::date AND '{date_to}'::date
+)
+SELECT
+  COALESCE(response_collected_at, query_finished_at, query_created_at)::date
+    AS response_day_bucket,
+  COUNT(DISTINCT response_id) AS cited_responses_on_day,
+  MIN(response_collected_at) AS first_response_collected_at,
+  MAX(response_collected_at) AS last_response_collected_at,
+  MIN(query_finished_at) AS first_query_finished_at,
+  MAX(query_finished_at) AS last_query_finished_at,
+  MIN(citation_created_at) AS first_citation_created_at,
+  MAX(citation_created_at) AS last_citation_created_at,
+  MIN(mention_created_at) AS first_mention_created_at,
+  MAX(mention_created_at) AS last_mention_created_at
+FROM target_cited_responses
+GROUP BY response_day_bucket
+ORDER BY response_day_bucket;
+
+\\echo '--- cited responses spans summary ---'
+WITH target_cited_responses AS (
+  SELECT DISTINCT
+    cs.response_id,
+    r.collected_at AS response_collected_at,
+    q.finished_at AS query_finished_at,
+    q.created_at AS query_created_at,
+    cs.created_at AS citation_created_at
+  FROM citation_sources cs
+  JOIN brand_mentions bm ON bm.id = cs.mention_id
+  LEFT JOIN llm_responses r ON r.id = cs.response_id
+  LEFT JOIN queries q ON q.id = r.query_id
+  WHERE bm.brand_id = {config.brand_id}
+    AND cs.domain IS NOT NULL
+    AND {response_date_expr}
+      BETWEEN '{date_from}'::date AND '{date_to}'::date
+)
+SELECT
+  COUNT(DISTINCT response_id) AS total_cited_responses,
+  COUNT(DISTINCT COALESCE(response_collected_at, query_finished_at, query_created_at)::date)
+    AS distinct_response_days,
+  COUNT(DISTINCT response_collected_at::date) AS distinct_response_collected_days,
+  COUNT(DISTINCT query_finished_at::date) AS distinct_query_finished_days,
+  COUNT(DISTINCT query_created_at::date) AS distinct_query_created_days,
+  COUNT(DISTINCT citation_created_at::date) AS distinct_citation_created_days,
+  MIN(response_collected_at) AS earliest_response_collected_at,
+  MAX(response_collected_at) AS latest_response_collected_at,
+  MIN(query_created_at) AS earliest_query_created_at,
+  MAX(query_created_at) AS latest_query_created_at,
+  MIN(citation_created_at) AS earliest_citation_created_at,
+  MAX(citation_created_at) AS latest_citation_created_at
+FROM target_cited_responses;
+
+\\echo '--- per-cited-response date detail (issue #1021 raw rows) ---'
+WITH target_cited_responses AS (
+  SELECT DISTINCT
+    cs.response_id,
+    r.collected_at AS response_collected_at,
+    q.finished_at AS query_finished_at,
+    q.created_at AS query_created_at,
+    cs.created_at AS citation_created_at,
+    bm.created_at AS mention_created_at
+  FROM citation_sources cs
+  JOIN brand_mentions bm ON bm.id = cs.mention_id
+  LEFT JOIN llm_responses r ON r.id = cs.response_id
+  LEFT JOIN queries q ON q.id = r.query_id
+  WHERE bm.brand_id = {config.brand_id}
+    AND cs.domain IS NOT NULL
+    AND {response_date_expr}
+      BETWEEN '{date_from}'::date AND '{date_to}'::date
+)
+SELECT
+  response_id,
+  response_collected_at,
+  query_finished_at,
+  query_created_at,
+  citation_created_at,
+  mention_created_at
+FROM target_cited_responses
+ORDER BY response_collected_at NULLS LAST, query_finished_at NULLS LAST, response_id
+LIMIT 60;
+
 \\echo '--- sentiment_drivers and brand-linked sentiment ---'
 WITH scoped_mentions AS (
   SELECT
