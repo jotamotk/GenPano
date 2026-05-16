@@ -192,30 +192,41 @@ jobs:
             }
             // Refs Codex P2 on PR #1073: the workflow now also runs on
             // ``workflow_dispatch`` and ``push`` to a Claude-owned branch.
-            // Neither context carries a PR number, so trying to comment
-            // would throw. Find the PR for the current head SHA when one
-            // exists; otherwise dump to the step summary and exit cleanly.
+            // Neither context carries a PR number directly. Pick the
+            // comment target in this priority order:
+            //   1. The current pull_request payload, when this is a PR event.
+            //   2. An open PR whose head SHA matches the trigger commit.
+            //   3. Issue #963 — the canonical Doubao anti-scraping
+            //      tracking issue — so ad-hoc verify dumps always have
+            //      a home rather than only living in the step summary.
             let issueNumber = null;
             if (context.payload.pull_request) {
               issueNumber = context.payload.pull_request.number;
             } else {
-              // Look up an open PR whose head SHA matches the trigger commit.
               const sha = context.sha;
-              const prs = await github.rest.search.issuesAndPullRequests({
-                q: `repo:${context.repo.owner}/${context.repo.repo} is:pr is:open ${sha}`,
-              });
-              if (prs.data.items.length > 0) {
-                issueNumber = prs.data.items[0].number;
+              try {
+                const prs = await github.rest.search.issuesAndPullRequests({
+                  q: `repo:${context.repo.owner}/${context.repo.repo} is:pr is:open ${sha}`,
+                });
+                if (prs.data.items.length > 0) {
+                  issueNumber = prs.data.items[0].number;
+                }
+              } catch (e) {
+                core.warning('PR search failed: ' + String(e));
+              }
+              if (!issueNumber) {
+                issueNumber = 963;
               }
             }
-            if (issueNumber) {
+            try {
               await github.rest.issues.createComment({
                 issue_number: issueNumber,
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 body,
               });
-              core.notice(`Posted verify dump to PR #${issueNumber}`);
-            } else {
-              core.notice('No PR context found; dump available in step summary only.');
+              core.notice(`Posted verify dump to #${issueNumber}`);
+            } catch (e) {
+              core.warning('createComment failed: ' + String(e));
+              core.notice('Dump available in step summary.');
             }
