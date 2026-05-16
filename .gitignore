@@ -11,6 +11,13 @@ venv/
 *.egg-info/
 .pytest_cache/
 .claude/
+# Un-ignore tracked Claude Code config: hooks + settings.json live under .claude/
+# and must be committed so every agent session inherits the same enforcement.
+# Defensive: kept here in case .gitignore is rewritten without this allowance.
+!.claude/
+!.claude/hooks/
+!.claude/hooks/**
+!.claude/settings.json
 
 # Agent/session artifacts
 # Note: top-level CLAUDE.md is a tracked pointer file to AGENTS.md (the canonical
