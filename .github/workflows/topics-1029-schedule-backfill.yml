@@ -1,0 +1,233 @@
+name: Topics #1029 Schedule Backfill
+
+# WRITABLE one-shot ops fix for issue #1029.
+# For the 9 BestCoffer topics (162..170) the 5/11 prompt-matrix batch produced
+# 36 prompts (252..291) that are status='active' and have approved+linked
+# prompt_candidates rows — but zero query_schedules. PR #1077 captured that
+# evidence (Q3/Q3b/Q5 readback). This workflow backfills the missing
+# query_schedules so the existing scheduler can dispatch queries on its
+# next cycle.
+#
+# INSERT runs inside a single transaction with ON_ERROR_STOP=1. The INSERT
+# is idempotent via NOT EXISTS, so re-running is safe.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type APPLY to write rows. Anything else dry-runs the COUNT(*) only."
+        required: true
+        default: "DRYRUN"
+  push:
+    branches:
+      - claude/fix-issue-1029-schedule-backfill-Ny8TZ
+    paths:
+      - '.github/workflows/topics-1029-schedule-backfill.yml'
+
+concurrency:
+  group: topics-1029-schedule-backfill
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    name: Backfill query_schedules for 9 stuck topics
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    env:
+      # push trigger has no inputs object; default to APPLY so the
+      # auto-trigger does the real backfill. workflow_dispatch overrides.
+      CONFIRM: ${{ github.event.inputs.confirm || 'APPLY' }}
+      SERVER_HOST: ${{ secrets.SERVER_HOST }}
+      SERVER_USER: ${{ secrets.SERVER_USER }}
+      SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+
+    steps:
+      - name: Validate confirm input
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${CONFIRM}" in
+            APPLY|DRYRUN) ;;
+            *) echo "confirm must be APPLY or DRYRUN, got '${CONFIRM}'"; exit 1 ;;
+          esac
+          echo "confirm=${CONFIRM}"
+
+      - name: Set up SSH
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "${SERVER_SSH_KEY}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H "${SERVER_HOST}" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Run backfill SQL on live test environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          ssh \
+            -i ~/.ssh/id_rsa \
+            -o StrictHostKeyChecking=accept-new \
+            "${SERVER_USER}@${SERVER_HOST}" \
+            "CONFIRM='${CONFIRM}' bash -s" <<'REMOTE' | tee /tmp/topics_1029_backfill.txt
+          set -euo pipefail
+          cd /opt/genpano
+
+          echo "=== Captured at ==="
+          date -u +"%Y-%m-%dT%H:%M:%SZ"
+          echo "=== Backfill mode: ${CONFIRM} ==="
+
+          if [ "${CONFIRM}" = "APPLY" ]; then
+            echo "=== APPLY: inserting missing query_schedules rows ==="
+            docker compose exec -T postgres psql -U genpano -d genpano -v ON_ERROR_STOP=1 -X <<'SQL'
+          \set ON_ERROR_STOP on
+          BEGIN;
+
+          \echo '--- pre-INSERT: schedules count per stuck topic (should be 0 for all) ---'
+          SELECT p.topic_id,
+                 COUNT(qs.id) AS schedules_before
+          FROM prompts p
+          LEFT JOIN query_schedules qs ON qs.prompt_id = p.id
+          WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170)
+          GROUP BY p.topic_id
+          ORDER BY p.topic_id;
+
+          \echo '--- INSERT missing rows (idempotent via NOT EXISTS) ---'
+          WITH inserted AS (
+            INSERT INTO query_schedules
+              (query_text, target_llm, cadence_days, brand_id, prompt_id,
+               enabled, next_run_at, plan_kind, target_llms_json,
+               query_items_json, item_count)
+            SELECT
+              p.text                            AS query_text,
+              llms.llm                          AS target_llm,
+              1                                 AS cadence_days,
+              24                                AS brand_id,
+              p.id                              AS prompt_id,
+              true                              AS enabled,
+              NOW()                             AS next_run_at,
+              'single'                          AS plan_kind,
+              jsonb_build_array(llms.llm)       AS target_llms_json,
+              jsonb_build_array(p.text)         AS query_items_json,
+              1                                 AS item_count
+            FROM prompts p
+            CROSS JOIN (VALUES ('doubao'),('chatgpt'),('deepseek'))
+                       AS llms(llm)
+            WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170)
+              AND NOT EXISTS (
+                SELECT 1 FROM query_schedules qs
+                WHERE qs.prompt_id = p.id AND qs.target_llm = llms.llm
+              )
+            RETURNING id, prompt_id, target_llm
+          )
+          SELECT COUNT(*) AS rows_inserted FROM inserted;
+
+          \echo '--- post-INSERT: schedules count per stuck topic ---'
+          SELECT p.topic_id,
+                 COUNT(qs.id)                              AS schedules_after,
+                 COUNT(qs.id) FILTER (WHERE qs.enabled)    AS schedules_enabled
+          FROM prompts p
+          LEFT JOIN query_schedules qs ON qs.prompt_id = p.id
+          WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170)
+          GROUP BY p.topic_id
+          ORDER BY p.topic_id;
+
+          \echo '--- post-INSERT: total schedules for 9 stuck topics ---'
+          SELECT COUNT(qs.id) AS total_schedules,
+                 COUNT(DISTINCT qs.prompt_id) AS distinct_prompts,
+                 COUNT(*) FILTER (WHERE qs.target_llm = 'doubao')   AS doubao,
+                 COUNT(*) FILTER (WHERE qs.target_llm = 'chatgpt')  AS chatgpt,
+                 COUNT(*) FILTER (WHERE qs.target_llm = 'deepseek') AS deepseek
+          FROM query_schedules qs
+          JOIN prompts p ON p.id = qs.prompt_id
+          WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170);
+
+          \echo '--- post-INSERT: per-prompt schedule rows (should be 3 each, 1/LLM) ---'
+          SELECT qs.prompt_id,
+                 p.topic_id,
+                 COUNT(qs.id) AS schedules,
+                 string_agg(qs.target_llm, ',' ORDER BY qs.target_llm) AS llms
+          FROM query_schedules qs
+          JOIN prompts p ON p.id = qs.prompt_id
+          WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170)
+          GROUP BY qs.prompt_id, p.topic_id
+          ORDER BY p.topic_id, qs.prompt_id;
+
+          COMMIT;
+          SQL
+          else
+            echo "=== DRYRUN: counting rows that WOULD be inserted (no writes) ==="
+            docker compose exec -T postgres psql -U genpano -d genpano -v ON_ERROR_STOP=1 -X <<'SQL'
+          \set ON_ERROR_STOP on
+          BEGIN TRANSACTION READ ONLY;
+
+          \echo '--- DRYRUN: count of rows that would be inserted ---'
+          SELECT COUNT(*) AS would_insert
+          FROM prompts p
+          CROSS JOIN (VALUES ('doubao'),('chatgpt'),('deepseek')) AS llms(llm)
+          WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170)
+            AND NOT EXISTS (
+              SELECT 1 FROM query_schedules qs
+              WHERE qs.prompt_id = p.id AND qs.target_llm = llms.llm
+            );
+
+          \echo '--- DRYRUN: per-topic count of prompts that need schedules ---'
+          SELECT p.topic_id,
+                 COUNT(p.id)                            AS prompts,
+                 COUNT(p.id) * 3                        AS would_insert_per_topic
+          FROM prompts p
+          WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170)
+          GROUP BY p.topic_id
+          ORDER BY p.topic_id;
+
+          ROLLBACK;
+          SQL
+          fi
+
+          echo "=== Backfill complete (mode=${CONFIRM}) ==="
+          REMOTE
+
+      - name: Upload backfill log as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: topics-1029-schedule-backfill
+          path: /tmp/topics_1029_backfill.txt
+          if-no-files-found: warn
+
+      - name: Post backfill result to fix PR as comment
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -s /tmp/topics_1029_backfill.txt ]; then
+            echo "backfill log missing or empty; skipping PR comment"
+            exit 0
+          fi
+          # Look up the open PR for this branch. If none exists yet (workflow
+          # ran on push before PR was opened), skip the comment — orchestrator
+          # will trigger again after PR open.
+          PR_NUMBER="$(gh pr list --repo "$REPO" --head "$BRANCH" --state open --json number --jq '.[0].number // ""')"
+          if [ -z "$PR_NUMBER" ]; then
+            echo "No open PR found for branch ${BRANCH}; skipping PR comment."
+            exit 0
+          fi
+          {
+            echo "## Schedule backfill result (issue #1029)"
+            echo ""
+            echo "**Run**: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo "**Mode**: ${CONFIRM}"
+            echo ""
+            echo '```'
+            cat /tmp/topics_1029_backfill.txt
+            echo '```'
+          } > /tmp/backfill-comment.md
+          gh pr comment "$PR_NUMBER" --repo "$REPO" --body-file /tmp/backfill-comment.md
