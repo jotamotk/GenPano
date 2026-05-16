@@ -105,6 +105,14 @@ def _project_age_days(project: Project) -> int:
 _ABSENCE_RULE_MIN_AGE_DAYS = 30
 
 
+def _normalize_brand_name_sql(col):
+    # Brand-name tolerance for IN-subquery comparisons across the
+    # BrandMention / ProductFeatureMention bridge. trim() only strips
+    # leading/trailing whitespace, so "Open AI" vs "OpenAI" would still
+    # miss; also remove embedded spaces. Portable across SQLite + PG.
+    return func.replace(func.lower(func.trim(col)), " ", "")
+
+
 # ─────────────────────────────────────────────────────────────────
 
 
@@ -1636,9 +1644,10 @@ class ProductFeatureNegativeRule(BaseRule):
         # use IN-subquery on brand_name (case/whitespace tolerant) so
         # we (a) don't cartesian-multiply the count by N BrandMention
         # rows per brand, and (b) survive brand_name variants like
-        # "OpenAI" vs "Open AI" present in the same brand_id.
+        # "OpenAI" vs "Open AI" present in the same brand_id. The
+        # normalization also strips embedded whitespace.
         brand_names_subq = (
-            select(func.lower(func.trim(BrandMention.brand_name)))
+            select(_normalize_brand_name_sql(BrandMention.brand_name))
             .where(BrandMention.brand_id == project.primary_brand_id)
             .distinct()
         )
@@ -1650,7 +1659,9 @@ class ProductFeatureNegativeRule(BaseRule):
             )
             .where(
                 and_(
-                    func.lower(func.trim(ProductFeatureMention.brand_name)).in_(brand_names_subq),
+                    _normalize_brand_name_sql(ProductFeatureMention.brand_name).in_(
+                        brand_names_subq
+                    ),
                     ProductFeatureMention.created_at >= from_d,
                 )
             )
@@ -2024,16 +2035,16 @@ class ProductRemissionRule(BaseRule):
 
         # Audit #1044 B1-8: avoid JOIN-by-brand_name cartesian inflation
         # by using a case/whitespace-tolerant IN-subquery on the brand's
-        # known names from BrandMention.
+        # known names from BrandMention. Strips embedded whitespace too.
         brand_names_subq = (
-            select(func.lower(func.trim(BrandMention.brand_name)))
+            select(_normalize_brand_name_sql(BrandMention.brand_name))
             .where(BrandMention.brand_id == project.primary_brand_id)
             .distinct()
         )
 
         async def _features(_from: datetime, _to: datetime | None) -> dict[str, int]:
             cond = [
-                func.lower(func.trim(ProductFeatureMention.brand_name)).in_(brand_names_subq),
+                _normalize_brand_name_sql(ProductFeatureMention.brand_name).in_(brand_names_subq),
                 ProductFeatureMention.created_at >= _from,
             ]
             if _to is not None:

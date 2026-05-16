@@ -180,6 +180,56 @@ async def test_b1_8_product_feature_brand_name_tolerant(db_session, project):
     assert isinstance(out, list)
 
 
+@pytest.mark.asyncio
+async def test_b1_8_product_feature_brand_name_embedded_whitespace(db_session, project):
+    """Embedded-whitespace tolerance (Codex #1089 P2). BrandMention has
+    'Open AI' (space inside) while ProductFeatureMention rows are
+    'OpenAI' (no space). `lower(trim())` alone would drop them; the
+    normalized form (also stripping embedded spaces) must keep them
+    in the IN-subquery so the diagnostic still fires."""
+    from app.diagnostics.rules import ProductFeatureNegativeRule
+
+    when = _now() - timedelta(days=10)
+    db_session.add(
+        BrandMention(
+            response_id=70_500,
+            brand_id=42,
+            brand_name="Open AI",  # embedded space
+            sentiment="positive",
+            sentiment_score=0.5,
+            created_at=when,
+        )
+    )
+    db_session.add(
+        ResponseAnalysis(
+            id=3,
+            response_id=70_501,
+            dimension_industry="ai_tools",
+            target_brand_mentioned=True,
+        )
+    )
+    await db_session.flush()
+    for i in range(12):
+        db_session.add(
+            ProductFeatureMention(
+                analysis_id=3,
+                brand_name="OpenAI",  # no embedded space
+                product_name="ChatGPT",
+                feature_name="latency",
+                feature_sentiment="negative" if i < 6 else "neutral",
+                created_at=when,
+            )
+        )
+    await db_session.commit()
+
+    out = await ProductFeatureNegativeRule().evaluate(db_session, project)
+    # 6/12 = 50% negative crosses the 30% P1 threshold — rule must fire,
+    # which only happens when the normalized IN-subquery matched.
+    assert len(out) == 1
+    payload = out[0]
+    assert payload.evidence.get("feature_name") == "latency"
+
+
 # ── B3-4 patch_alert_status validation ──────────────────────────
 
 
