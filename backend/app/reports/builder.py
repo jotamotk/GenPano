@@ -9,6 +9,7 @@ from genpano_models import Project, ProjectCompetitor
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.reports.narrator import narrate
 from app.reports.sections.base import BaseSection, ReportContext, SectionData
 from app.reports.sections.competitor_comparison import CompetitorComparisonSection
 from app.reports.sections.diagnostic_summary import DiagnosticSummarySection
@@ -115,7 +116,13 @@ async def build_report(
         cls = _REGISTRY.get(stype)
         if cls is None:
             continue
-        sections.append(await cls().render(ctx, variant=variant))
+        rendered = await cls().render(ctx, variant=variant)
+        # B2-4 (PRD §4.7.3): after each section render, run the narrator
+        # to produce an LLM-or-fallback prose paragraph distinct from
+        # the section's stat-heavy `summary`. Narrator is best-effort —
+        # failure leaves narrative=None, never raises.
+        rendered.narrative = await narrate(rendered, ctx)
+        sections.append(rendered)
 
     return {
         "report_type": report_type,
@@ -129,6 +136,7 @@ async def build_report(
                 "section_type": s.section_type,
                 "title": s.title,
                 "summary": s.summary,
+                "narrative": s.narrative,
                 "metrics": s.metrics,
                 "tables": s.tables,
                 "charts": s.charts,
