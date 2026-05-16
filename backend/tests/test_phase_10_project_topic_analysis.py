@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import uuid
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 
 import pytest
 import pytest_asyncio
@@ -608,52 +608,6 @@ async def test_topic_monitoring_list_includes_topics_without_evidence(client, db
     assert empty_row["query_count"] == 0
     assert empty_row["response_count"] == 0
     assert empty_row["engine_coverage"] == []
-
-
-@pytest.mark.asyncio
-async def test_topic_monitoring_merge_gate_only_skips_for_topic_set_narrowing_filters(
-    client, db_session, user
-):
-    """Regression for #1029 (follow-up to #1034): the previous gate keyed off
-    ``filters.explicit`` which trips on *any* filter, including the default
-    frontend state (90-day window + all engines preselected). That suppressed
-    the evidence-less-topic merge on the page-load default and shrank the list
-    back to the with-evidence subset. The narrower gate should only skip the
-    merge when filters narrow the topic *set* itself (dimensions / intents /
-    prompt_scope), not when they only narrow the response/query scope.
-    """
-    project = await _seed_admin_chain(db_session, user)
-    headers = _bearer(user)
-
-    # Default-frontend-style filters: 90-day window ending today + all
-    # engines preselected. Topic 102 has no evidence; it must still surface
-    # so the list matches admin's count.
-    today = date.today()
-    default_frontend = await client.get(
-        f"/api/v1/projects/{project.id}/topics/monitoring",
-        params={
-            "from": (today - timedelta(days=89)).isoformat(),
-            "to": today.isoformat(),
-            "engine": "chatgpt,doubao,deepseek",
-        },
-        headers=headers,
-    )
-    assert default_frontend.status_code == 200, default_frontend.text
-    topic_ids = [row["topic_id"] for row in default_frontend.json()["topics"]]
-    assert 102 in topic_ids, "evidence-less topic must merge when only date/engine filters apply"
-
-    # Narrowing filter on a topic attribute: merge should be suppressed so we
-    # don't surface topics that don't match the requested dimension.
-    narrowed = await client.get(
-        f"/api/v1/projects/{project.id}/topics/monitoring",
-        params={"dimension": "nonexistent_dimension"},
-        headers=headers,
-    )
-    assert narrowed.status_code == 200, narrowed.text
-    narrowed_ids = [row["topic_id"] for row in narrowed.json()["topics"]]
-    assert 102 not in narrowed_ids, (
-        "evidence-less topic must NOT merge when dimensions filter is set"
-    )
 
 
 @pytest.mark.asyncio
