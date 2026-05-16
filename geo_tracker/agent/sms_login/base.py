@@ -24,6 +24,10 @@ from geo_tracker.agent.sms_login.phone_blacklist import (
     add_to_blacklist,
     is_blacklisted,
 )
+from geo_tracker.agent.browser_fingerprint import (
+    attach_fingerprint_to_login_result,
+    generate_doubao_fingerprint,
+)
 from geo_tracker.agent.sms_login.providers import (
     LubanSMSProvider,
     SMSNumberLease,
@@ -607,6 +611,14 @@ class BaseSMSLoginHandler(ABC):
                     result["localStorage"] = local_storage
                 if storage_state:
                     result["storageState"] = storage_state
+                # Refs #963: persist the Camoufox Firefox fingerprint that was
+                # used to register/login this account so the next query opens
+                # with the same UA/screen/Canvas seed and Doubao's session
+                # validator does not flip the account expired on a fingerprint
+                # mismatch.
+                attach_fingerprint_to_login_result(
+                    result, getattr(self, "_launch_fingerprint", None)
+                )
                 return result
 
             # 所有重试都失败
@@ -778,6 +790,15 @@ class BaseSMSLoginHandler(ABC):
 
         if HAS_CAMOUFOX:
             logger.info(f"[{self.platform}] 启动 Camoufox...")
+            # Refs #963: generate the Firefox fingerprint up-front and remember
+            # it on the instance so login_or_register can return it alongside
+            # cookies. Without this, every Camoufox launch picks a fresh random
+            # fingerprint, and the next query (which loads the saved cookies
+            # but launches a NEW Camoufox with a NEW fingerprint) hits Doubao's
+            # session validator with a UA/screen/Canvas mismatch → server
+            # treats the session as logged out within seconds. Persisting the
+            # fingerprint per account eliminates that drift.
+            self._launch_fingerprint = generate_doubao_fingerprint()
             camoufox_kwargs = {
                 "headless": True,
                 "humanize": True,
@@ -785,6 +806,8 @@ class BaseSMSLoginHandler(ABC):
                 "os": "windows",
                 "locale": "zh-CN" if is_domestic else "en-US",
             }
+            if self._launch_fingerprint is not None:
+                camoufox_kwargs["fingerprint"] = self._launch_fingerprint
             if use_proxy:
                 camoufox_kwargs["proxy"] = {"server": proxy_url}
             ctx = AsyncCamoufox(**camoufox_kwargs)

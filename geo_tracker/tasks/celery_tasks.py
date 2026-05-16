@@ -1644,16 +1644,25 @@ def auto_login(
                 if login_result and login_result.get("cookies"):
                     from datetime import datetime as dt
                     previous_status = str(account.status or "")
-                    # 打包 cookies + localStorage（如有）为新格式
+                    # 打包 cookies + localStorage + storageState + Camoufox
+                    # fingerprint (如有) 为新格式. Refs #963: the Camoufox
+                    # fingerprint is the key piece — without it, every query
+                    # opens with a NEW random Firefox fingerprint and Doubao
+                    # invalidates the session within seconds. Persisting it
+                    # alongside cookies makes the fingerprint sticky per
+                    # account.
                     cookies_data = login_result["cookies"]
                     local_storage = login_result.get("localStorage", {})
                     storage_state = login_result.get("storageState", {})
-                    if local_storage or storage_state:
+                    camoufox_fp = login_result.get("camoufoxFingerprint")
+                    if local_storage or storage_state or camoufox_fp:
                         cookie_payload = {"cookies": cookies_data}
                         if local_storage:
                             cookie_payload["localStorage"] = local_storage
                         if storage_state:
                             cookie_payload["storageState"] = storage_state
+                        if camoufox_fp:
+                            cookie_payload["camoufoxFingerprint"] = camoufox_fp
                         account.cookies_json = json_mod.dumps(cookie_payload)
                     else:
                         account.cookies_json = json_mod.dumps(cookies_data)
@@ -1703,16 +1712,21 @@ def auto_login(
                 login_result = await handler.login_or_register()
 
                 if login_result and login_result.get("cookies"):
-                    # 打包 cookies + localStorage（如有）为新格式
+                    # 打包 cookies + localStorage + storageState + Camoufox
+                    # fingerprint (如有) 为新格式. Refs #963: same fingerprint
+                    # persistence as the re-login branch — see comment above.
                     cookies_data = login_result["cookies"]
                     local_storage = login_result.get("localStorage", {})
                     storage_state = login_result.get("storageState", {})
-                    if local_storage or storage_state:
+                    camoufox_fp = login_result.get("camoufoxFingerprint")
+                    if local_storage or storage_state or camoufox_fp:
                         cookie_payload = {"cookies": cookies_data}
                         if local_storage:
                             cookie_payload["localStorage"] = local_storage
                         if storage_state:
                             cookie_payload["storageState"] = storage_state
+                        if camoufox_fp:
+                            cookie_payload["camoufoxFingerprint"] = camoufox_fp
                         cookies_json_str = json_mod.dumps(cookie_payload)
                     else:
                         cookies_json_str = json_mod.dumps(cookies_data)
