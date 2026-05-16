@@ -105,11 +105,13 @@ def _project_age_days(project: Project) -> int:
 _ABSENCE_RULE_MIN_AGE_DAYS = 30
 
 
-def _normalize_brand_name_sql(col):
+def _normalize_brand_name_sql(col: Any) -> Any:
     # Brand-name tolerance for IN-subquery comparisons across the
     # BrandMention / ProductFeatureMention bridge. trim() only strips
     # leading/trailing whitespace, so "Open AI" vs "OpenAI" would still
     # miss; also remove embedded spaces. Portable across SQLite + PG.
+    # `col` accepts either a ColumnElement or an InstrumentedAttribute;
+    # both are valid arguments to the SA func.* machinery.
     return func.replace(func.lower(func.trim(col)), " ", "")
 
 
