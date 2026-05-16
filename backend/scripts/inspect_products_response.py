@@ -25,6 +25,17 @@ Scenarios:
         `topic_product` sub-block from `products[]`, so the rollup
         emits `topic_product.formula_status == "ok"` and the gate
         PASSES even though the v3 schema never carried that key directly.
+  (e) Issue #1040 root-cause repro: same as (d) (v3 packages exist so the
+      gate PASSes), PLUS multiple distinct `ProductFeatureMention.product_name`
+      rows so the fallback path returns multiple items — but
+      `product_score_daily` remains EMPTY (the table the daily aggregator
+      Celery task would populate, except no beat schedule fires it).
+      → expected: `items[*].product_name` populated for each distinct
+        product, `items[*].mention_rate / sov / avg_sentiment / ranking /
+        trend_30d` all NULL, `metric_formula_evidence.topic_product.
+        formula_status == "ok"` (frontend gate PASSES). This is exactly
+        the BestCoffer screenshot pattern — page renders, all per-product
+        metric columns show "--".
 
 Usage:
   uv run python backend/scripts/inspect_products_response.py
@@ -510,6 +521,23 @@ async def _run_scenario(
         f"  metric_formula_evidence keys: {sorted(metric_evidence.keys())}\n"
         f"  topic_product key present: {has_topic_product}"
     )
+
+    # Per-item metric audit — surfaces the BestCoffer screenshot pattern
+    # (product names populated but every per-product metric column is "--").
+    items_metric_audit: list[dict[str, Any]] = []
+    for item in body.get("items") or []:
+        items_metric_audit.append(
+            {
+                "product_name": item.get("product_name"),
+                "mention_count": item.get("mention_count"),
+                "mention_rate": item.get("mention_rate"),
+                "sov": item.get("sov"),
+                "avg_sentiment": item.get("avg_sentiment"),
+                "ranking": item.get("ranking"),
+                "trend_30d": item.get("trend_30d"),
+            }
+        )
+
     return {
         "label": label,
         "passes_gate": passes,
@@ -520,6 +548,7 @@ async def _run_scenario(
         "state": body.get("state"),
         "total": body.get("total"),
         "evidence_count": body.get("evidence_count"),
+        "items_metric_audit": items_metric_audit,
     }
 
 
@@ -581,6 +610,25 @@ async def main() -> None:
             v3_payload=True,
         )
     )
+    # Scenario (e) — Issue #1040 root cause: v3 packages populate the
+    # `topic_product` rollup (so the page renders), AND multiple distinct
+    # ProductFeatureMention product_name rows populate the fallback list,
+    # BUT product_score_daily is empty (the aggregate_daily_scores Celery
+    # task has no beat schedule). Each item should have a populated
+    # product_name + mention_count from the fallback, but mention_rate /
+    # sov / avg_sentiment / ranking / trend_30d will all be NULL.
+    summaries.append(
+        await _run_scenario(
+            "(e)",
+            "Issue #1040 reproducer — v3 packages PASS the gate but "
+            "product_score_daily is empty so per-product metric columns "
+            "are all NULL (matches BestCoffer screenshot)",
+            response_ids=[7000, 7001, 7002],
+            product_fact_count=3,
+            include_topic_product=False,
+            v3_payload=True,
+        )
+    )
 
     print("\n" + "=" * 78)
     print("SUMMARY")
@@ -593,6 +641,17 @@ async def main() -> None:
             f"state={s['state']!r} total={s['total']} "
             f"evidence_count={s['evidence_count']}"
         )
+        # Scenario (e) specifically inspects per-item metric nullity to
+        # confirm the BestCoffer screenshot pattern (Issue #1040).
+        if s["label"] == "(e)":
+            for item in s.get("items_metric_audit") or []:
+                print(
+                    f"      item.product_name={item['product_name']!r} "
+                    f"mention_count={item['mention_count']} "
+                    f"mention_rate={item['mention_rate']} "
+                    f"sov={item['sov']} avg_sentiment={item['avg_sentiment']} "
+                    f"ranking={item['ranking']} trend_30d={item['trend_30d']}"
+                )
 
 
 if __name__ == "__main__":

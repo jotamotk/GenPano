@@ -662,6 +662,28 @@ if os.getenv("ANALYZER_AUTO_SCHEDULE", "false").lower() == "true":
         "task":     "geo_tracker.tasks.celery_tasks.run_daily_analysis",
         "schedule": crontab(hour=2, minute=0),
     }
+    # Issue #1040: previously the daily aggregation Celery task (which
+    # populates GEOScoreDaily / ProductScoreDaily / TopicScoreDaily /
+    # IndustryBenchmarkDaily) had no beat schedule, so `product_score_daily`
+    # stayed empty and the /projects/:id/products endpoint fell back to
+    # ProductFeatureMention with all per-product metric columns NULL —
+    # exactly the BestCoffer screenshot pattern reproduced in
+    # `backend/scripts/inspect_products_response.py` scenario (e).
+    #
+    # Schedule it once per day at 04:00 UTC, two hours AFTER run_daily_analysis
+    # at 02:00 UTC so the analyzer has finished writing today's BrandMentions /
+    # ResponseAnalysis rows before we roll them up.
+    #
+    # `brand_id=None` triggers the aggregator's auto-discovery
+    # (`Aggregator._brand_ids_for_aggregation`, aggregator.py:968-980), which
+    # walks today's queries+mentions and produces rollup rows for every brand
+    # that actually has activity — no need to iterate brand_ids explicitly
+    # here. Re-runs for the same day are safe because `aggregate_daily`
+    # calls `_clear_existing_daily_aggregates` before re-inserting.
+    _beat_schedule["aggregate-daily-scores"] = {
+        "task":     "geo_tracker.tasks.celery_tasks.aggregate_daily_scores",
+        "schedule": crontab(hour=4, minute=0),
+    }
 
 if os.getenv("HOTSPOT_AUTO_SCHEDULE", "false").lower() == "true":
     _beat_schedule["hotspots-douyin"] = {
