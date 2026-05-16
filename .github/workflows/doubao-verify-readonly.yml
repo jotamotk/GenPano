@@ -110,55 +110,117 @@ jobs:
           " </dev/null 2>&1 || true
 
           echo ""
-          echo "=== Latest 5 doubao runtime-snapshot files ==="
-          ls -lat /data/screenshots/query_*_doubao_*.json 2>/dev/null | head -5 || echo "(none)"
+          echo "=== Latest 5 doubao runtime-snapshot files (inside worker container) ==="
+          docker compose exec -T worker sh -c 'ls -lat /data/screenshots/query_*_doubao_*.json 2>/dev/null | head -5 || echo "(none)"' </dev/null
 
           echo ""
-          echo "=== Latest doubao_homepage_content fingerprint dump ==="
-          latest_hp=$(ls -t /data/screenshots/query_*_doubao_homepage_content_*.json 2>/dev/null | head -1)
-          if [ -n "$latest_hp" ]; then
-            echo "FILE: $latest_hp"
-            python3 - <<PY
-          import json, sys
-          with open("$latest_hp") as f:
+          echo "=== Latest doubao runtime snapshot — fingerprint + selector inspect ==="
+          docker compose exec -T worker python3 - <<'PYEND'
+          import glob, json, os
+          # Refs #963 follow-up: pick the most recent doubao snapshot from
+          # /data/screenshots so we can correlate the diagnostic dump with
+          # the scrape failure mode. The previous read tried the host path
+          # which is not mounted; switch to the worker container's view.
+          files = sorted(
+              glob.glob("/data/screenshots/query_*_doubao_*.json"),
+              key=os.path.getmtime,
+              reverse=True,
+          )
+          if not files:
+              print("(no doubao snapshots in /data/screenshots)")
+              raise SystemExit(0)
+          path = files[0]
+          print(f"FILE: {path}")
+          with open(path) as f:
               d = json.load(f)
-          page = d.get("page", {}) or {}
-          fp = page.get("fingerprint", {}) or {}
-          print("url             :", page.get("url"))
-          print("title           :", (page.get("title") or "")[:120])
+          print("suffix          :", d.get("suffix"))
+          print("queryId         :", d.get("queryId"))
+          print("savedAt         :", d.get("savedAt"))
           print("doubaoAuthReason:", d.get("doubaoAuthStateReason"))
           print("doubaoChallenge :", d.get("doubaoVisualChallenge"))
+          page = d.get("page", {}) or {}
+          print("url             :", page.get("url"))
+          print("title           :", (page.get("title") or "")[:120])
+          print("readyState      :", page.get("readyState"))
+          print("--- responseSelectors (these tell us which Doubao DOM nodes match) ---")
+          for sel in (page.get("responseSelectors") or []):
+              print(json.dumps(
+                  {k: sel.get(k) for k in (
+                      "selector", "count", "visibleCount", "firstText", "error"
+                  )},
+                  ensure_ascii=False,
+              )[:1200])
+          print("--- inputSelectors ---")
+          for sel in (page.get("inputSelectors") or []):
+              print(json.dumps(
+                  {k: sel.get(k) for k in (
+                      "selector", "count", "visibleCount", "firstText", "error"
+                  )},
+                  ensure_ascii=False,
+              )[:600])
+          fp = page.get("fingerprint", {}) or {}
           print("--- fingerprint ---")
-          for k in ("userAgent","language","languages","platform","hardwareConcurrency","webdriver","devicePixelRatio","timezone","timezoneOffset","rtcPeerConnectionAvailable","onChatPage","userMessageBubbleCount"):
-              v = fp.get(k)
-              print(f"{k:30s} = {v!r}")
-          scr = fp.get("screen") or {}
-          print("screen          :", json.dumps(scr))
-          PY
-          else
-            echo "(no homepage_content snapshots — possibly cleared / not yet captured)"
-          fi
+          for k in (
+              "userAgent","language","languages","platform","hardwareConcurrency",
+              "webdriver","devicePixelRatio","timezone","timezoneOffset",
+              "rtcPeerConnectionAvailable","onChatPage","userMessageBubbleCount",
+          ):
+              print(f"{k:30s} = {fp.get(k)!r}")
+          print(f"{'screen':30s} = {json.dumps(fp.get('screen') or {})}")
+          print("--- bodyText (first 1200 chars) ---")
+          print((page.get("bodyText") or "")[:1200])
+          PYEND
 
           echo ""
-          echo "=== Latest doubao runtime snapshot (any reason) ==="
-          latest_any=$(ls -t /data/screenshots/query_*_doubao_*.json 2>/dev/null | head -1)
-          if [ -n "$latest_any" ] && [ "$latest_any" != "$latest_hp" ]; then
-            echo "FILE: $latest_any"
-            python3 - <<PY
-          import json
-          with open("$latest_any") as f:
-              d = json.load(f)
-          page = d.get("page", {}) or {}
-          fp = page.get("fingerprint", {}) or {}
-          print("suffix          :", d.get("suffix"))
-          print("url             :", page.get("url"))
-          print("doubaoAuthReason:", d.get("doubaoAuthStateReason"))
-          print("timezone        :", fp.get("timezone"))
-          print("timezoneOffset  :", fp.get("timezoneOffset"))
-          print("onChatPage      :", fp.get("onChatPage"))
-          print("rtcAvail        :", fp.get("rtcPeerConnectionAvailable"))
-          PY
-          fi
+          echo "=== Latest doubao saved HTML — looking for likely response containers ==="
+          docker compose exec -T worker python3 - <<'PYEND'
+          import glob, os, re
+          files = sorted(
+              glob.glob("/data/screenshots/query_*_doubao_response_page_*.html")
+              + glob.glob("/data/screenshots/query_*_doubao_extract_fail_*.html")
+              + glob.glob("/data/screenshots/query_*_doubao_homepage_content_*.html"),
+              key=os.path.getmtime,
+              reverse=True,
+          )
+          if not files:
+              print("(no recent doubao response HTML files)")
+              raise SystemExit(0)
+          path = files[0]
+          print(f"FILE: {path}")
+          with open(path, "r", encoding="utf-8", errors="replace") as f:
+              html = f.read()
+          print(f"size={len(html)} bytes")
+          # Search for likely Doubao response container patterns. Each
+          # candidate is reported with the count of matches so we can
+          # confirm whether the CURRENT site DOM contains markdown bodies
+          # at all and, if so, under what class name.
+          candidates = [
+              r"class=['\"][^'\"]*flow-markdown-body[^'\"]*['\"]",
+              r"class=['\"][^'\"]*markdown[^'\"]*['\"]",
+              r"class=['\"][^'\"]*message-bubble[^'\"]*['\"]",
+              r"class=['\"][^'\"]*chat-message[^'\"]*['\"]",
+              r"class=['\"][^'\"]*answer[^'\"]*['\"]",
+              r"class=['\"][^'\"]*response[^'\"]*['\"]",
+              r"class=['\"][^'\"]*assistant[^'\"]*['\"]",
+              r"data-testid=['\"][^'\"]*message[^'\"]*['\"]",
+              r"data-testid=['\"][^'\"]*answer[^'\"]*['\"]",
+              r"<article[^>]*>",
+          ]
+          for pat in candidates:
+              n = len(re.findall(pat, html))
+              print(f"{pat:60s} -> {n} matches")
+          # Dump the first 10 distinct class names that contain 'markdown',
+          # 'message', 'answer', or 'response' — gives the scraper team a
+          # hint about the CURRENT Doubao DOM.
+          interesting = set()
+          for m in re.finditer(r"class=['\"]([^'\"]*)['\"]", html):
+              for cls in m.group(1).split():
+                  if any(k in cls.lower() for k in ("markdown","message","answer","response","assistant","bubble","reply")):
+                      interesting.add(cls)
+          print(f"--- distinct classes mentioning markdown/message/answer/response (sample 30) ---")
+          for c in list(sorted(interesting))[:30]:
+              print(f"  {c}")
+          PYEND
 
           echo ""
           echo "=== Doubao worker log tail (last 50 lines mentioning doubao) ==="
