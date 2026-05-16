@@ -5144,6 +5144,331 @@ def test_doubao_auto_login_does_not_requeue_when_reauth_retry_disabled(
     assert requeued == []
 
 
+# Refs #963: PR #1086 stopped NEW masked phone values from being written into
+# ``llm_accounts.phone_number`` at the SMS-redaction boundary. The rows that
+# pre-date #1086 (accounts 43/44/45 etc.) still hold masked values like
+# ``147****0231`` and would otherwise be stuck in ``expired`` forever, because
+# ``BaseSMSLoginHandler.login_or_register`` rejects any ``phone`` that fails
+# ``re.fullmatch(r"\d{11}", phone)`` once ``existing_cookies`` is set. The
+# auto_login read path must detect that the stored phone is masked/invalid and
+# fall back to the new-account flow — call ``login_or_register`` with
+# ``existing_cookies=None, phone=None`` so the handler allocates a brand-new
+# SMS number and the bot-flagged row is overwritten in place.
+def test_doubao_auto_login_masked_phone_falls_back_to_new_account_flow(
+    monkeypatch,
+    tmp_path,
+):
+    _install_fake_playwright(monkeypatch)
+
+    from geo_tracker.tasks import celery_tasks
+    import geo_tracker.agent.sms_login as sms_login
+
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'doubao-masked-phone-fallback.db'}"
+    query_id = 184999
+    account_id = 43  # account 43 is one of the real production rows from #963
+
+    async def seed_database():
+        engine = create_async_engine(db_url, future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        maker = async_sessionmaker(engine, expire_on_commit=False)
+        async with maker() as session:
+            session.add_all(
+                [
+                    LLMAccount(
+                        id=account_id,
+                        llm_name="doubao",
+                        status=AccountStatus.EXPIRED.value,
+                        cookies_json='[{"name":"stale"}]',
+                        query_count_today=1,
+                        daily_limit=20,
+                        # Stored as masked because it pre-dates PR #1086's
+                        # write-time invariant. The fresh number returned by
+                        # the new-account flow below must overwrite this.
+                        phone_number="147****0231",
+                    ),
+                    Query(
+                        id=query_id,
+                        account_id=account_id,
+                        target_llm="doubao",
+                        query_text="bestCoffer advantages",
+                        status=QueryStatus.FAILED.value,
+                        retry_count=0,
+                        retry_reason="doubao_not_logged_in",
+                    ),
+                ]
+            )
+            await session.commit()
+        await engine.dispose()
+
+    asyncio.run(seed_database())
+
+    def create_engine():
+        return create_async_engine(db_url, future=True)
+
+    def get_session(engine):
+        return _TaskSessionContext(async_sessionmaker(engine, expire_on_commit=False))
+
+    login_or_register_calls: list[dict] = []
+
+    class FakeHandler:
+        async def login_or_register(self, *, existing_cookies=None, phone=None):
+            login_or_register_calls.append(
+                {"existing_cookies": existing_cookies, "phone": phone}
+            )
+            # New-account branch returns a fresh phone — the handler would
+            # have allocated this from LubanSMS.
+            return {
+                "cookies": [{"name": "session", "value": "fresh"}],
+                "phone": "18200008888",
+            }
+
+    requeued: list[dict] = []
+
+    class FakeExecuteQuery:
+        @staticmethod
+        def apply_async(*, args, queue):
+            requeued.append({"args": args, "queue": queue})
+
+    async def fake_release_relogin_lock(_account_id):
+        return None
+
+    monkeypatch.setattr(celery_tasks, "create_task_engine", create_engine)
+    monkeypatch.setattr(celery_tasks, "get_task_async_session", get_session)
+    monkeypatch.setattr(sms_login, "get_handler", lambda _platform: FakeHandler())
+    monkeypatch.setattr(celery_tasks, "execute_query", FakeExecuteQuery)
+    monkeypatch.setattr(celery_tasks, "release_relogin_lock", fake_release_relogin_lock)
+    monkeypatch.setenv("DOUBAO_REAUTH_QUERY_RETRY_MAX", "1")
+
+    result = celery_tasks.auto_login.run(account_id=account_id, query_id=query_id)
+
+    # Contract pin: with a masked stored phone, auto_login MUST fall back to
+    # the new-account flow — i.e. call login_or_register with phone=None and
+    # existing_cookies=None. The old re-login branch (existing_cookies=stale
+    # cookies, phone=masked) would be rejected by BaseSMSLoginHandler's
+    # ``\d{11}`` validation and leave the account stuck forever.
+    assert login_or_register_calls == [
+        {"existing_cookies": None, "phone": None}
+    ], (
+        "auto_login should fall back to the new-account branch when the "
+        "stored phone is masked, not pass the masked value through to the "
+        "handler's re-login path."
+    )
+
+    async def load_account_state():
+        engine = create_async_engine(db_url, future=True)
+        maker = async_sessionmaker(engine, expire_on_commit=False)
+        async with maker() as session:
+            account = await session.get(LLMAccount, account_id)
+            state = {
+                "status": account.status,
+                "phone_number": account.phone_number,
+                "cookies_json": account.cookies_json,
+            }
+        await engine.dispose()
+        return state
+
+    state = asyncio.run(load_account_state())
+
+    assert result["status"] == "success"
+    assert result["account_id"] == account_id
+    # The bot-flagged row is overwritten in place: ACTIVE + fresh phone +
+    # fresh cookies. Recovery path closes.
+    assert state["status"] == AccountStatus.ACTIVE.value
+    assert state["phone_number"] == "18200008888"
+    assert "fresh" in state["cookies_json"]
+
+
+def test_doubao_auto_login_non_numeric_phone_falls_back_to_new_account_flow(
+    monkeypatch,
+    tmp_path,
+):
+    """Variants of invalid phone formats (empty/short/letters) must also
+    route to the new-account branch — the guard checks both ``*`` and the
+    ``\\d{11}`` fullmatch so any non-canonical legacy value gets recovered,
+    not just the asterisk-masked form."""
+    _install_fake_playwright(monkeypatch)
+
+    from geo_tracker.tasks import celery_tasks
+    import geo_tracker.agent.sms_login as sms_login
+
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'doubao-empty-phone-fallback.db'}"
+    query_id = 185000
+    account_id = 44  # another real production row from #963
+
+    async def seed_database():
+        engine = create_async_engine(db_url, future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        maker = async_sessionmaker(engine, expire_on_commit=False)
+        async with maker() as session:
+            session.add_all(
+                [
+                    LLMAccount(
+                        id=account_id,
+                        llm_name="doubao",
+                        status=AccountStatus.EXPIRED.value,
+                        cookies_json='[{"name":"stale"}]',
+                        query_count_today=2,
+                        daily_limit=20,
+                        # Empty string — also fails \d{11} fullmatch.
+                        phone_number="",
+                    ),
+                    Query(
+                        id=query_id,
+                        account_id=account_id,
+                        target_llm="doubao",
+                        query_text="bestCoffer advantages",
+                        status=QueryStatus.FAILED.value,
+                        retry_count=0,
+                        retry_reason="doubao_not_logged_in",
+                    ),
+                ]
+            )
+            await session.commit()
+        await engine.dispose()
+
+    asyncio.run(seed_database())
+
+    def create_engine():
+        return create_async_engine(db_url, future=True)
+
+    def get_session(engine):
+        return _TaskSessionContext(async_sessionmaker(engine, expire_on_commit=False))
+
+    login_or_register_calls: list[dict] = []
+
+    class FakeHandler:
+        async def login_or_register(self, *, existing_cookies=None, phone=None):
+            login_or_register_calls.append(
+                {"existing_cookies": existing_cookies, "phone": phone}
+            )
+            return {
+                "cookies": [{"name": "session", "value": "fresh"}],
+                "phone": "18200009999",
+            }
+
+    requeued: list[dict] = []
+
+    class FakeExecuteQuery:
+        @staticmethod
+        def apply_async(*, args, queue):
+            requeued.append({"args": args, "queue": queue})
+
+    async def fake_release_relogin_lock(_account_id):
+        return None
+
+    monkeypatch.setattr(celery_tasks, "create_task_engine", create_engine)
+    monkeypatch.setattr(celery_tasks, "get_task_async_session", get_session)
+    monkeypatch.setattr(sms_login, "get_handler", lambda _platform: FakeHandler())
+    monkeypatch.setattr(celery_tasks, "execute_query", FakeExecuteQuery)
+    monkeypatch.setattr(celery_tasks, "release_relogin_lock", fake_release_relogin_lock)
+
+    result = celery_tasks.auto_login.run(account_id=account_id, query_id=query_id)
+
+    assert login_or_register_calls == [
+        {"existing_cookies": None, "phone": None}
+    ]
+    assert result["status"] == "success"
+
+
+def test_doubao_auto_login_valid_phone_still_uses_relogin_branch(
+    monkeypatch,
+    tmp_path,
+):
+    """Negative control for the #963 masked-phone guard: when the stored
+    phone is a canonical 11-digit number, auto_login must KEEP the old
+    re-login branch — passing ``existing_cookies=account.cookies_json`` and
+    ``phone=account.phone_number`` — so re-login still gets to reuse the
+    cookies/number when they are valid. The masked-phone fallback must not
+    be triggered for healthy rows."""
+    _install_fake_playwright(monkeypatch)
+
+    from geo_tracker.tasks import celery_tasks
+    import geo_tracker.agent.sms_login as sms_login
+
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'doubao-valid-phone-relogin.db'}"
+    query_id = 185001
+    account_id = 46
+
+    async def seed_database():
+        engine = create_async_engine(db_url, future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        maker = async_sessionmaker(engine, expire_on_commit=False)
+        async with maker() as session:
+            session.add_all(
+                [
+                    LLMAccount(
+                        id=account_id,
+                        llm_name="doubao",
+                        status=AccountStatus.EXPIRED.value,
+                        cookies_json='[{"name":"stale","value":"cookie"}]',
+                        query_count_today=1,
+                        daily_limit=20,
+                        phone_number="17000007065",  # canonical \d{11}
+                    ),
+                    Query(
+                        id=query_id,
+                        account_id=account_id,
+                        target_llm="doubao",
+                        query_text="bestCoffer advantages",
+                        status=QueryStatus.FAILED.value,
+                        retry_count=0,
+                        retry_reason="doubao_not_logged_in",
+                    ),
+                ]
+            )
+            await session.commit()
+        await engine.dispose()
+
+    asyncio.run(seed_database())
+
+    def create_engine():
+        return create_async_engine(db_url, future=True)
+
+    def get_session(engine):
+        return _TaskSessionContext(async_sessionmaker(engine, expire_on_commit=False))
+
+    login_or_register_calls: list[dict] = []
+
+    class FakeHandler:
+        async def login_or_register(self, *, existing_cookies=None, phone=None):
+            login_or_register_calls.append(
+                {"existing_cookies": existing_cookies, "phone": phone}
+            )
+            return {
+                "cookies": [{"name": "session", "value": "fresh"}],
+                "phone": phone,
+            }
+
+    requeued: list[dict] = []
+
+    class FakeExecuteQuery:
+        @staticmethod
+        def apply_async(*, args, queue):
+            requeued.append({"args": args, "queue": queue})
+
+    async def fake_release_relogin_lock(_account_id):
+        return None
+
+    monkeypatch.setattr(celery_tasks, "create_task_engine", create_engine)
+    monkeypatch.setattr(celery_tasks, "get_task_async_session", get_session)
+    monkeypatch.setattr(sms_login, "get_handler", lambda _platform: FakeHandler())
+    monkeypatch.setattr(celery_tasks, "execute_query", FakeExecuteQuery)
+    monkeypatch.setattr(celery_tasks, "release_relogin_lock", fake_release_relogin_lock)
+
+    result = celery_tasks.auto_login.run(account_id=account_id, query_id=query_id)
+
+    assert login_or_register_calls == [
+        {
+            "existing_cookies": '[{"name":"stale","value":"cookie"}]',
+            "phone": "17000007065",
+        }
+    ]
+    assert result["status"] == "success"
+
+
 def test_execute_query_rejects_chatgpt_login_page_and_expires_account(
     monkeypatch,
     tmp_path,
