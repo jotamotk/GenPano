@@ -948,10 +948,11 @@ def test_doubao_persistence_gate_allows_executor_auth_ok_marker():
 # overlays on authenticated responses, not a hard logout signal — a
 # substantive ``.flow-markdown-body`` body proves authentication and
 # must win over the overlay. Hard logout signals (``is_login:false``,
-# ``error_code:13``, ``user_id:0``, ``from_logout=1``,
-# ``login-btn-header`` chrome, visible login dialog) are still allowed
-# to override the answer, because they prove the session is actually
-# logged out.
+# ``error_code:13``, ``user_id:0``, ``from_logout=1``, the explicit
+# "会话过期" text, visible login dialog) are still allowed to override
+# the answer, because they prove the session is actually logged out.
+# ``login-btn-header`` was moved from HARD → SOFT after Q-184988 — see
+# the test below for the SPA-chrome rationale.
 def test_doubao_persistence_gate_keeps_answer_over_soft_promo_banner():
     """A real ``.flow-markdown-body`` answer wins over the soft promo overlay."""
     from geo_tracker.agent.response_validation import doubao_persistence_auth_reason
@@ -986,6 +987,54 @@ def test_doubao_persistence_gate_rejects_promo_banner_without_answer():
         "登录以解锁更多功能"
         "</div>"
     )
+
+    assert (
+        doubao_persistence_auth_reason("doubao", raw_text, response_html)
+        == "doubao_not_logged_in"
+    )
+
+
+# Refs #963 production evidence (Q-184988 post-#1042 deploy 2026-05-16
+# ~09:1x): a fully authenticated Doubao chat — user 527070 visible in
+# the sidebar, conversation history populated, a real 脱敏指标 answer
+# rendered in ``.flow-markdown-body`` — was rejected as
+# ``doubao_not_logged_in``. Root cause: ``login-btn-header`` was in the
+# HARD bucket on the assumption that the className only persists in the
+# logged-out shell, but production refuted that. Doubao's SPA carries
+# ``login-btn-header`` through hydration into the logged-in shell too,
+# so the HARD bucket vetoed real answers. Moving the className to SOFT
+# lets a substantive answer override it; truly definitive signals
+# (会话过期 / from_logout=1 / JS state / visible dialog) stay HARD.
+def test_doubao_persistence_gate_keeps_answer_over_login_btn_header_chrome():
+    """``login-btn-header`` chrome alongside a real answer is the logged-in shell."""
+    from geo_tracker.agent.response_validation import doubao_persistence_auth_reason
+
+    # Reproduces the exact Q-184988 page state: a substantive
+    # .flow-markdown-body answer AND the persistent login-btn-header
+    # chrome that Doubao's SPA keeps in DOM regardless of login state.
+    # No hard-logout signals (no 会话过期, no from_logout=1, no
+    # is_login:false / error_code:13 / user_id:0, no visible dialog).
+    raw_text = (
+        "非结构化数据 AI 脱敏准确率测评核心指标涵盖精确率、召回率、"
+        "F1-Score、准确率等基础识别指标，以及漏脱敏率、误脱敏率等专项效果指标。"
+    )
+    response_html = (
+        "<main><div class='flow-markdown-body'>"
+        + raw_text
+        + "</div></main>"
+        # SPA chrome that persists through into the logged-in shell:
+        "<button id='login-btn-header'>登录</button>"
+    )
+
+    assert doubao_persistence_auth_reason("doubao", raw_text, response_html) is None
+
+
+def test_doubao_persistence_gate_rejects_login_btn_header_without_answer():
+    """Without a substantive answer, ``login-btn-header`` still flags logout."""
+    from geo_tracker.agent.response_validation import doubao_persistence_auth_reason
+
+    raw_text = ""
+    response_html = "<button id='login-btn-header'>登录</button>"
 
     assert (
         doubao_persistence_auth_reason("doubao", raw_text, response_html)

@@ -104,17 +104,26 @@ _DOUBAO_FLOW_MARKDOWN_BODY_RE = re.compile(
 # real 1866-char response. Treating these visible promo strings as hard
 # logout evidence rejected real answers. Split the strong-unauth set so
 # substantive answers can override promo overlays while hard logout
-# signals (session expired, from_logout=1, the persistent login-btn-header
-# chrome) still block persistence regardless of any incidental answer-like
-# text on the page.
+# signals (session expired, from_logout=1) still block persistence
+# regardless of any incidental answer-like text on the page.
 _DOUBAO_PERSISTENCE_SOFT_UNAUTH_MARKERS = (
     "\u0037\u5929\u514d\u767b\u5f55",  # 7天免登录 (promo banner)
     "\u767b\u5f55\u4ee5\u89e3\u9501\u66f4\u591a\u529f\u80fd",  # promo banner
+    # Refs #963 Q-184988 (post-#1042 deploy 2026-05-16 ~09:1x): a fully
+    # authenticated Doubao chat \u2014 user 527070 in the sidebar, real
+    # \u8131\u654f\u6307\u6807 answer in .flow-markdown-body, conversation history
+    # populated \u2014 was still rejected as doubao_not_logged_in. Root
+    # cause: ``login-btn-header`` was in the HARD bucket on the
+    # assumption that the className only persists in logged-out shells,
+    # but Doubao's SPA carries it through hydration into the logged-in
+    # shell too. Moving it to SOFT lets a substantive answer override
+    # the false-positive while keeping truly definitive signals
+    # (\u4f1a\u8bdd\u8fc7\u671f / from_logout=1 / JS state / visible dialog) hard.
+    "login-btn-header",
 )
 _DOUBAO_PERSISTENCE_HARD_UNAUTH_MARKERS = (
     "\u4f1a\u8bdd\u8fc7\u671f\uff0c\u8bf7\u91cd\u65b0\u767b\u5f55",  # 会话过期
     "from_logout=1",
-    "login-btn-header",
 )
 _DOUBAO_PERSISTENCE_STRONG_UNAUTH_MARKERS = (
     _DOUBAO_PERSISTENCE_SOFT_UNAUTH_MARKERS
@@ -280,11 +289,12 @@ def _doubao_hard_persistence_auth_reason(
 
     Hard signals prove the session is in a logged-out state regardless of
     any answer-like text on the page: JS state markers (``is_login:false``,
-    ``error_code:13``, ``user_id:0``), the persistent header chrome
-    (``login-btn-header``, ``from_logout=1``, ``会话过期，请重新登录``),
-    and an actually-visible login dialog. Soft promo banners
-    (``7天免登录`` / ``登录以解锁更多功能``) are intentionally NOT in this
-    set — they coexist with real answers as tier-up pushes and would
+    ``error_code:13``, ``user_id:0``), explicit error chrome
+    (``from_logout=1`` URL artifact, ``会话过期，请重新登录`` text), and
+    an actually-visible login dialog. Soft chrome (promo banners
+    ``7天免登录`` / ``登录以解锁更多功能`` and the SPA className
+    ``login-btn-header``) is intentionally NOT in this set — these
+    coexist with real answers on the logged-in shell and would
     otherwise reject legitimate responses.
     """
     visible_html = _strip_hidden_doubao_auth_chrome(html)
