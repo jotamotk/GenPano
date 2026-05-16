@@ -7,7 +7,7 @@ name: Topics #1029 Readback
 #
 # This workflow only runs SELECTs inside a READ ONLY transaction. No writes.
 #
-# Poll iteration marker (forces fresh push): 2026-05-16T14:55:49Z iter=1
+# Poll iteration marker (forces fresh push): 2026-05-16T15:01:30Z iter=2
 # Polling pipeline progress for stuck topics 162..170 at 3-minute intervals.
 
 on:
@@ -74,7 +74,7 @@ jobs:
           echo "=== Captured at ==="
           date -u +"%Y-%m-%dT%H:%M:%SZ"
 
-          echo "=== Pipeline progress poll (iteration 1) for stuck topics 162..170 ==="
+          echo "=== Pipeline progress poll (iteration 2) for stuck topics 162..170 ==="
           docker compose exec -T postgres psql -U genpano -d genpano -v ON_ERROR_STOP=1 -X <<SQL
           \set ON_ERROR_STOP on
           BEGIN TRANSACTION READ ONLY;
@@ -85,6 +85,7 @@ jobs:
               p.topic_id,
               COUNT(q.id) AS queries_total,
               COUNT(q.id) FILTER (WHERE q.status = 'pending') AS queries_pending,
+              COUNT(q.id) FILTER (WHERE q.status = 'running') AS queries_running,
               COUNT(q.id) FILTER (WHERE q.status = 'done') AS queries_done,
               COUNT(q.id) FILTER (WHERE q.status = 'failed') AS queries_failed,
               COUNT(r.id) AS llm_responses,
@@ -103,6 +104,7 @@ jobs:
               p.topic_id,
               COUNT(q.id) AS queries_total,
               COUNT(q.id) FILTER (WHERE q.status = 'pending') AS queries_pending,
+              COUNT(q.id) FILTER (WHERE q.status = 'running') AS queries_running,
               COUNT(q.id) FILTER (WHERE q.status = 'done') AS queries_done,
               COUNT(q.id) FILTER (WHERE q.status = 'failed') AS queries_failed,
               COUNT(r.id) AS llm_responses,
@@ -115,6 +117,7 @@ jobs:
           )
           SELECT
             SUM(queries_pending) AS total_pending,
+            SUM(queries_running) AS total_running,
             SUM(queries_done) AS total_done,
             SUM(queries_failed) AS total_failed,
             SUM(llm_responses) AS total_llm_responses,
