@@ -851,7 +851,17 @@ def test_doubao_persistence_gate_allows_answer_html_with_generic_toolbar_login()
     assert doubao_persistence_auth_reason("doubao", raw_text, response_html) is None
 
 
-def test_doubao_persistence_gate_rejects_answer_html_with_strong_logout_state():
+def test_doubao_persistence_gate_accepts_answer_despite_logged_out_state_template():
+    """Substantive .flow-markdown-body answer wins over JS-state remnants.
+
+    Refs #963 follow-up: Q-184971 evidence shows Doubao's SPA bundle
+    ships JS-state objects with default ``is_login:false`` / ``user_id:0``
+    values even on the logged-in shell. Those default values get
+    captured by the HARD-marker regex but they do NOT mean the user is
+    logged out; the streamed answer in ``.flow-markdown-body`` is the
+    real proof of auth. Visible login dialogs are still absolute blocks
+    (see ``test_doubao_persistence_gate_rejects_answer_html_with_qr_login_dialog``).
+    """
     from geo_tracker.agent.response_validation import doubao_persistence_auth_reason
 
     raw_text = "bestCoffer answer text"
@@ -867,8 +877,7 @@ def test_doubao_persistence_gate_rejects_answer_html_with_strong_logout_state():
     """
 
     assert (
-        doubao_persistence_auth_reason("doubao", raw_text, response_html)
-        == "doubao_not_logged_in"
+        doubao_persistence_auth_reason("doubao", raw_text, response_html) is None
     )
 
 
@@ -908,15 +917,25 @@ def test_doubao_persistence_gate_rejects_answer_html_with_login_dialog():
     )
 
 
-def test_doubao_persistence_gate_strong_logout_overrides_auth_ok_marker():
+def test_doubao_persistence_gate_visible_dialog_overrides_auth_ok_marker():
+    """A visible login dialog overrides even the AUTH_OK marker.
+
+    Refs #963 follow-up: the AUTH_OK marker is set by the scraper after
+    it successfully extracts a response. A visible login dialog that
+    appears AFTER the extraction means the session expired during the
+    extraction window \u2014 the answer is stale and the user is now logged
+    out. The visible-dialog check therefore still overrides the marker.
+    """
     from geo_tracker.agent.response_validation import doubao_persistence_auth_reason
 
     raw_text = "bestCoffer answer-like content"
     response_html = (
         "<div class='flow-markdown-body'>bestCoffer answer-like content</div>"
-        "\n<button id='login-btn-header'>\u767b\u5f55</button>"
-        "\n<script>window.__state__={is_login:false,user_id:0}</script>"
         "\n<!-- doubao-auth-state:ok -->"
+        "\n<div role='dialog'>"
+        "\n  <h2>\u626b\u7801\u767b\u5f55</h2>"
+        "\n  <button class='login-button'>\u767b\u5f55</button>"
+        "\n</div>"
     )
 
     assert (
@@ -1042,17 +1061,71 @@ def test_doubao_persistence_gate_rejects_login_btn_header_without_answer():
     )
 
 
-def test_doubao_persistence_gate_hard_state_overrides_substantive_answer():
-    """``is_login:false`` JS state must still reject even with a real answer."""
+# Refs #963 follow-up evidence (Q-184971 retry 2026-05-16 13:20:33,
+# worker SHA 847cd9e): the system streamed a real 1727-char
+# bestCoffer answer into ``.flow-markdown-body`` on
+# ``/chat/38426272185416450`` with user 527070 visible — and STILL got
+# rejected as ``doubao_not_logged_in``. The HARD path matched a JS-state
+# remnant (``is_login:false`` for a logged-out-template panel cached in
+# DOM) or the literal i18n string ``会话过期`` embedded in the SPA
+# bundle. With the new gate order, substantive .flow-markdown-body
+# wins over those HARD remnants; only a visible login dialog still
+# absolutely blocks (because it actively interrupts the session).
+def test_doubao_persistence_gate_answer_overrides_js_state_remnant():
+    """A real .flow-markdown-body answer overrides JS-state remnants in DOM."""
     from geo_tracker.agent.response_validation import doubao_persistence_auth_reason
 
-    raw_text = "bestCoffer answer-like content with enough characters to count"
+    raw_text = (
+        "非常适合，且是金融行业多业务场景的优选方案。它针对银行、券商、基金、"
+        "支付等金融机构的高频刚需做了深度定制，覆盖合规、审计、协作、尽调、跨境等核心场景。"
+    )
+    # The JS-state markers (is_login:false, user_id:0) appear in the SPA
+    # bundle as default state for a logged-out template — even when the
+    # user IS logged in and has a real chat rendered.
     response_html = (
         "<main><div class='flow-markdown-body'>"
         + raw_text
         + "</div></main>"
         "<script>window.__state__={is_login:false,user_id:0}</script>"
     )
+
+    assert doubao_persistence_auth_reason("doubao", raw_text, response_html) is None
+
+
+def test_doubao_persistence_gate_rejects_js_state_without_answer():
+    """Without a substantive answer, JS-state markers still flag logout."""
+    from geo_tracker.agent.response_validation import doubao_persistence_auth_reason
+
+    raw_text = ""
+    response_html = (
+        "<script>window.__state__={is_login:false,user_id:0}</script>"
+    )
+
+    assert (
+        doubao_persistence_auth_reason("doubao", raw_text, response_html)
+        == "doubao_not_logged_in"
+    )
+
+
+# Refs Codex P1 on PR #1076: the substantive-answer override must NOT
+# trigger on raw_text length alone. ``raw_text`` can come from the JS
+# ``document.body.innerText`` fallback (when the .flow-markdown-body
+# selector misses) and a session-expired chrome with ``会话过期，请重新
+# 登录...`` is easily >20 visible chars. If that body-text were treated
+# as a substantive answer it would bypass HARD markers and persist a
+# logged-out page as success.
+def test_doubao_persistence_gate_blocks_jsfallback_logout_text_lacking_markdown_body():
+    """raw_text containing logout chrome (no .flow-markdown-body) must NOT bypass HARD."""
+    from geo_tracker.agent.response_validation import doubao_persistence_auth_reason
+
+    # Body-text style payload — what a JS document.body.innerText
+    # fallback would scrape on a session-expired page. No
+    # ``.flow-markdown-body`` selector match in the HTML.
+    raw_text = (
+        "会话过期，请重新登录。请扫码登录使用豆包。"
+        "这里有一些其他文本占位以确保长度超过 20 字符。"
+    )
+    response_html = "<div>some non-markdown chrome</div>"
 
     assert (
         doubao_persistence_auth_reason("doubao", raw_text, response_html)
