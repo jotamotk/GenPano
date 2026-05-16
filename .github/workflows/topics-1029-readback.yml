@@ -7,7 +7,7 @@ name: Topics #1029 Readback
 #
 # This workflow only runs SELECTs inside a READ ONLY transaction. No writes.
 #
-# Poll iteration marker (forces fresh push): 2026-05-16T15:01:30Z iter=2
+# Poll iteration marker (forces fresh push): 2026-05-16T15:06:10Z iter=3
 # Polling pipeline progress for stuck topics 162..170 at 3-minute intervals.
 
 on:
@@ -74,7 +74,7 @@ jobs:
           echo "=== Captured at ==="
           date -u +"%Y-%m-%dT%H:%M:%SZ"
 
-          echo "=== Pipeline progress poll (iteration 2) for stuck topics 162..170 ==="
+          echo "=== Pipeline progress poll (iteration 3) for stuck topics 162..170 ==="
           docker compose exec -T postgres psql -U genpano -d genpano -v ON_ERROR_STOP=1 -X <<SQL
           \set ON_ERROR_STOP on
           BEGIN TRANSACTION READ ONLY;
