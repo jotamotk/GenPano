@@ -7,7 +7,29 @@ name: Doubao Verify (read-only)
 # admin/SSH access on its own. Read-only — does not mutate any DB
 # row or kick a celery task. Pure observation.
 
+# Refs Codex P2 review on PR #1073: the original trigger was just
+# ``pull_request`` on this file's path, which is too narrow — after the
+# YAML lands on main, future Doubao fix PRs won't re-run this verifier
+# unless someone makes a dummy workflow edit. Broaden the trigger:
+# - ``workflow_dispatch`` lets the user (or any maintainer) hit "Run
+#   workflow" in the Actions UI on demand, exactly the way
+#   ``server-diagnostics.yml`` and the other runbook workflows are
+#   invoked.
+# - ``push`` on a fixed Claude-owned branch lets the assistant trigger
+#   a fresh dump by pushing an empty commit / tiny edit to that branch
+#   without opening a new PR every time.
+# - ``pull_request`` on this file is kept so PR self-tests still work
+#   when the verifier YAML itself is being touched.
 on:
+  workflow_dispatch:
+    inputs:
+      brand_id:
+        description: "Optional brand_id filter for the doubao query SELECT (default: all)"
+        required: false
+        default: ""
+  push:
+    branches:
+      - 'claude/verify-doubao'
   pull_request:
     branches: [main]
     paths:
@@ -152,7 +174,7 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Post output as PR comment
+      - name: Post output as PR comment (when a PR context exists)
         if: always()
         uses: actions/github-script@v7
         with:
@@ -168,9 +190,32 @@ jobs:
             } catch (e) {
               body += '⚠️ failed to read output: ' + String(e);
             }
-            await github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body,
-            });
+            // Refs Codex P2 on PR #1073: the workflow now also runs on
+            // ``workflow_dispatch`` and ``push`` to a Claude-owned branch.
+            // Neither context carries a PR number, so trying to comment
+            // would throw. Find the PR for the current head SHA when one
+            // exists; otherwise dump to the step summary and exit cleanly.
+            let issueNumber = null;
+            if (context.payload.pull_request) {
+              issueNumber = context.payload.pull_request.number;
+            } else {
+              // Look up an open PR whose head SHA matches the trigger commit.
+              const sha = context.sha;
+              const prs = await github.rest.search.issuesAndPullRequests({
+                q: `repo:${context.repo.owner}/${context.repo.repo} is:pr is:open ${sha}`,
+              });
+              if (prs.data.items.length > 0) {
+                issueNumber = prs.data.items[0].number;
+              }
+            }
+            if (issueNumber) {
+              await github.rest.issues.createComment({
+                issue_number: issueNumber,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body,
+              });
+              core.notice(`Posted verify dump to PR #${issueNumber}`);
+            } else {
+              core.notice('No PR context found; dump available in step summary only.');
+            }
