@@ -102,6 +102,7 @@ from app.api.v1.projects.charts._contracts import (
     _contract_metric_blocked,
     _with_chart_contract,
 )
+from app.api.v1.projects.charts._domain_tier_heuristic import _classify_untiered_domain
 from app.api.v1.projects.charts.authority import (
     _target_authority_points_from_facts,
     _with_authority_trend_contract,
@@ -1752,9 +1753,13 @@ async def get_authority_trend(
             source_provenance=["admin_facts", "citation_sources", "brand_mentions"],
         )
     # Per-day count of citations grouped by tier.
+    # Issue #1020: also group by ``CitationSource.domain`` so untiered rows
+    # can be reclassified via the heuristic fallback when
+    # ``domain_authorities`` has no admin-curated entry.
     stmt = (
         select(
             func.date(CitationSource.created_at).label("d"),
+            CitationSource.domain,
             DomainAuthority.tier,
             func.count().label("cnt"),
         )
@@ -1769,15 +1774,24 @@ async def get_authority_trend(
                 CitationSource.domain.isnot(None),
             )
         )
-        .group_by("d", DomainAuthority.tier)
+        .group_by("d", CitationSource.domain, DomainAuthority.tier)
         .order_by("d")
     )
     authority_rows = (await session.execute(stmt)).all()
+    aliases = sorted(await brand_mention_names(session, primary))
 
     authority_by_day: dict[str, dict[int | None, int]] = OrderedDict()
-    for d, tier, cnt in authority_rows:
+    for d, domain, db_tier, cnt in authority_rows:
         d_iso = d.isoformat() if hasattr(d, "isoformat") else str(d)[:10]
-        authority_by_day.setdefault(d_iso, defaultdict(int))[tier] += int(cnt or 0)
+        value = int(cnt or 0)
+        if value <= 0:
+            continue
+        tier = (
+            int(db_tier)
+            if db_tier is not None
+            else _classify_untiered_domain(domain, aliases)
+        )
+        authority_by_day.setdefault(d_iso, defaultdict(int))[tier] += value
 
     authority_points: list[AuthorityTrendPoint] = []
     for d_iso, tier_map in authority_by_day.items():
@@ -1943,8 +1957,12 @@ async def get_citation_composition(
             source_provenance=["admin_facts", "citation_sources", "brand_mentions"],
             brand_id=primary,
         )
+    # Issue #1020: group by ``CitationSource.domain`` + ``DomainAuthority.tier``
+    # so untiered rows can be reclassified via the heuristic fallback.
+    # Without this every donut segment collapsed to ``未分类`` whenever
+    # ``domain_authorities`` was unseeded for the project's cited hosts.
     stmt = (
-        select(DomainAuthority.tier, func.count())
+        select(CitationSource.domain, DomainAuthority.tier, func.count().label("cnt"))
         .select_from(CitationSource)
         .join(BrandMention, BrandMention.id == CitationSource.mention_id)
         .outerjoin(DomainAuthority, DomainAuthority.domain == CitationSource.domain)
@@ -1956,10 +1974,23 @@ async def get_citation_composition(
                 CitationSource.domain.isnot(None),
             )
         )
-        .group_by(DomainAuthority.tier)
+        .group_by(CitationSource.domain, DomainAuthority.tier)
     )
     rows = (await session.execute(stmt)).all()
-    total = sum(int(r[1] or 0) for r in rows)
+    aliases = sorted(await brand_mention_names(session, primary))
+    rows_by_tier: dict[int | None, int] = {}
+    total = 0
+    for domain, db_tier, cnt in rows:
+        count = int(cnt or 0)
+        if count <= 0:
+            continue
+        tier = (
+            int(db_tier)
+            if db_tier is not None
+            else _classify_untiered_domain(domain, aliases)
+        )
+        rows_by_tier[tier] = rows_by_tier.get(tier, 0) + count
+        total += count
     label_for = {
         1: "Tier 1 · 官方",
         2: "Tier 2 · 权威媒体",
@@ -1969,7 +2000,6 @@ async def get_citation_composition(
     }
     segments = []
     # Stable order Tier1→4 then untiered.
-    rows_by_tier = {r[0]: int(r[1] or 0) for r in rows}
     for tier in (1, 2, 3, 4, None):
         cnt = rows_by_tier.get(tier, 0)
         if cnt == 0 and tier is None:

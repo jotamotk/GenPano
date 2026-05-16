@@ -17,12 +17,13 @@ from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.projects._charts_dto import AuthorityTrendOut, AuthorityTrendPoint
-from app.api.v1.projects._mention_rollups import brand_mention_match_condition
+from app.api.v1.projects._mention_rollups import brand_mention_match_condition, brand_mention_names
 from app.api.v1.projects.charts._contracts import (
     _chart_contract_update,
     _contract_metric_blocked,
     _metric_evidence_allows_partial_data,
 )
+from app.api.v1.projects.charts._domain_tier_heuristic import _classify_untiered_domain
 
 
 async def _with_authority_trend_contract(
@@ -64,10 +65,15 @@ async def _target_authority_points_from_facts(
     if not response_days:
         return [], 0
     brand_filter = await brand_mention_match_condition(session, brand_id)
+    # Issue #1020: group by ``CitationSource.domain`` + ``DomainAuthority.tier``
+    # so domains lacking an admin-curated tier row can be classified via
+    # the heuristic fallback. Without this the entire chart collapsed to
+    # ``untiered_pct=100`` whenever ``domain_authorities`` was empty.
     rows = (
         await session.execute(
             select(
                 CitationSource.response_id,
+                CitationSource.domain,
                 DomainAuthority.tier,
                 func.count().label("cnt"),
             )
@@ -81,16 +87,25 @@ async def _target_authority_points_from_facts(
                     brand_filter,
                 )
             )
-            .group_by(CitationSource.response_id, DomainAuthority.tier)
+            .group_by(
+                CitationSource.response_id, CitationSource.domain, DomainAuthority.tier
+            )
         )
     ).all()
+    aliases = sorted(await brand_mention_names(session, brand_id))
     by_day: dict[str, dict[int | None, int]] = OrderedDict()
     total_count = 0
-    for response_id, tier, count in rows:
+    for response_id, domain, db_tier, count in rows:
         day = response_days.get(int(response_id))
         if day is None:
             continue
         value = int(count or 0)
+        if value <= 0:
+            continue
+        if db_tier is None:
+            tier: int | None = _classify_untiered_domain(domain, aliases)
+        else:
+            tier = int(db_tier)
         by_day.setdefault(day, defaultdict(int))[tier] += value
         total_count += value
     points: list[AuthorityTrendPoint] = []

@@ -16,12 +16,13 @@ from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.projects._charts_dto import CitationCompositionOut, CitationCompositionRow
-from app.api.v1.projects._mention_rollups import brand_mention_match_condition
+from app.api.v1.projects._mention_rollups import brand_mention_match_condition, brand_mention_names
 from app.api.v1.projects.charts._contracts import (
     _chart_contract_update,
     _contract_metric_blocked,
     _metric_evidence_allows_partial_data,
 )
+from app.api.v1.projects.charts._domain_tier_heuristic import _classify_untiered_domain
 
 
 async def _with_citation_composition_contract(
@@ -64,9 +65,18 @@ async def _target_citation_composition_rows(
     if not response_ids:
         return [], 0
     brand_filter = await brand_mention_match_condition(session, brand_id)
+    # Issue #1020: group by ``DomainAuthority.tier`` directly bucketed every
+    # citation whose domain lacked an admin-curated tier row as ``tier=null``.
+    # We now group by domain so untiered rows can still be classified via
+    # the heuristic fallback (Tier 1 alias, .gov/.edu Tier 2, KOL Tier 3,
+    # else Tier 4). Genuinely-empty domains still return ``tier=null``.
     rows = (
         await session.execute(
-            select(DomainAuthority.tier, func.count())
+            select(
+                CitationSource.domain,
+                DomainAuthority.tier,
+                func.count().label("cnt"),
+            )
             .select_from(CitationSource)
             .join(BrandMention, BrandMention.id == CitationSource.mention_id)
             .outerjoin(DomainAuthority, DomainAuthority.domain == CitationSource.domain)
@@ -77,10 +87,22 @@ async def _target_citation_composition_rows(
                     brand_filter,
                 )
             )
-            .group_by(DomainAuthority.tier)
+            .group_by(CitationSource.domain, DomainAuthority.tier)
         )
     ).all()
-    total = sum(int(row[1] or 0) for row in rows)
+    aliases = sorted(await brand_mention_names(session, brand_id))
+    by_tier: dict[int | None, int] = {}
+    total = 0
+    for domain, db_tier, cnt in rows:
+        count = int(cnt or 0)
+        if count <= 0:
+            continue
+        if db_tier is None:
+            tier: int | None = _classify_untiered_domain(domain, aliases)
+        else:
+            tier = int(db_tier)
+        by_tier[tier] = by_tier.get(tier, 0) + count
+        total += count
     label_for = {
         1: "Tier 1",
         2: "Tier 2",
@@ -88,7 +110,6 @@ async def _target_citation_composition_rows(
         4: "Tier 4",
         None: "Untiered",
     }
-    by_tier = {row[0]: int(row[1] or 0) for row in rows}
     return (
         [
             CitationCompositionRow(
