@@ -123,7 +123,7 @@ async def retry_query_via_vm(
     # runs the retry. Maps to CDP port via VM_QUICK_RETRY_CDP_<id> env or
     # the static doubao-01 → 9222, doubao-02 → 9223 convention. Empty
     # body keeps default behaviour (env-derived endpoint, vm_id from env).
-    body: dict = {}
+    body: dict[str, object] = {}
     try:
         body = await request.json()
     except Exception:
