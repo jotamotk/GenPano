@@ -7,13 +7,13 @@ name: Topics #1029 Readback
 #
 # This workflow only runs SELECTs inside a READ ONLY transaction. No writes.
 #
-# Poll iteration marker (forces fresh push): 2026-05-16T15:38:00Z iter=4d
-# Deep failure diagnostic for stuck topics 162..170 — iter4c discovered:
-# - llm_accounts uses column 'llm_name' not 'target_llm'
-# - section 1-3 already succeeded with clear data; section 4 aborted txn
-# Iter4d: fix column name, split each SQL into its own implicit txn so
-# section X failing doesn't abort sections X+1..N (no explicit
-# BEGIN/ROLLBACK; ON_ERROR_STOP=off keeps psql alive across statements).
+# Poll iteration marker (forces fresh push): 2026-05-17T00:00:00Z iter=5
+# Iter5: exhaustive historical data grep across all related tables.
+# User claims topics 162-170 had a "complete run" historically — verify by
+# checking queries, llm_responses, response_analyses, analyzer_runs,
+# brand_mentions, archive tables, and topic creation timeline. Output is
+# minimal aggregate counts only (no row dumps) to stay well under the
+# GitHub 64KB comment limit and avoid truncating other diagnostic sections.
 
 on:
   workflow_dispatch:
@@ -83,51 +83,47 @@ jobs:
           echo "=== Captured at ==="
           date -u +"%Y-%m-%dT%H:%M:%SZ"
 
-          echo "=== ALL SQL via single -c flag (iter4c) ==="
-          # Iter4b nested-heredoc-over-SSH-stdin failed (truncation after
-          # \d queries). Iter4c pipes the SQL via printf and runs it through
-          # one non-stop psql -f invocation. No inner heredoc -> no truncation.
+          echo "=== ALL SQL via single -f file (iter5 — exhaustive historical grep) ==="
+          # Iter5: user claims topics 162-170 had a "complete run" historically.
+          # Iter1-4 only checked the current pipeline state. Now grep all
+          # related tables for any historical traces: queries, llm_responses,
+          # response_analyses, analyzer_runs, brand_mentions, plus archive/
+          # snapshot tables in pg_catalog, plus topic creation timeline, plus
+          # any old prompts (in case prompts were regenerated and old IDs were
+          # replaced). Aggregate counts only — no row dumps.
           # No explicit BEGIN/ROLLBACK so each statement is its own
           # auto-commit-style txn; ON_ERROR_STOP=off lets psql keep going
-          # after a column-missing error in one query. Read-only by intent —
-          # only SELECTs and \d below.
+          # after a column-missing or table-missing error.
+          # Read-only by intent — only SELECTs.
           printf '%s\n' "\\pset pager off" \
             "\\set ON_ERROR_STOP off" \
-            "\\echo '=== 4a. llm_accounts state (id, llm_name, status, last_used_at) ==='" \
-            "SELECT id, llm_name, status, last_used_at, cookies_updated_at, query_count_today, daily_limit, consecutive_fails, cooldown_until FROM llm_accounts ORDER BY llm_name, id LIMIT 60;" \
-            "\\echo '=== 4b. llm_accounts cookies state (NULL vs has) ==='" \
-            "SELECT id, llm_name, status, CASE WHEN cookies_json IS NULL THEN 'NULL' WHEN cookies_json = '' THEN 'empty' ELSE 'has-' || length(cookies_json)::text || 'B' END AS cookies, cookies_updated_at, query_count_today, consecutive_fails FROM llm_accounts ORDER BY llm_name, id;" \
-            "\\echo '=== 4c. llm_accounts target_llm + status counts ==='" \
-            "SELECT llm_name, status, COUNT(*) AS n FROM llm_accounts GROUP BY llm_name, status ORDER BY llm_name, status;" \
-            "\\echo '=== 4d. accounts cooldown / consecutive_fails (high signal for auth issues) ==='" \
-            "SELECT llm_name, COUNT(*) FILTER (WHERE cooldown_until IS NOT NULL AND cooldown_until > NOW()) AS in_cooldown_now, COUNT(*) FILTER (WHERE consecutive_fails >= 3) AS gte3_consec_fails, COUNT(*) FILTER (WHERE last_used_at >= NOW() - INTERVAL '1 hour') AS used_in_1h, COUNT(*) AS total FROM llm_accounts GROUP BY llm_name ORDER BY llm_name;" \
-            "\\echo '=== 5. Recent llm_responses success rate per LLM (1h + 24h) ==='" \
-            "SELECT q.target_llm, COUNT(*) FILTER (WHERE r.collected_at >= NOW() - INTERVAL '1 hour') AS responses_1h, COUNT(*) FILTER (WHERE r.collected_at >= NOW() - INTERVAL '24 hours') AS responses_24h, COUNT(*) FILTER (WHERE r.analysis_status='done' AND r.collected_at >= NOW() - INTERVAL '24 hours') AS analyzed_24h FROM llm_responses r JOIN queries q ON r.query_id = q.id GROUP BY q.target_llm ORDER BY q.target_llm;" \
-            "\\echo '=== 6. Updated per-topic pipeline state ==='" \
-            "SELECT p.topic_id, COUNT(q.id) AS queries_total, COUNT(q.id) FILTER (WHERE q.status = 'pending') AS pending, COUNT(q.id) FILTER (WHERE q.status = 'running') AS running, COUNT(q.id) FILTER (WHERE q.status = 'done') AS done, COUNT(q.id) FILTER (WHERE q.status = 'failed') AS failed, COUNT(r.id) AS llm_responses FROM prompts p JOIN queries q ON q.prompt_id = p.id LEFT JOIN llm_responses r ON r.query_id = q.id WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170) GROUP BY p.topic_id ORDER BY p.topic_id;" \
-            "\\echo '=== 7. Top-6 failed query IDs (for worker log grep) ==='" \
-            "SELECT q.id, q.target_llm, q.retry_reason FROM queries q JOIN prompts p ON p.id = q.prompt_id WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170) AND q.status='failed' ORDER BY q.finished_at DESC NULLS LAST LIMIT 6;" \
-            "\\echo '=== 8. chatgpt account 17 detail (the loop account in section 2) ==='" \
-            "SELECT id, llm_name, status, last_used_at, query_count_today, daily_limit, consecutive_fails, cooldown_until, cookies_updated_at, CASE WHEN cookies_json IS NULL THEN 'NULL' WHEN cookies_json = '' THEN 'empty' ELSE 'has-' || length(cookies_json)::text || 'B' END AS cookies FROM llm_accounts WHERE id = 17;" \
+            "\\echo '=== 1. queries by prompt_id 252..291 (current prompts) ==='" \
+            "SELECT 'queries' AS src, target_llm, status, COUNT(*) AS n FROM queries WHERE prompt_id IN (252,253,254,255,256,257,258,259,260,261,262,263,264,265,266,267,268,269,270,271,272,273,274,275,276,277,278,279,280,281,282,283,288,289,290,291) GROUP BY target_llm, status ORDER BY target_llm, status;" \
+            "\\echo '=== 2. queries via topic_id 162..170 (catches prompt regen) ==='" \
+            "SELECT 'queries_via_topic' AS src, p.topic_id, q.target_llm, q.status, COUNT(*) AS n FROM queries q JOIN prompts p ON p.id = q.prompt_id WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170) GROUP BY p.topic_id, q.target_llm, q.status ORDER BY p.topic_id, q.target_llm, q.status;" \
+            "\\echo '=== 3. llm_responses for topics 162..170 ==='" \
+            "SELECT 'llm_responses' AS src, q.target_llm, r.analysis_status, COUNT(*) AS n FROM queries q JOIN llm_responses r ON r.query_id = q.id JOIN prompts p ON p.id = q.prompt_id WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170) GROUP BY q.target_llm, r.analysis_status ORDER BY q.target_llm, r.analysis_status;" \
+            "\\echo '=== 4. response_analyses for topics 162..170 ==='" \
+            "SELECT 'response_analyses' AS src, COUNT(*) AS n FROM response_analyses ra JOIN llm_responses r ON r.id = ra.response_id JOIN queries q ON q.id = r.query_id JOIN prompts p ON p.id = q.prompt_id WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170);" \
+            "\\echo '=== 5. analyzer_runs for topics 162..170 ==='" \
+            "SELECT 'analyzer_runs' AS src, COUNT(*) AS n FROM analyzer_runs ar JOIN llm_responses r ON r.id = ar.response_id JOIN queries q ON q.id = r.query_id JOIN prompts p ON p.id = q.prompt_id WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170);" \
+            "\\echo '=== 6. brand_mentions for topics 162..170 ==='" \
+            "SELECT 'brand_mentions' AS src, COUNT(*) AS n FROM brand_mentions bm JOIN llm_responses r ON r.id = bm.response_id JOIN queries q ON q.id = r.query_id JOIN prompts p ON p.id = q.prompt_id WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170);" \
+            "\\echo '=== 7. archive / snapshot / history / backup tables ==='" \
+            "SELECT 'archive_tables' AS src, schemaname, tablename FROM pg_tables WHERE tablename ILIKE '%archive%' OR tablename ILIKE '%snapshot%' OR tablename ILIKE '%history%' OR tablename ILIKE '%backup%' ORDER BY schemaname, tablename;" \
+            "\\echo '=== 8. topic creation timeline (153,154,158,159 visible vs 162..170 stuck) ==='" \
+            "SELECT id, LEFT(text, 80) AS text_excerpt, status, generated_by, created_at, updated_at FROM topics WHERE id IN (153,154,158,159, 162,163,164,165,166,167,168,169,170) ORDER BY created_at;" \
+            "\\echo '=== 9. all responses last 7d by topic for brand 24 ==='" \
+            "SELECT 'all_brand_responses_7d_by_topic' AS src, p.topic_id, COUNT(*) AS n FROM llm_responses r JOIN queries q ON q.id = r.query_id JOIN prompts p ON p.id = q.prompt_id JOIN topics t ON t.id = p.topic_id WHERE t.brand_id = 24 AND r.collected_at > NOW() - INTERVAL '7 days' GROUP BY p.topic_id ORDER BY p.topic_id;" \
+            "\\echo '=== 10. ALL prompts for stuck topics (counts + earliest/latest) ==='" \
+            "SELECT 'old_prompts_for_stuck_topics' AS src, p.topic_id, COUNT(p.id) AS prompt_count, MIN(p.id) AS min_prompt_id, MAX(p.id) AS max_prompt_id, MIN(p.created_at) AS earliest, MAX(p.created_at) AS latest FROM prompts p WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170) GROUP BY p.topic_id ORDER BY p.topic_id;" \
+            "\\echo '=== 11. fact-package / cached package tables (information_schema) ==='" \
+            "SELECT 'fact_package_tables' AS src, table_schema, table_name FROM information_schema.tables WHERE table_name ILIKE '%fact_package%' OR table_name ILIKE '%analyzer_fact%' OR table_name ILIKE '%cache%' ORDER BY table_schema, table_name;" \
+            "\\echo '=== 12. all queries ever for prompt 252..291 — id ranges to spot deleted rows ==='" \
+            "SELECT 'queries_id_range' AS src, p.topic_id, COUNT(q.id) AS query_count, MIN(q.id) AS min_qid, MAX(q.id) AS max_qid, MIN(q.created_at) AS earliest, MAX(q.created_at) AS latest FROM queries q JOIN prompts p ON p.id = q.prompt_id WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170) GROUP BY p.topic_id ORDER BY p.topic_id;" \
             > /tmp/diag_1029.sql
           docker cp /tmp/diag_1029.sql genpano-postgres-1:/tmp/diag_1029.sql 2>&1 || true
           docker compose exec -T postgres psql -U genpano -d genpano -X -f /tmp/diag_1029.sql 2>&1 || true
-
-          echo
-          echo "=== Top-3 failed query IDs (extracted for log grep) ==="
-          IDS=$(docker compose exec -T postgres psql -U genpano -d genpano -tA -X -c "SELECT q.id FROM queries q JOIN prompts p ON p.id = q.prompt_id WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170) AND q.status='failed' ORDER BY q.finished_at DESC NULLS LAST LIMIT 3;" 2>/dev/null | tr -d '\r' | head -3)
-          echo "IDS=$IDS"
-
-          echo
-          echo "=== Worker logs (last 30m) — error/fail/auth/cookie/exception keywords ==="
-          docker compose logs worker --since 30m 2>&1 | grep -iE 'execute_query|error|fail|warn|trace|exception|account|cookie|auth|401|429|captcha|quota|rate.limit' | tail -200 || true
-
-          echo
-          echo "=== Worker logs per failed query_id ==="
-          for qid in $IDS; do
-            echo "--- query_id=$qid ---"
-            docker compose logs worker --since 30m 2>&1 | grep -E "(\\b|_)$qid(\\b|_|[^0-9])" | tail -40 || echo "(no log lines for $qid)"
-          done
 
           echo "=== Readback complete ==="
           REMOTE
@@ -154,7 +150,7 @@ jobs:
             exit 0
           fi
           {
-            echo "## Worker failure diagnostic readback (issue #1029, iter 4)"
+            echo "## Historical data grep readback (issue #1029, iter 5)"
             echo ""
             echo "**Run**: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
             echo "**Branch**: \`${{ github.ref_name }}\`"
