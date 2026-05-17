@@ -1487,6 +1487,51 @@ class GuestQueryExecutor:
                     proxy_diagnostic=proxy_diagnostic,
                 )
 
+            # Refs #963 Codex P1 on PR #1125: production no_input path.
+            if (
+                not input_el
+                and llm == "doubao"
+                and not self._doubao_recovery_attempted
+            ):
+                self._doubao_recovery_attempted = True
+                recovery_url = config.get("url") or page_obj.url
+                logger.info(
+                    "[%s] prompt_fill: input not found — attempting one-shot "
+                    "page.goto recovery (url=%s)",
+                    llm,
+                    recovery_url,
+                )
+                try:
+                    await page_obj.goto(
+                        recovery_url,
+                        wait_until="domcontentloaded",
+                        timeout=15000,
+                    )
+                    await page_obj.wait_for_timeout(1500)
+                    for sel in selectors:
+                        if not sel:
+                            continue
+                        try:
+                            input_el = await page_obj.wait_for_selector(
+                                sel, timeout=8000, state="attached"
+                            )
+                            if input_el:
+                                logger.info(
+                                    "[%s] prompt_fill recovery succeeded — "
+                                    "re-acquired input via selector %s",
+                                    llm,
+                                    sel,
+                                )
+                                break
+                        except Exception:
+                            continue
+                except Exception as recover_err:
+                    logger.warning(
+                        "[%s] prompt_fill recovery failed: %s",
+                        llm,
+                        _redact_sensitive_text(str(recover_err))[:200],
+                    )
+
             if not input_el:
                 logger.error(f"[{llm}] 找不到输入框")
                 if page_obj:
