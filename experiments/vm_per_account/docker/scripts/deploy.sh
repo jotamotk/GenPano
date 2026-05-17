@@ -94,34 +94,41 @@ case "$ACTION" in
     sudo ufw deny in proto tcp to any port 9222:9232 || true
     sudo ufw --force enable
     sudo ufw status numbered
-    # repo — bootstrap is SAFE for production: never mutate an existing
-    # checkout's branch. If $ECS_REPO_PATH already contains our docker
-    # subdir, use it as-is. Otherwise clone fresh to a NEW path
-    # ($ECS_REPO_PATH-vm-deploy suffix) so the existing prod repo is
-    # untouched.
-    if [ -d "$DOCKER_DIR" ]; then
-      echo "Using existing $ECS_REPO_PATH (no git ops — prod repo state preserved)"
+    # repo — bootstrap is SAFE for production: never mutate the user's
+    # primary $ECS_REPO_PATH checkout. Three cases:
+    #   1. PRIMARY has our docker subdir → use as-is, NO git ops (prod safe)
+    #   2. PRIMARY doesn't exist at all → clone fresh into PRIMARY
+    #   3. PRIMARY exists but missing our subdir → use FORK suffix path
+    #      (clone fresh OR pull --ff-only if already cloned) — FORK is
+    #      always git-mutated since it's not the prod repo.
+    FORK_PATH="${ECS_REPO_PATH}-vm-deploy"
+    if [ -d "$PRIMARY_DOCKER_DIR" ]; then
+      echo "Using PRIMARY $ECS_REPO_PATH (no git ops — prod repo state preserved)"
       WORK_DIR="$ECS_REPO_PATH"
+      DOCKER_DIR="$PRIMARY_DOCKER_DIR"
     elif [ ! -e "$ECS_REPO_PATH" ]; then
       sudo mkdir -p "$(dirname "$ECS_REPO_PATH")"
       sudo chown -R "$(whoami):$(whoami)" "$(dirname "$ECS_REPO_PATH")"
       git clone https://github.com/jotamotk/trash_test.git "$ECS_REPO_PATH"
       WORK_DIR="$ECS_REPO_PATH"
+      DOCKER_DIR="$PRIMARY_DOCKER_DIR"
     else
-      # Path exists but missing docker subdir — fork to suffix path
-      FORK_PATH="${ECS_REPO_PATH}-vm-deploy"
+      # Path exists but missing docker subdir — use FORK suffix path.
+      # FORK is always pulled fresh / cloned fresh: it's not the prod repo,
+      # so re-bootstrap should always bring in latest deploy.sh + Dockerfile.
       echo "$ECS_REPO_PATH exists but missing experiments/vm_per_account/docker/"
-      echo "Cloning fresh to $FORK_PATH to avoid mutating existing checkout"
       if [ ! -d "$FORK_PATH/.git" ]; then
+        echo "Cloning fresh to $FORK_PATH (prod repo untouched)"
         sudo mkdir -p "$(dirname "$FORK_PATH")"
         sudo chown -R "$(whoami):$(whoami)" "$(dirname "$FORK_PATH")"
         git clone https://github.com/jotamotk/trash_test.git "$FORK_PATH"
       else
+        echo "Refreshing existing FORK $FORK_PATH (git pull --ff-only)"
         cd "$FORK_PATH" && git fetch origin main && git checkout main && git pull --ff-only
       fi
       WORK_DIR="$FORK_PATH"
-      DOCKER_DIR="$WORK_DIR/experiments/vm_per_account/docker"
-      echo "NOTE: ECS_REPO_PATH effectively redirected to $FORK_PATH for VM ops"
+      DOCKER_DIR="$FORK_PATH/experiments/vm_per_account/docker"
+      echo "NOTE: VM ops use $FORK_PATH ($ECS_REPO_PATH prod untouched)"
     fi
     # build images
     cd "$DOCKER_DIR"
