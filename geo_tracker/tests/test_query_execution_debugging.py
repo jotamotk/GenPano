@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import time
 import types
 import asyncio
 import json
@@ -9032,3 +9033,426 @@ def test_doubao_homepage_content_path_saves_all_three_artifacts():
             "HTML it had before. Saving only one artifact left us unable "
             "to root-cause when the failure recurred."
         )
+
+
+# -----------------------------------------------------------------------------
+# Refs #963 Q-184971 / Q-185614: parallel submit-button discovery for
+# Doubao. The ~9s fill→submit gap was wide enough for the SPA to collapse
+# back to the homepage. Tests below pin the new parallel behavior so it
+# cannot silently regress to the old sequential ~1s-per-selector loop.
+# -----------------------------------------------------------------------------
+
+
+def _build_submit_discovery_fakes(
+    *,
+    llm_name: str,
+    submit_button_selectors: list[str],
+    per_selector_delay_s: float,
+    selector_returns: dict[str, str | None],
+    js_fallback_returns_handle: bool = False,
+):
+    """Build (FakePage, FakeInput, enter_presses, button_clicks, cfg)
+    test scaffolding for the new parallel submit-button discovery path.
+
+    ``selector_returns`` maps selector → "enabled" / "disabled" / None.
+    "enabled" produces a Fake button whose ``is_visible() == True`` and
+    ``evaluate(disabled_check) == False``. "disabled" produces a Fake
+    button whose ``evaluate(disabled_check) == True`` so the discovery
+    code must skip it. ``None`` produces a missing element (the most
+    common case for a regressed page).
+
+    All ``query_selector`` calls sleep for ``per_selector_delay_s``
+    before returning; the parallel race must finish in roughly that one
+    delay regardless of selector count. The sequential pre-PR loop
+    would have taken ``per_selector_delay_s * len(selectors)``.
+    """
+    button_clicks: list[str] = []
+    enter_presses: list[int] = []
+
+    class FakeButton:
+        def __init__(self, selector: str, disabled: bool):
+            self.selector = selector
+            self._disabled = disabled
+
+        async def is_visible(self):
+            return True
+
+        async def evaluate(self, _script):
+            # The new discovery passes the disabled-check JS here.
+            return self._disabled
+
+        async def click(self, *_a, **_k):
+            button_clicks.append(self.selector)
+
+    class FakeJsHandle:
+        def as_element(self):
+            return None  # Force fall-through to Enter when reached.
+
+    class FakeKeyboard:
+        async def press(self, key, *_a, **_k):
+            if key == "Enter":
+                enter_presses.append(1)
+
+        async def type(self, *_a, **_k):
+            return None
+
+    class FakeMouse:
+        async def move(self, *_a, **_k):
+            return None
+
+    class FakeInput:
+        async def bounding_box(self):
+            return None
+
+        async def click(self, *_a, **_k):
+            return None
+
+        async def fill(self, *_a, **_k):
+            return None
+
+        async def evaluate(self, *_a, **_k):
+            return "stub"
+
+    class FakePage:
+        url = "https://www.doubao.com/chat/"
+
+        def __init__(self):
+            self.keyboard = FakeKeyboard()
+            self.mouse = FakeMouse()
+            self.query_selector_calls: list[str] = []
+
+        async def wait_for_timeout(self, *_a, **_k):
+            return None
+
+        async def evaluate_handle(self, *_a, **_k):
+            if js_fallback_returns_handle:
+                class _UsableHandle:
+                    def as_element(self):
+                        class _El:
+                            async def click(self, *_a, **_k):
+                                button_clicks.append("__js_fallback__")
+                        return _El()
+                return _UsableHandle()
+            return FakeJsHandle()
+
+        async def query_selector(self, selector, *_a, **_k):
+            self.query_selector_calls.append(selector)
+            if per_selector_delay_s > 0:
+                await asyncio.sleep(per_selector_delay_s)
+            kind = selector_returns.get(selector)
+            if kind == "enabled":
+                return FakeButton(selector, disabled=False)
+            if kind == "disabled":
+                return FakeButton(selector, disabled=True)
+            return None
+
+        async def query_selector_all(self, *_a, **_k):
+            return []
+
+        async def evaluate(self, script, *args):
+            script_text = str(script)
+            if "queryText" in script_text:
+                # _submit_confirmed: claim the user message bubble
+                # is on the page so the confirm loop exits in one tick.
+                return True
+            if "document.body?.innerText" in script_text:
+                return "ok"
+            return ""
+
+        async def content(self):
+            return "<html></html>"
+
+    cfg = {
+        "input_selector": "textarea",
+        "response_selector": ".flow-markdown-body",
+        "submit_button": ", ".join(submit_button_selectors),
+        "submit_key": "Enter",
+        "wait_after_submit": 100,
+        "load_wait": 100,
+        "login_redirect_domains": [],
+        "url": "https://www.doubao.com/chat/",
+    }
+    _ = llm_name  # Captured by the caller, not the FakePage itself.
+    return FakePage(), FakeInput(), enter_presses, button_clicks, cfg
+
+
+def _install_submit_discovery_noops(monkeypatch):
+    """Install no-op savers + bypass _fill_plain_text_input so tests
+    can focus on the submit-button discovery + click path."""
+    from geo_tracker.agent import guest_executor as _ge
+
+    async def _noop(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(_ge, "_save_html", _noop)
+    monkeypatch.setattr(_ge, "_save_screenshot", _noop)
+    monkeypatch.setattr(_ge, "_save_runtime_snapshot", _noop)
+
+
+@pytest.mark.asyncio
+async def test_doubao_submit_discovery_runs_selectors_in_parallel(monkeypatch):
+    """Refs #963 Q-184971 (5:39:44 fill → 5:39:53 submit = 9s gap):
+    the sequential ``for btn_sel in selectors`` loop took ~1s per
+    selector during DOM transitions × 7-8 selectors = 7-9s, which was
+    wide enough for the Doubao SPA to regress to the homepage between
+    fill and submit. The new code runs all selectors in parallel via
+    asyncio.wait + FIRST_COMPLETED; the first visible+enabled handle
+    wins.
+
+    Proof: with 8 selectors each delaying 50ms in query_selector, the
+    discovery must finish in ~50ms (parallel) rather than ~400ms
+    (sequential). We give a generous 200ms upper bound to absorb
+    test scheduler jitter; the sequential bound would be ~400ms.
+    """
+    _install_fake_playwright(monkeypatch)
+    _install_submit_discovery_noops(monkeypatch)
+
+    from geo_tracker.agent.guest_executor import GuestQueryExecutor
+
+    selectors = [f"button.send-candidate-{i}" for i in range(8)]
+    fake_page, fake_input, enter_presses, button_clicks, cfg = (
+        _build_submit_discovery_fakes(
+            llm_name="doubao",
+            submit_button_selectors=selectors,
+            per_selector_delay_s=0.05,
+            # Every selector resolves to a clickable button — the FIRST
+            # one to complete in the race wins. Which one wins is
+            # scheduler-dependent and not asserted here; we assert
+            # only that some button was clicked and Enter was not.
+            selector_returns={sel: "enabled" for sel in selectors},
+        )
+    )
+
+    executor = GuestQueryExecutor()
+
+    async def fake_fill_plain_text_input(*_a, **_k):
+        return True
+
+    monkeypatch.setattr(
+        executor, "_fill_plain_text_input", fake_fill_plain_text_input
+    )
+
+    started = time.monotonic()
+    await executor._browser_query(
+        fake_page,
+        cfg,
+        "parallel-discovery-test",
+        "doubao",
+        input_el=fake_input,
+        query_id=184971,
+        runtime_events=[],
+    )
+    elapsed_s = time.monotonic() - started
+
+    # Parallelism proof: with 8 selectors each delaying 50ms, the
+    # sequential pre-PR loop would have taken ~400ms inside discovery
+    # alone. With the new parallel race, the discovery itself should
+    # finish in roughly one delay (~50ms). 200ms upper bound absorbs
+    # scheduler jitter while still falling far below the sequential
+    # ~400ms floor — if this regresses, the for-loop is back.
+    assert elapsed_s < 0.20, (
+        f"submit-button discovery took {elapsed_s*1000:.0f}ms; "
+        f"expected ~50ms (parallel race) but got close to the "
+        f"sequential ~400ms — the for-loop has come back."
+    )
+    # One of the selectors must have won the race and been clicked;
+    # Enter must NOT have been pressed.
+    assert len(button_clicks) == 1, (
+        f"expected exactly one button.click() from the parallel race; "
+        f"got {button_clicks!r}"
+    )
+    assert button_clicks[0] in selectors
+    assert enter_presses == [], (
+        f"Enter must not be the fallback when a button click succeeded; "
+        f"got {enter_presses!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_doubao_submit_discovery_falls_through_within_budget(monkeypatch):
+    """Refs #963 Q-184971/Q-185614: when the Doubao SPA has collapsed
+    to a homepage that has NONE of the submit-button selectors, the
+    discovery must fall through to Enter within the
+    ``DOUBAO_SUBMIT_DISCOVERY_BUDGET_S`` (2.5s) hard cap rather than
+    iterate the for-loop until each per-call timeout fires.
+
+    Here we shorten the budget to 0.3s and give every selector a 1s
+    delay so the per-call cost dwarfs the budget. The new code must
+    cancel the in-flight discovery tasks, skip the JS fallback (budget
+    consumed) and reach the Enter fallback in well under 1s.
+    """
+    _install_fake_playwright(monkeypatch)
+    _install_submit_discovery_noops(monkeypatch)
+
+    from geo_tracker.agent import guest_executor as _ge
+    from geo_tracker.agent.guest_executor import GuestQueryExecutor
+
+    # Shrink the discovery budget for this test so a slow selector
+    # cannot mask a regression by simply finishing within the
+    # production 2.5s cap. The test-shortened budget must still bail
+    # via Enter within ~budget + scheduler jitter.
+    monkeypatch.setattr(_ge, "DOUBAO_SUBMIT_DISCOVERY_BUDGET_S", 0.3)
+
+    selectors = [f"button.send-candidate-{i}" for i in range(6)]
+    fake_page, fake_input, enter_presses, button_clicks, cfg = (
+        _build_submit_discovery_fakes(
+            llm_name="doubao",
+            submit_button_selectors=selectors,
+            per_selector_delay_s=1.0,  # >> budget so no selector can win.
+            selector_returns={sel: None for sel in selectors},
+            js_fallback_returns_handle=False,
+        )
+    )
+
+    executor = GuestQueryExecutor()
+
+    async def fake_fill_plain_text_input(*_a, **_k):
+        return True
+
+    monkeypatch.setattr(
+        executor, "_fill_plain_text_input", fake_fill_plain_text_input
+    )
+
+    started = time.monotonic()
+    await executor._browser_query(
+        fake_page,
+        cfg,
+        "discovery-budget-test",
+        "doubao",
+        input_el=fake_input,
+        query_id=184972,
+        runtime_events=[],
+    )
+    elapsed_s = time.monotonic() - started
+
+    # Budget hard-cap proof: must bail in roughly the budget + jitter,
+    # NOT in selectors_count × per_selector_delay (= 6s sequential).
+    # Generous 1.5s upper bound covers the 0.3s budget, the per-call
+    # cancellation drain, and scheduler jitter; the regression case
+    # would be ~6s.
+    assert elapsed_s < 1.5, (
+        f"discovery + fallback took {elapsed_s*1000:.0f}ms; "
+        f"budget cap (0.3s) was not enforced — discovery would have "
+        f"taken ~6s under the pre-PR for-loop."
+    )
+    # Enter must have been pressed once as the final fallback.
+    assert enter_presses == [1], (
+        f"expected one Enter keypress as the final fallback; "
+        f"got {enter_presses!r}"
+    )
+    # No button could be clicked (no selector resolved before budget).
+    assert button_clicks == [], (
+        f"no button should have been clicked when all selectors are "
+        f"unresolvable within the budget; got {button_clicks!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_chatgpt_keeps_legacy_human_thinking_random_wait(monkeypatch):
+    """Refs #963 PR scope: the 500-1500ms random "human thinking" wait
+    before submit is Doubao-specific dead weight (it's part of the 9s
+    fill→submit gap). For chatgpt and deepseek the anti-bot story is
+    different and we have no evidence the random delay hurts, so this
+    PR explicitly preserves the legacy random window for those engines.
+
+    Verify by stubbing ``random.randint`` to record its (low, high)
+    args; for chatgpt we expect the submit-time wait to call
+    ``random.randint(500, 1500)`` exactly once. The Doubao path now
+    uses the ``DOUBAO_SUBMIT_THINK_MS`` constant (200ms) directly and
+    does NOT call ``random.randint(500, 1500)``.
+    """
+    _install_fake_playwright(monkeypatch)
+    _install_submit_discovery_noops(monkeypatch)
+
+    from geo_tracker.agent import guest_executor as _ge
+    from geo_tracker.agent.guest_executor import GuestQueryExecutor
+
+    randint_calls: list[tuple[int, int]] = []
+    real_randint = _ge.random.randint
+
+    def recording_randint(a, b):
+        randint_calls.append((a, b))
+        return real_randint(a, b)
+
+    monkeypatch.setattr(_ge.random, "randint", recording_randint)
+
+    # chatgpt path — selectors all unresolvable, falls through to Enter.
+    fake_page, fake_input, enter_presses, _btn_clicks, cfg = (
+        _build_submit_discovery_fakes(
+            llm_name="chatgpt",
+            submit_button_selectors=[
+                "button[aria-label='Send prompt']",
+                "button[data-testid='send-button']",
+            ],
+            per_selector_delay_s=0.0,
+            selector_returns={
+                "button[aria-label='Send prompt']": None,
+                "button[data-testid='send-button']": None,
+            },
+        )
+    )
+    fake_page.url = "https://chatgpt.com"
+    cfg["url"] = "https://chatgpt.com"
+
+    executor = GuestQueryExecutor()
+
+    async def fake_fill_plain_text_input(*_a, **_k):
+        return True
+
+    monkeypatch.setattr(
+        executor, "_fill_plain_text_input", fake_fill_plain_text_input
+    )
+
+    await executor._browser_query(
+        fake_page,
+        cfg,
+        "legacy-wait-chatgpt-test",
+        "chatgpt",
+        input_el=fake_input,
+        query_id=900001,
+        runtime_events=[],
+    )
+
+    # chatgpt must still call random.randint(500, 1500) for the
+    # pre-submit "human thinking" wait. Doubao now uses the
+    # DOUBAO_SUBMIT_THINK_MS constant and does NOT.
+    assert (500, 1500) in randint_calls, (
+        f"chatgpt must keep the legacy 500-1500ms random pre-submit "
+        f"wait (anti-bot rhythm); got randint calls {randint_calls!r}"
+    )
+    # And Enter was actually pressed (proves we reached the submit
+    # path after the wait, not bailed in prompt_fill).
+    assert enter_presses == [1]
+
+    # --- Now repeat for doubao: must NOT include (500, 1500) ---
+    randint_calls.clear()
+    fake_page2, fake_input2, enter_presses2, _btn_clicks2, cfg2 = (
+        _build_submit_discovery_fakes(
+            llm_name="doubao",
+            submit_button_selectors=["#flow-end-msg-send"],
+            per_selector_delay_s=0.0,
+            selector_returns={"#flow-end-msg-send": None},
+        )
+    )
+
+    executor2 = GuestQueryExecutor()
+    monkeypatch.setattr(
+        executor2, "_fill_plain_text_input", fake_fill_plain_text_input
+    )
+    await executor2._browser_query(
+        fake_page2,
+        cfg2,
+        "legacy-wait-doubao-test",
+        "doubao",
+        input_el=fake_input2,
+        query_id=900002,
+        runtime_events=[],
+    )
+
+    assert (500, 1500) not in randint_calls, (
+        f"doubao must NOT call random.randint(500, 1500) for the "
+        f"pre-submit wait (it now uses DOUBAO_SUBMIT_THINK_MS=200ms "
+        f"directly to close the fill→submit gap); got randint calls "
+        f"{randint_calls!r}"
+    )
+    assert enter_presses2 == [1]
