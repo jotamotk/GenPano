@@ -582,6 +582,224 @@ async def test_topic_monitoring_aggregates_admin_chain(client, db_session, user)
 
 
 @pytest.mark.asyncio
+async def test_topic_monitoring_merges_active_topics_without_evidence(
+    client, db_session, user
+):
+    """Re-implementation of reverted PR #1034 for issue #1029.
+
+    User report: `/topics?brand_id=24` for BestCoffer showed 4 of 13 active
+    topics (PR #1077 SQL readback). After this fix, active-but-evidence-less
+    topics MUST appear in the list with zero/null metrics, while:
+
+    - `summary.topic_count` stays at the with-evidence count (no contract
+      regression — `_analytics_contract.build_contract_context` reads
+      `has_data = bool(summary.response_count or topics)`, so the merge
+      runs AFTER that gate has been evaluated against the with-evidence
+      subset).
+    - `summary.topic_count_total` reflects the full active-topic count.
+    - Existing with-evidence topics keep their metrics unchanged.
+
+    The seed in `_seed_admin_chain` already provides topic 101 (with
+    evidence) and topic 102 (active, has a prompt but no queries → no
+    `llm_responses` → excluded by the `INNER JOIN llm_responses` in
+    `_fact_rows`). We seed 8 additional active-evidence-less topics to
+    mirror the BestCoffer 4 + 9 ratio.
+    """
+    project = await _seed_admin_chain(db_session, user)
+    now = datetime.now()
+    extra_topics_sql = ",\n".join(
+        f"({tid}, 42, 'Bestcoffer topic {tid}', 'product', 'active', :now)"
+        for tid in range(1100, 1108)
+    )
+    await db_session.execute(
+        text(
+            f"""
+            INSERT INTO topics (id, brand_id, text, category, status, created_at)
+            VALUES {extra_topics_sql}
+            """
+        ),
+        {"now": now},
+    )
+    # Add prompts under those topics so they reflect "topic-plan generated,
+    # prompts exist, queries pending/failed" — the exact BestCoffer state.
+    extra_prompts_sql = ",\n".join(
+        f"({1100 + idx + 50}, {tid}, 'prompt for {tid}', 'commercial',"
+        " 'non_branded', 'en', 'active', :now)"
+        for idx, tid in enumerate(range(1100, 1108))
+    )
+    await db_session.execute(
+        text(
+            f"""
+            INSERT INTO prompts
+                (id, topic_id, text, intent, prompt_scope, language, status, created_at)
+            VALUES {extra_prompts_sql}
+            """
+        ),
+        {"now": now},
+    )
+    await db_session.commit()
+
+    resp = await client.get(
+        f"/api/v1/projects/{project.id}/topics/monitoring",
+        headers=_bearer(user),
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+
+    # With-evidence count is unchanged → contract layer keeps its
+    # `metric_formula_evidence` semantic (sample assertion: formula_status
+    # for the coverage card remains derived from the with-evidence subset,
+    # not flipped to "limited" by the merge).
+    assert body["summary"]["topic_count"] == 1
+    assert body["summary"]["prompt_count"] == 2
+    assert body["summary"]["query_count"] == 3
+    assert body["summary"]["response_count"] == 3
+    # Total active topics on this brand: 101, 102, + 8 added (range 1100..1107) = 10.
+    # Topic 901 belongs to brand 900, not 42, so it is NOT counted.
+    assert body["summary"]["topic_count_total"] == 10
+
+    topic_ids = {row["topic_id"] for row in body["topics"]}
+    assert topic_ids == {101, 102, 1100, 1101, 1102, 1103, 1104, 1105, 1106, 1107}
+
+    # 101 keeps its with-evidence metrics (sample assertion: contract layer
+    # unchanged for the with-evidence subset).
+    barrier = next(row for row in body["topics"] if row["topic_id"] == 101)
+    assert barrier["response_count"] == 3
+    assert barrier["citation_count"] == 1
+    assert barrier["sentiment_distribution"] == {
+        "positive": 1,
+        "neutral": 0,
+        "negative": 1,
+    }
+    # The merged rows have zero / null metrics — the renderer treats null
+    # rates and zero counts as "--" / "-" so no extra null-safety needed
+    # in the frontend.
+    for merged_id in (102, 1100, 1101, 1102, 1103, 1104, 1105, 1106, 1107):
+        merged = next(row for row in body["topics"] if row["topic_id"] == merged_id)
+        assert merged["prompt_count"] == 0
+        assert merged["query_count"] == 0
+        assert merged["response_count"] == 0
+        assert merged["success_rate"] is None
+        assert merged["visibility_rate"] is None
+        assert merged["mention_rate"] is None
+        assert merged["citation_count"] == 0
+        assert merged["citation_rate"] is None
+        assert merged["sentiment_distribution"] == {
+            "positive": 0,
+            "neutral": 0,
+            "negative": 0,
+        }
+        assert merged["last_collected"] is None
+        assert merged["engine_coverage"] == []
+
+    # Sample contract-layer non-regression check: the with-evidence subset
+    # determines `evidence_count`. After the merge, evidence_count stays
+    # equal to the with-evidence `response_count`, i.e. the merge does NOT
+    # leak into the contract evaluation.
+    assert body["evidence_count"] == 3
+    assert body["formula_status"] in {"ok", "partial"}
+    # Coverage card formula_status reflects the with-evidence facts only.
+    coverage = body.get("metric_formula_evidence", {}).get("coverage")
+    if isinstance(coverage, dict) and "formula_status" in coverage:
+        assert coverage["formula_status"] != "limited"
+
+
+@pytest.mark.asyncio
+async def test_topic_monitoring_excludes_archived_topics_from_merge(
+    client, db_session, user
+):
+    """Issue #1029, guard against reverted PR #1034 bug 1.
+
+    Archived topics MUST NOT appear in the merged list (they never produce
+    fact rows, so they would surface as ghost zero-everything rows). The
+    merge helpers filter on `COALESCE(t.status, 'active') <> 'archived'`,
+    the same predicate `_fact_rows` uses, so the count, the list, and
+    the downstream evidence stay in sync.
+    """
+    project = await _seed_admin_chain(db_session, user)
+    now = datetime.now()
+    await db_session.execute(
+        text(
+            """
+            INSERT INTO topics (id, brand_id, text, category, status, created_at)
+            VALUES
+              (1199, 42, 'Archived BestCoffer topic', 'product', 'archived', :now)
+            """
+        ),
+        {"now": now},
+    )
+    await db_session.commit()
+
+    resp = await client.get(
+        f"/api/v1/projects/{project.id}/topics/monitoring",
+        headers=_bearer(user),
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    topic_ids = {row["topic_id"] for row in body["topics"]}
+    assert 1199 not in topic_ids
+    # The non-archived active topic 102 from the seed still surfaces.
+    assert 102 in topic_ids
+    # `topic_count_total` mirrors `_fact_rows`' archived-exclusion predicate,
+    # so the archived row does NOT contribute to the total either.
+    assert body["summary"]["topic_count_total"] == 2  # topics 101 + 102
+
+
+@pytest.mark.asyncio
+async def test_topic_monitoring_merge_skipped_when_topic_set_narrowed(
+    client, db_session, user
+):
+    """Issue #1029, guard against reverted PR #1041 bug 2.
+
+    The merge must be gated on filters that narrow the *topic set itself*
+    (dimensions, intents, prompt_scope) — NOT on `AnalysisFilters.explicit`,
+    which trips on the default frontend state (90-day window + engines
+    preselected) and would silently never merge. When a topic-set filter is
+    applied, the user has asked to narrow the topic population, so showing
+    evidence-less topics outside that subset would be wrong.
+    """
+    project = await _seed_admin_chain(db_session, user)
+    now = datetime.now()
+    await db_session.execute(
+        text(
+            """
+            INSERT INTO topics (id, brand_id, text, category, status, created_at)
+            VALUES
+              (1110, 42, 'Topic with no evidence', 'product', 'active', :now)
+            """
+        ),
+        {"now": now},
+    )
+    await db_session.commit()
+
+    # Page-load default state: date range + engines preselected.
+    # `filters.explicit` is True here, but we now gate on topic-set filters
+    # only, so the merge MUST still surface topic 1110.
+    default_state = await client.get(
+        f"/api/v1/projects/{project.id}/topics/monitoring"
+        "?from_date=2026-04-15&to_date=2026-05-17"
+        "&engine=chatgpt&engine=doubao&engine=deepseek",
+        headers=_bearer(user),
+    )
+    assert default_state.status_code == 200, default_state.text
+    default_ids = {row["topic_id"] for row in default_state.json()["topics"]}
+    assert 1110 in default_ids
+
+    # When a topic-set filter is applied (dimension narrows topic
+    # attributes), merge MUST be skipped — topic 1110 is "product" but the
+    # user asked for "brand" only. Topic 101 ("product") is also excluded
+    # by the dimension filter on its rows, but in this seed brand_id=42 has
+    # no "brand" dimension topics, so the list comes back empty.
+    narrowed = await client.get(
+        f"/api/v1/projects/{project.id}/topics/monitoring?dimension=brand",
+        headers=_bearer(user),
+    )
+    assert narrowed.status_code == 200, narrowed.text
+    narrowed_ids = {row["topic_id"] for row in narrowed.json()["topics"]}
+    assert 1110 not in narrowed_ids
+
+
+@pytest.mark.asyncio
 async def test_topic_prompt_query_response_drilldown(client, db_session, user):
     project = await _seed_admin_chain(db_session, user)
     headers = _bearer(user)
