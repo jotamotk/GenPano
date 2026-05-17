@@ -582,9 +582,7 @@ async def test_topic_monitoring_aggregates_admin_chain(client, db_session, user)
 
 
 @pytest.mark.asyncio
-async def test_topic_monitoring_merges_active_topics_without_evidence(
-    client, db_session, user
-):
+async def test_topic_monitoring_merges_active_topics_without_evidence(client, db_session, user):
     """Re-implementation of reverted PR #1034 for issue #1029.
 
     User report: `/topics?brand_id=24` for BestCoffer showed 4 of 13 active
@@ -705,9 +703,7 @@ async def test_topic_monitoring_merges_active_topics_without_evidence(
 
 
 @pytest.mark.asyncio
-async def test_topic_monitoring_excludes_archived_topics_from_merge(
-    client, db_session, user
-):
+async def test_topic_monitoring_excludes_archived_topics_from_merge(client, db_session, user):
     """Issue #1029, guard against reverted PR #1034 bug 1.
 
     Archived topics MUST NOT appear in the merged list (they never produce
@@ -746,9 +742,7 @@ async def test_topic_monitoring_excludes_archived_topics_from_merge(
 
 
 @pytest.mark.asyncio
-async def test_topic_monitoring_merge_skipped_when_topic_set_narrowed(
-    client, db_session, user
-):
+async def test_topic_monitoring_merge_skipped_when_topic_set_narrowed(client, db_session, user):
     """Issue #1029, guard against reverted PR #1041 bug 2.
 
     The merge must be gated on filters that narrow the *topic set itself*

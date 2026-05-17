@@ -251,9 +251,7 @@ async def _count_brand_topics_total(session: AsyncSession, brand_id: int) -> int
     where_clauses = ["brand_id = :brand_id"]
     if "status" in cols:
         where_clauses.append("COALESCE(status, 'active') <> 'archived'")
-    sql = text(
-        f"SELECT COUNT(*) AS topic_count FROM topics WHERE {' AND '.join(where_clauses)}"
-    )
+    sql = text(f"SELECT COUNT(*) AS topic_count FROM topics WHERE {' AND '.join(where_clauses)}")
     try:
         result = await session.execute(sql, {"brand_id": int(brand_id)})
         row = result.mappings().first()
@@ -264,9 +262,7 @@ async def _count_brand_topics_total(session: AsyncSession, brand_id: int) -> int
     return int(row.get("topic_count") or 0)
 
 
-async def _fetch_brand_topics_listing(
-    session: AsyncSession, brand_id: int
-) -> list[dict[str, Any]]:
+async def _fetch_brand_topics_listing(session: AsyncSession, brand_id: int) -> list[dict[str, Any]]:
     """Active topic rows for a brand (id, text, category, status).
 
     Scope mirrors `topic_analysis/queries.py:_fact_rows` line 226
@@ -678,9 +674,7 @@ async def get_topic_monitoring(
     # *topic set itself*: dimensions, intents, prompt_scope. Date / engine /
     # segment / profile filters are query-scope and a topic with no
     # responses in the window is still a valid "no evidence yet" entry.
-    filters_narrow_topic_set = bool(
-        filters.dimensions or filters.intents or filters.prompt_scope
-    )
+    filters_narrow_topic_set = bool(filters.dimensions or filters.intents or filters.prompt_scope)
     if not filters_narrow_topic_set:
         listing = await _fetch_brand_topics_listing(session, brand_id)
         merged_topics = _merge_missing_brand_topics(
