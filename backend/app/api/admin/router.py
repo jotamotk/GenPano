@@ -47,6 +47,7 @@ from app.api.admin.session import router as session_router
 from app.api.admin.stats import router as stats_router
 from app.api.admin.topic_plan import router as topic_plan_router
 from app.api.admin.users import router as users_router
+from app.api.admin.vm_accounts import router as vm_accounts_router
 from app.core.security import _DependsDb
 
 router = APIRouter(tags=["Admin"])
@@ -75,6 +76,7 @@ router.include_router(session_router, prefix="/session")
 router.include_router(stats_router, prefix="/stats")
 router.include_router(topic_plan_router, prefix="/topic-plan")
 router.include_router(users_router, prefix="/users")
+router.include_router(vm_accounts_router, prefix="/vm")
 
 
 @router.get("/brands", response_model=None)

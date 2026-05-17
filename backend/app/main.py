@@ -191,6 +191,15 @@ from app.api.admin.accounts import router as _accounts_router  # noqa: E402
 
 app.include_router(_accounts_router, prefix="/api/accounts")
 
+# VM-per-account admin router (Issue #1116 / Epic #1110). Mounted at
+# /admin/api/vm/* so the admin.html SPA can call the endpoints at
+# the requested URL prefix without going through /admin/api/admin/vm.
+# The canonical mount via the admin_router include lives at
+# /api/admin/vm/* AND /admin/api/admin/vm/*.
+from app.api.admin.vm_accounts import router as _vm_accounts_router  # noqa: E402
+
+app.include_router(_vm_accounts_router, prefix="/admin/api/vm")
+
 # Legacy alias for the Scheduler routes (Phase 8 slice 8c). admin.html
 # uses ``/api/scheduler/*`` directly. The router file's paths are
 # ``/scheduler/...`` so mounting at the empty prefix here gives us the

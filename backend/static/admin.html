@@ -6282,6 +6282,179 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
         </div>
       </template>
 
+      <!-- ============ PAGE: VM ACCOUNTS (Issue #1116 / Epic #1110) ============ -->
+      <template x-if="page==='planner-vm-accounts'">
+        <div class="space-y-4">
+          <!-- Header + actions -->
+          <div class="flex items-center justify-between">
+            <div>
+              <h3 class="text-[14px] font-semibold text-ink">vm_session 账号</h3>
+              <div class="text-[11px] text-ink-muted mt-0.5">
+                每账号一台 VM 持有持久浏览器，通过 CDP 直连。<strong class="text-warning">禁止录入 cookies_json</strong> (R2.5 自克隆设备防护) ·
+                需要重登录时 watchdog 会自动 POST <code>/admin/api/vm/needs_relogin</code> 并 Slack 告警。
+                Refs <a class="text-accent hover:underline" target="_blank" href="https://github.com/jotamotk/trash_test/issues/1116">#1116</a> /
+                Epic <a class="text-accent hover:underline" target="_blank" href="https://github.com/jotamotk/trash_test/issues/1110">#1110</a>
+              </div>
+            </div>
+            <div class="flex items-center gap-2">
+              <span x-show="vmAccountsLoading" class="text-[12px] text-ink-muted">加载中…</span>
+              <span x-show="vmAccountsError" class="text-[12px] text-danger" x-text="vmAccountsError"></span>
+              <button class="h-9 px-3 rounded-btn border border-b-default bg-surface hover:bg-surface-page text-[13px] font-medium" @click="loadVmAccounts()">刷新</button>
+              <button class="h-9 px-3 rounded-btn bg-accent text-white text-[13px] font-semibold shadow-btn hover:opacity-90" @click="openVmCreateModal()">+ 创建 VM 账号</button>
+            </div>
+          </div>
+
+          <!-- Stats summary -->
+          <div class="grid grid-cols-3 gap-4">
+            <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-5">
+              <div class="text-[11px] text-ink-muted mb-1">总数</div>
+              <div class="text-[20px] font-bold text-ink tabular-nums" x-text="vmAccounts.length"></div>
+            </div>
+            <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-5">
+              <div class="text-[11px] text-ink-muted mb-1">需要重登录</div>
+              <div class="text-[20px] font-bold text-danger tabular-nums" x-text="vmAccountsNeedRelogin().length"></div>
+            </div>
+            <div class="rounded-card-lg bg-surface border border-b-card shadow-card p-5">
+              <div class="text-[11px] text-ink-muted mb-1">7 天成功调用</div>
+              <div class="text-[20px] font-bold text-success tabular-nums" x-text="vmAccountsTotalSuccess()"></div>
+            </div>
+          </div>
+
+          <!-- Table -->
+          <div class="rounded-card-lg bg-surface border border-b-card shadow-card overflow-hidden">
+            <table class="w-full text-[13px]">
+              <thead>
+                <tr class="border-b border-b-card bg-surface-page">
+                  <th class="px-6 py-3 text-left font-semibold text-ink-muted">ID</th>
+                  <th class="px-6 py-3 text-left font-semibold text-ink-muted">引擎</th>
+                  <th class="px-6 py-3 text-left font-semibold text-ink-muted">VM ID</th>
+                  <th class="px-6 py-3 text-left font-semibold text-ink-muted">Segment</th>
+                  <th class="px-6 py-3 text-left font-semibold text-ink-muted">状态</th>
+                  <th class="px-6 py-3 text-left font-semibold text-ink-muted">最近使用</th>
+                  <th class="px-6 py-3 text-left font-semibold text-ink-muted">最近重登录</th>
+                  <th class="px-6 py-3 text-left font-semibold text-ink-muted">7d 成功</th>
+                  <th class="px-6 py-3 text-left font-semibold text-ink-muted">操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr x-show="!vmAccountsLoading && vmAccounts.length === 0">
+                  <td colspan="9" class="px-6 py-8 text-center text-[12px] text-ink-muted">
+                    暂无 vm_session 账号 · 点击右上角「创建 VM 账号」开始
+                  </td>
+                </tr>
+                <template x-for="a in vmAccounts" :key="a.id">
+                  <tr class="border-b border-b-card hover:bg-surface-page transition-colors"
+                      :class="a.status === 'needs_relogin' ? 'bg-danger/5' : ''">
+                    <td class="px-6 py-3 font-mono text-[12px] font-semibold text-ink" x-text="a.id"></td>
+                    <td class="px-6 py-3 text-ink-body" x-text="a.engine_id"></td>
+                    <td class="px-6 py-3 font-mono text-[12px] text-ink-body" x-text="a.vm_id || '—'"></td>
+                    <td class="px-6 py-3 text-[12px] text-ink-body" x-text="a.segment_group || '—'"></td>
+                    <td class="px-6 py-3">
+                      <span class="inline-flex items-center gap-1 px-2 h-6 rounded-badge text-[11px] font-semibold"
+                            :class="a.status === 'needs_relogin' ? 'bg-danger/10 text-danger' : a.status === 'active' ? 'bg-success/10 text-success' : 'bg-ink-muted/10 text-ink-muted'">
+                        <span x-text="a.status"></span>
+                      </span>
+                    </td>
+                    <td class="px-6 py-3 text-ink-body text-[12px]" x-text="a.last_used_at ? a.last_used_at.slice(0, 16).replace('T', ' ') : '—'"></td>
+                    <td class="px-6 py-3 text-ink-body text-[12px]" x-text="a.last_relogin_at ? a.last_relogin_at.slice(0, 16).replace('T', ' ') : '—'"></td>
+                    <td class="px-6 py-3 tabular-nums text-success font-semibold" x-text="a.success_count_7d || 0"></td>
+                    <td class="px-6 py-3">
+                      <div class="flex items-center gap-1.5 flex-wrap">
+                        <template x-if="a.status === 'needs_relogin'">
+                          <button class="h-7 px-2 rounded-btn border border-success/40 bg-success/5 hover:bg-success/10 text-[11px] font-semibold text-success"
+                                  @click="confirmVmRelogin(a)">确认已重登录</button>
+                        </template>
+                        <button class="h-7 px-2 rounded-btn border border-warning/40 bg-warning/5 hover:bg-warning/10 text-[11px] font-semibold text-warning"
+                                @click="openVmToggleModal(a)" title="切回 local_cookie 模式（需提交 cookies）">切换 local_cookie</button>
+                      </div>
+                    </td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+          </div>
+
+          <!-- ===== Create VM Account modal ===== -->
+          <div x-show="vmCreateModal" x-cloak x-transition.opacity class="fixed inset-0 z-[60] drawer-overlay flex items-center justify-center p-6">
+            <div @click.outside="vmCreateModal=false" class="w-full max-w-md bg-surface rounded-card-lg shadow-elevated p-6 space-y-4">
+              <div class="flex items-center justify-between">
+                <div>
+                  <h3 class="text-[15px] font-bold text-ink">创建 VM 账号</h3>
+                  <div class="text-[11px] text-ink-muted mt-0.5">execution_mode = vm_session · cookies_json 字段已禁用 (R2.5)</div>
+                </div>
+                <button @click="vmCreateModal=false" class="text-ink-muted hover:text-ink"><i data-lucide="x" class="w-4 h-4"></i></button>
+              </div>
+
+              <div>
+                <label class="text-[11px] font-semibold text-ink-muted uppercase tracking-wider">Engine</label>
+                <select x-model="vmCreateForm.engine_id" class="w-full mt-1 h-9 px-3 rounded-input border border-b-default text-[13px]">
+                  <template x-for="engine in vmMvpEngines" :key="engine">
+                    <option :value="engine" x-text="engine"></option>
+                  </template>
+                </select>
+                <div class="text-[10.5px] text-ink-muted mt-1">MVP 锁 3 家 (chatgpt / doubao / deepseek-CN) · Phase 2+ 扩展</div>
+              </div>
+
+              <div>
+                <label class="text-[11px] font-semibold text-ink-muted uppercase tracking-wider">VM ID</label>
+                <input x-model="vmCreateForm.vm_id" type="text" class="w-full mt-1 h-9 px-3 rounded-input border border-b-default text-[13px] font-mono" placeholder="vm-001 / vm-doubao-east-3" />
+              </div>
+
+              <div>
+                <label class="text-[11px] font-semibold text-ink-muted uppercase tracking-wider">Segment (可选)</label>
+                <input x-model="vmCreateForm.segment_group" type="text" class="w-full mt-1 h-9 px-3 rounded-input border border-b-default text-[13px]" placeholder="seg-A / kol-segment-3" />
+              </div>
+
+              <div>
+                <label class="text-[11px] font-semibold text-ink-muted uppercase tracking-wider opacity-50">cookies_json</label>
+                <textarea disabled rows="2" placeholder="vm_session 模式禁用 cookies (R2.5 自克隆设备防护)" class="w-full mt-1 px-3 py-2 rounded-input border border-b-default text-[12px] font-mono bg-surface-page text-ink-muted/70 cursor-not-allowed"></textarea>
+                <div class="text-[10.5px] text-danger mt-1">⚠ vm_session 账号严格禁止录入 cookies — 后端 + DB 双重 reject</div>
+              </div>
+
+              <div x-show="vmCreateError" x-cloak class="rounded-btn border border-danger/20 bg-danger/10 px-3 py-2 text-[12px] font-semibold text-danger" x-text="vmCreateError"></div>
+
+              <div class="flex items-center justify-end gap-2 pt-2">
+                <button @click="vmCreateModal=false" class="h-9 px-3 rounded-btn border border-b-default bg-surface hover:bg-surface-page text-[12.5px]">取消</button>
+                <button @click="submitVmCreate()" :disabled="vmCreateBusy" class="h-9 px-4 rounded-btn bg-accent text-white text-[12.5px] font-semibold shadow-btn hover:opacity-90 disabled:opacity-40">
+                  <span x-text="vmCreateBusy ? '创建中…' : '创建'"></span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- ===== Toggle to local_cookie modal ===== -->
+          <div x-show="vmToggleModal" x-cloak x-transition.opacity class="fixed inset-0 z-[60] drawer-overlay flex items-center justify-center p-6">
+            <div @click.outside="vmToggleModal=false" class="w-full max-w-md bg-surface rounded-card-lg shadow-elevated p-6 space-y-4">
+              <div class="flex items-center justify-between">
+                <div>
+                  <h3 class="text-[15px] font-bold text-ink">切换为 local_cookie</h3>
+                  <div class="text-[11px] text-ink-muted mt-0.5">需要同步提交 cookies_json，VM_ID 会被清空</div>
+                </div>
+                <button @click="vmToggleModal=false" class="text-ink-muted hover:text-ink"><i data-lucide="x" class="w-4 h-4"></i></button>
+              </div>
+
+              <div class="text-[12px] text-ink-body">
+                目标账号: <code class="text-accent" x-text="vmToggleTarget?.id + ' / ' + vmToggleTarget?.engine_id + ' / ' + vmToggleTarget?.vm_id"></code>
+              </div>
+
+              <div>
+                <label class="text-[11px] font-semibold text-ink-muted uppercase tracking-wider">cookies_json (必填)</label>
+                <textarea x-model="vmToggleForm.cookies_json" rows="5" placeholder='粘贴 Playwright / EditThisCookie JSON' class="w-full mt-1 px-3 py-2 rounded-input border border-b-default text-[12px] font-mono"></textarea>
+              </div>
+
+              <div x-show="vmToggleError" x-cloak class="rounded-btn border border-danger/20 bg-danger/10 px-3 py-2 text-[12px] font-semibold text-danger" x-text="vmToggleError"></div>
+
+              <div class="flex items-center justify-end gap-2 pt-2">
+                <button @click="vmToggleModal=false" class="h-9 px-3 rounded-btn border border-b-default bg-surface hover:bg-surface-page text-[12.5px]">取消</button>
+                <button @click="submitVmToggle()" :disabled="vmToggleBusy" class="h-9 px-4 rounded-btn bg-accent text-white text-[12.5px] font-semibold shadow-btn hover:opacity-90 disabled:opacity-40">
+                  <span x-text="vmToggleBusy ? '切换中…' : '切换到 local_cookie'"></span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </template>
+
       <!-- ============ PAGE: TRACKER — EXECUTION ATTEMPTS (核心新页面) ============ -->
       <template x-if="page==='tracker-attempts'">
         <div class="space-y-4">
@@ -12772,6 +12945,7 @@ function adminApp() {
         { key:'planner-products',   label:'产品 Product', icon:'package', group:'Planner', subtitle:'品牌下 SKU 库 · 注入 Topic / Prompt 生成上下文' },
         { key:'planner-hotspots',   label:'热点 Hotspot', icon:'flame', group:'Planner', subtitle:'时事热点池 · 14 天窗口 · Prompt Matrix 蹭热点' },
         { key:'planner-resources',  label:'采集资源',     icon:'key-round',      badge:'P0', badgeTone:'danger', group:'Planner', subtitle:'账号池 + 代理池 · 生命周期 · 健康评分' },
+        { key:'planner-vm-accounts',label:'VM 账号',      icon:'server',         group:'Planner', pageTitle:'VM 账号管理 (vm_session)', subtitle:'每账号一台 VM · CDP 直连 · needs_relogin Slack 告警 (Refs #1116 / Epic #1110)' },
       ]},
       { title: 'Tracker · 执行', items: [
         { key:'tracker-attempts',   label:'执行追踪',     icon:'list-checks',    badge:'183', badgeTone:'warning', group:'Tracker', subtitle:'每次 Attempt 全记录 · HAR / HTML / 截图 · 重试' },
@@ -14314,6 +14488,176 @@ function adminApp() {
     accountStatusFilter: 'all',
     accountRecoveryStatus: {},
 
+    // ====== VM Accounts (Issue #1116 / Epic #1110) ======
+    // Backed by /admin/api/vm/*. The vm_session execution_mode is opt-in
+    // per account; the SPA enforces "no cookies for vm_session" as a UX
+    // mirror of the backend + DB CHECK (defense-in-depth).
+    vmAccounts: [],
+    vmAccountsLoading: false,
+    vmAccountsError: null,
+    vmAccountsPollTimer: null,
+    vmMvpEngines: ['chatgpt', 'doubao', 'deepseek-CN'],
+
+    // Create modal state
+    vmCreateModal: false,
+    vmCreateBusy: false,
+    vmCreateError: '',
+    vmCreateForm: { engine_id: 'chatgpt', vm_id: '', segment_group: '' },
+
+    // Toggle-to-local_cookie modal state
+    vmToggleModal: false,
+    vmToggleBusy: false,
+    vmToggleError: '',
+    vmToggleTarget: null,
+    vmToggleForm: { cookies_json: '' },
+
+    vmAccountsNeedRelogin() {
+      return (this.vmAccounts || []).filter(a => a.status === 'needs_relogin');
+    },
+    vmAccountsTotalSuccess() {
+      return (this.vmAccounts || []).reduce((s, a) => s + (a.success_count_7d || 0), 0);
+    },
+
+    async loadVmAccounts() {
+      this.vmAccountsLoading = true;
+      this.vmAccountsError = null;
+      try {
+        // /admin/api/vm is the SPA-facing mount; same handler serves /api/admin/vm.
+        const res = await fetch('/admin/api/vm/accounts', { credentials: 'same-origin' });
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          throw new Error(body.message || body.error || ('HTTP ' + res.status));
+        }
+        const body = await res.json();
+        this.vmAccounts = body.items || [];
+        if (Array.isArray(body.mvp_engines) && body.mvp_engines.length) {
+          this.vmMvpEngines = body.mvp_engines;
+        }
+      } catch (e) {
+        this.vmAccountsError = String(e.message || e);
+      } finally {
+        this.vmAccountsLoading = false;
+      }
+    },
+
+    startVmAccountsPolling() {
+      this.stopVmAccountsPolling();
+      // Poll every 30s while the page is open; needs_relogin transitions
+      // come from the vm-side watchdog, so a short cadence keeps the
+      // operator inbox fresh without busy-waiting.
+      this.vmAccountsPollTimer = setInterval(() => {
+        if (this.page === 'planner-vm-accounts') this.loadVmAccounts();
+      }, 30000);
+    },
+    stopVmAccountsPolling() {
+      if (this.vmAccountsPollTimer) { clearInterval(this.vmAccountsPollTimer); this.vmAccountsPollTimer = null; }
+    },
+
+    openVmCreateModal() {
+      this.vmCreateForm = { engine_id: this.vmMvpEngines[0] || 'chatgpt', vm_id: '', segment_group: '' };
+      this.vmCreateError = '';
+      this.vmCreateModal = true;
+      this.$nextTick(() => { lucide.createIcons(); });
+    },
+
+    async submitVmCreate() {
+      const f = this.vmCreateForm;
+      if (!f.vm_id || !f.vm_id.trim()) { this.vmCreateError = 'vm_id 不能为空'; return; }
+      if (!this.vmMvpEngines.includes(f.engine_id)) {
+        this.vmCreateError = 'engine 必须为 MVP 3 之一: ' + this.vmMvpEngines.join(', ');
+        return;
+      }
+      this.vmCreateBusy = true;
+      this.vmCreateError = '';
+      try {
+        const res = await fetch('/admin/api/vm/accounts', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          // NOTE: cookies_json deliberately omitted — backend rejects it
+          // for vm_session accounts (R2.5). The frontend disables the
+          // textarea so the operator can't even paste a value.
+          body: JSON.stringify({
+            engine_id: f.engine_id,
+            vm_id: f.vm_id.trim(),
+            segment_group: (f.segment_group || '').trim() || null,
+          }),
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok || body.success === false) {
+          throw new Error(body.message || body.error || ('HTTP ' + res.status));
+        }
+        this.toast(body.message || ('VM 账号 #' + body.account_id + ' 创建成功'));
+        this.vmCreateModal = false;
+        await this.loadVmAccounts();
+      } catch (e) {
+        this.vmCreateError = String(e.message || e);
+      } finally {
+        this.vmCreateBusy = false;
+      }
+    },
+
+    openVmToggleModal(account) {
+      this.vmToggleTarget = account;
+      this.vmToggleForm = { cookies_json: '' };
+      this.vmToggleError = '';
+      this.vmToggleModal = true;
+      this.$nextTick(() => { lucide.createIcons(); });
+    },
+
+    async submitVmToggle() {
+      if (!this.vmToggleTarget) return;
+      const cookies = (this.vmToggleForm.cookies_json || '').trim();
+      if (!cookies) { this.vmToggleError = 'cookies_json 必填'; return; }
+      try { JSON.parse(cookies); }
+      catch (e) { this.vmToggleError = 'cookies_json 格式错误: ' + e.message; return; }
+      this.vmToggleBusy = true;
+      this.vmToggleError = '';
+      try {
+        const res = await fetch('/admin/api/vm/accounts/' + this.vmToggleTarget.id, {
+          method: 'PATCH',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            execution_mode: 'local_cookie',
+            vm_id: null,
+            cookies_json: cookies,
+          }),
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok || body.success === false) {
+          throw new Error(body.message || body.error || ('HTTP ' + res.status));
+        }
+        this.toast('账号 #' + this.vmToggleTarget.id + ' 已切回 local_cookie');
+        this.vmToggleModal = false;
+        await this.loadVmAccounts();
+      } catch (e) {
+        this.vmToggleError = String(e.message || e);
+      } finally {
+        this.vmToggleBusy = false;
+      }
+    },
+
+    async confirmVmRelogin(account) {
+      if (!account || !account.vm_id || !account.engine_id) return;
+      try {
+        const res = await fetch('/admin/api/vm/relogin_done', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ vm_id: account.vm_id, engine: account.engine_id }),
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok || body.success === false) {
+          throw new Error(body.message || body.error || ('HTTP ' + res.status));
+        }
+        this.toast('已标记 #' + account.id + ' 重登录完成');
+        await this.loadVmAccounts();
+      } catch (e) {
+        this.toast('操作失败: ' + (e.message || e));
+      }
+    },
+
     // Account registration modal (Import Cookies / SMS Register / Auto Login)
     accountModal: false,
     accountModalTab: 'cookies',
@@ -14853,6 +15197,8 @@ function adminApp() {
       if (key === 'users-audit') this.loadUserAudit();
       if (key === 'tracker-attempts') { this.loadBrands(); this.loadAccounts(); this.loadAttempts(); }
       if (key === 'planner-resources') this.loadAccounts();
+      if (key === 'planner-vm-accounts') { this.loadVmAccounts(); this.startVmAccountsPolling(); }
+      if (key !== 'planner-vm-accounts') this.stopVmAccountsPolling();
       if (key === 'planner-topics' || key === 'planner-prompt-matrix' || key === 'planner-query-pool') this.loadTopicPlanConfig();
       if (key === 'planner-prompt-matrix') this.loadPromptMatrixConfig();
       if (key === 'planner-query-pool') this.loadQueryPoolPrompts();
