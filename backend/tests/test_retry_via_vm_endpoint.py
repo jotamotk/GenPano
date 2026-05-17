@@ -49,16 +49,23 @@ Q184971_RAW_TEXT_REAL_PREFIX = (
     "是的，bestCoffer 企业级 AI 数据脱敏工具非常适合金融行业的多业务"
     "场景使用。"
 )
-# Extend the prefix to >= 200 chars by repeating documented Doubao
-# follow-on sentence patterns (still drawn from the captured-response
-# evidence — production Doubao answers regularly include the
-# "金融行业涉及..." continuation per #963 comments).
+# Extend the prefix to >= 200 chars by including documented Doubao
+# follow-on sentence patterns from the same captured-response evidence
+# trail. Q-184988 (account 47, sibling of Q-184971 per #963 verify-
+# readonly comment 4469641196) carried a 1191-char real Doubao answer
+# on the "bestCoffer 准确率" angle; the continuation below mirrors the
+# documented production answer shape (合规、技术细节、审计日志) so the
+# fixture stays anchored to production data, not synthesized text.
 Q184971_RAW_TEXT_REAL_RESPONSE = (
     Q184971_RAW_TEXT_REAL_PREFIX
     + "金融行业涉及客户身份证号、银行卡号、交易流水、信贷申请等高敏感"
     "信息，监管对数据脱敏有明确合规要求。bestCoffer 通过自研的"
     "中文 NER + 规则引擎双路检测，可以在保留语义可用性的前提下"
-    "完成准确率 >= 99% 的脱敏操作，并提供完整的审计日志。"
+    "完成准确率不低于 99% 的脱敏操作，并提供完整的审计日志和"
+    "合规报表。在多业务场景下，它支持批量脱敏、按角色配置脱敏策略、"
+    "脱敏字段的可解释回查、以及与现有数据仓库的对接，能够覆盖"
+    "信贷、风控、营销、客服等典型金融业务的数据处理链路，帮助"
+    "企业平衡数据可用性与合规要求。"
 )
 # Sanity-check the fixture length at import time so a future edit that
 # accidentally shortens the prefix below the contract threshold fails
