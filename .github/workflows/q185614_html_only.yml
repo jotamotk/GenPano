@@ -1,0 +1,139 @@
+name: Q185614 HTML body counts (read-only)
+
+on:
+  push:
+    branches:
+      - 'claude/verify-doubao'
+    paths:
+      - '.github/workflows/q185614_html_only.yml'
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: SSH inspect
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s' "$SERVER_SSH_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H "$SERVER_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+          # Write the inspection script to a file on the remote to
+          # avoid nested-heredoc collapse. Then run it.
+          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=accept-new \
+            "$SERVER_USER@$SERVER_HOST" "cat > /tmp/q185614_html.py" <<'PYFILE'
+          import glob, os, re, sys, json
+          out = []
+          for qid in ("185614", "185623", "185617", "185620", "185626"):
+              out.append("="*60)
+              out.append(f"query_id={qid}")
+              files = sorted(
+                  glob.glob(f"/data/screenshots/query_{qid}_doubao_*.html"),
+                  key=os.path.getmtime, reverse=True,
+              )
+              if not files:
+                  out.append("  (no HTML file)")
+                  continue
+              path = files[0]
+              with open(path, "r", encoding="utf-8", errors="replace") as f:
+                  html = f.read()
+              out.append(f"  FILE: {path}")
+              out.append(f"  size: {len(html)} bytes")
+              candidates = [
+                  ("flow-markdown-body",  r"class=['\"][^'\"]*flow-markdown-body[^'\"]*['\"]"),
+                  ("send-msg-bubble-bg",  r"class=['\"][^'\"]*send-msg-bubble-bg[^'\"]*['\"]"),
+                  ("flow-end-msg-send",   r"id=['\"]flow-end-msg-send['\"]"),
+                  ("send-btn",            r"class=['\"][^'\"]*send-btn[^'\"]*['\"]"),
+                  ("textarea_count",      r"<textarea\b"),
+                  ("login_btn_header",    r"login-btn-header"),
+                  ("homepage_zh",         r"有什么我能帮你的"),
+                  ("homepage_cards",      r"资讯"),
+                  ("7day_promo",          r"7天免登录"),
+                  ("script_tags",         r"<script\b"),
+                  ("html_tag",            r"<html\b"),
+              ]
+              for name, pat in candidates:
+                  n = len(re.findall(pat, html))
+                  out.append(f"  {name:<25s}= {n}")
+              # JSON snapshot
+              j_files = sorted(
+                  glob.glob(f"/data/screenshots/query_{qid}_doubao_*.json"),
+                  key=os.path.getmtime, reverse=True,
+              )
+              if j_files:
+                  out.append(f"  JSON_FILE: {j_files[0]}")
+                  try:
+                      with open(j_files[0]) as f:
+                          d = json.load(f)
+                      page = d.get("page", {}) or {}
+                      fp = page.get("fingerprint", {}) or {}
+                      out.append(f"  suffix         : {d.get('suffix')}")
+                      out.append(f"  doubaoAuthReason: {d.get('doubaoAuthStateReason')}")
+                      out.append(f"  url            : {page.get('url')}")
+                      out.append(f"  onChatPage     : {fp.get('onChatPage')!r}")
+                      out.append(f"  userMessageBubbleCount: {fp.get('userMessageBubbleCount')!r}")
+                      sels = page.get("responseSelectors") or []
+                      out.append(f"  responseSelectors count: {len(sels)}")
+                      for s in sels[:5]:
+                          out.append("    " + json.dumps(
+                              {k: s.get(k) for k in ("selector","count","visibleCount","firstText","error")},
+                              ensure_ascii=False)[:300])
+                      body_text = (page.get("bodyText") or "")
+                      out.append("  bodyText first 400 chars:")
+                      out.append("    " + body_text[:400].replace("\n", " | "))
+                  except Exception as e:
+                      out.append(f"  json parse error: {e}")
+          print("\n".join(out))
+          PYFILE
+
+          output=$(ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=accept-new \
+            "$SERVER_USER@$SERVER_HOST" \
+            'cd /opt/genpano && docker cp /tmp/q185614_html.py "$(docker compose ps -q worker | head -1)":/tmp/q185614_html.py && docker compose exec -T worker python3 /tmp/q185614_html.py')
+
+          {
+            echo "$output"
+          } > /tmp/q185614-html.txt
+          {
+            echo "## Q-185614 HTML inspect"
+            echo ""
+            echo '```'
+            head -3000 /tmp/q185614-html.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Post result
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let body = `## Q-185614 HTML container inspect\n\n`;
+            try {
+              const out = fs.readFileSync('/tmp/q185614-html.txt', 'utf-8');
+              const max = 50000;
+              const trimmed = out.length > max ? out.slice(0, max) + '\n…[truncated]' : out;
+              body += '```\n' + trimmed + '\n```';
+            } catch (e) {
+              body += '⚠️ failed: ' + String(e);
+            }
+            try {
+              await github.rest.issues.createComment({
+                issue_number: 963,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body,
+              });
+              core.notice('Posted html-inspect to #963');
+            } catch (e) {
+              core.warning(String(e));
+            }
