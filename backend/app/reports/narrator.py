@@ -9,34 +9,43 @@ positioning ("LLM-driven insights report").
 This module is the pluggable narration layer:
 
   - `narrate(section, ctx)` runs after each section render.
-  - If `LLM_NARRATIVE_PROVIDER` env is configured, the LLM path is
-    invoked. Implementation surface is intentionally left as a stub
-    pending the chosen provider client (Doubao / DeepSeek / OpenAI);
-    falls through to fallback on import / network failure per PRD
-    §4.7.3 "deterministic fallback".
-  - Otherwise, a per-section-type deterministic prose template is
-    rendered using locale + metrics + a few signal-derivation rules.
-    Produces non-empty, hand-readable narrative — distinguishable
-    from the raw summary so report consumers see a real prose layer.
+  - When ``LLM_NARRATIVE_PROVIDER`` is set to ``doubao`` / ``ark`` /
+    ``deepseek`` / ``openai`` and the matching credentials are
+    available, an HTTP request is made to the provider's OpenAI-
+    compatible ``/chat/completions`` endpoint with a section-aware
+    prompt (see ``_build_messages``). The returned prose replaces the
+    deterministic fallback.
+  - Any failure (missing config, network error, bad status, empty
+    completion) is logged and the call falls through to the
+    deterministic fallback path. PRD §4.7.3 mandates this graceful
+    degradation — reports never block on an LLM outage.
+  - When the provider is unset / off / noop, the deterministic path
+    runs directly without any HTTP round-trip.
 
-The fallback is **the contract** today; LLM swap-in is a follow-up
-that drops in by setting the env var and providing a client adapter
-implementing the `_call_llm` hook. PRD §4.7.3 explicitly mandates a
-working fallback that is "indistinguishable in KPI content (only
-fluency differs)".
+The provider integration uses the same OpenAI-compatible chat
+protocol that ``app.admin.topic_plan.lib.load_doubao_config`` already
+ships against Doubao (Volcengine Ark), DeepSeek and OpenAI. No new
+SDKs are introduced — just an httpx POST.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from typing import Any
+
+import httpx
 
 from app.reports.sections.base import ReportContext, SectionData
 
 log = logging.getLogger(__name__)
 
 _LLM_TIMEOUT_S = 8.0  # PRD §4.7.3 — fall back if > 8s
+_LLM_MAX_TOKENS = 600  # Per-section narrative; ~120 words.
+_LLM_TEMPERATURE = 0.4  # Some variation but consistent across runs.
+_LLM_OFF_VALUES = {"", "noop", "off", "none", "fallback"}
+_LLM_PROVIDERS_OPENAI_COMPAT = {"doubao", "ark", "deepseek", "openai"}
 
 
 async def narrate(section: SectionData, ctx: ReportContext) -> str | None:
@@ -50,7 +59,7 @@ async def narrate(section: SectionData, ctx: ReportContext) -> str | None:
         return section.narrative
 
     provider = (os.environ.get("LLM_NARRATIVE_PROVIDER") or "").strip().lower()
-    if provider and provider not in {"noop", "off", "none", "fallback"}:
+    if provider and provider not in _LLM_OFF_VALUES:
         try:
             llm_text = await _call_llm(provider, section, ctx)
         except Exception as exc:  # pragma: no cover — defensive
@@ -71,20 +80,252 @@ async def narrate(section: SectionData, ctx: ReportContext) -> str | None:
 
 
 async def _call_llm(provider: str, section: SectionData, ctx: ReportContext) -> str | None:
-    """Hook for the future LLM client. Today: stub that logs + returns
-    None so the deterministic fallback runs. When a provider client is
-    available, dispatch here based on `provider` ('doubao' / 'deepseek'
-    / 'openai' / ...) and return the generated text under
-    `_LLM_TIMEOUT_S`."""
+    """Dispatch to the configured LLM provider's chat-completions
+    endpoint and return a single prose paragraph for the section.
+
+    All currently-supported providers (Doubao / Ark, DeepSeek, OpenAI)
+    share the OpenAI chat protocol, so dispatch is one HTTP POST.
+    Provider-specific selection happens entirely via env vars consumed
+    by `_resolve_llm_endpoint`.
+
+    Returns None when:
+      - provider config is missing (no API key / base URL / model)
+      - HTTP call fails or times out
+      - response has no completion text
+
+    On None, the caller falls back to the deterministic narrator path.
+    """
+    if provider not in _LLM_PROVIDERS_OPENAI_COMPAT:
+        log.warning(
+            "report_narrator.llm_unknown_provider",
+            extra={"provider": provider, "section_type": section.section_type},
+        )
+        return None
+
+    endpoint = _resolve_llm_endpoint(provider)
+    if endpoint is None:
+        log.info(
+            "report_narrator.llm_config_missing",
+            extra={"provider": provider, "section_type": section.section_type},
+        )
+        return None
+    api_key, base_url, model = endpoint
+
+    messages = _build_messages(section, ctx)
+    body = {
+        "model": model,
+        "messages": messages,
+        "temperature": _LLM_TEMPERATURE,
+        "max_tokens": _LLM_MAX_TOKENS,
+    }
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    url = base_url.rstrip("/") + "/chat/completions"
+
+    try:
+        async with httpx.AsyncClient(timeout=_LLM_TIMEOUT_S) as client:
+            response = await client.post(url, json=body, headers=headers)
+    except httpx.RequestError as exc:
+        log.warning(
+            "report_narrator.llm_request_failed",
+            extra={
+                "provider": provider,
+                "section_type": section.section_type,
+                "error": str(exc),
+            },
+        )
+        return None
+
+    if response.status_code != 200:
+        log.warning(
+            "report_narrator.llm_http_error",
+            extra={
+                "provider": provider,
+                "section_type": section.section_type,
+                "status_code": response.status_code,
+                "body_excerpt": response.text[:200],
+            },
+        )
+        return None
+
+    try:
+        data = response.json()
+    except ValueError:
+        return None
+
+    choices = data.get("choices") or []
+    if not choices:
+        return None
+    content = (choices[0].get("message") or {}).get("content") or ""
+    text = _normalize_completion(content)
+    if not text:
+        return None
+
     log.info(
-        "report_narrator.llm_stub",
+        "report_narrator.llm_ok",
         extra={
             "provider": provider,
             "section_type": section.section_type,
             "locale": ctx.locale,
+            "chars": len(text),
         },
     )
-    return None
+    return text
+
+
+def _resolve_llm_endpoint(provider: str) -> tuple[str, str, str] | None:
+    """Read provider credentials from env. Returns (api_key, base_url,
+    model) or None when any required field is missing.
+
+    Resolution rules:
+      - api_key: provider-specific env first (`DOUBAO_API_KEY` /
+        `DEEPSEEK_API_KEY` / `OPENAI_API_KEY`), then generic
+        `LLM_API_KEY` / `ARK_API_KEY` as fallback.
+      - base_url: provider-specific (`DOUBAO_BASE_URL` etc.), then
+        generic `LLM_BASE_URL` / `ARK_BASE_URL`.
+      - model: provider-specific (`DOUBAO_MODEL` etc.), then generic
+        `LLM_NARRATIVE_MODEL` / `LLM_MODEL`. A scoped
+        `LLM_NARRATIVE_MODEL` lets operators pick a smaller/faster
+        model for the narrator without affecting other LLM features.
+    """
+    env = os.environ
+
+    def _first(*keys: str) -> str:
+        for k in keys:
+            v = (env.get(k) or "").strip()
+            if v:
+                return v
+        return ""
+
+    if provider in {"doubao", "ark"}:
+        api_key = _first("DOUBAO_API_KEY", "ARK_API_KEY", "VOLCENGINE_ARK_API_KEY", "LLM_API_KEY")
+        base_url = _first(
+            "DOUBAO_BASE_URL",
+            "ARK_BASE_URL",
+            "VOLCENGINE_ARK_BASE_URL",
+            "LLM_BASE_URL",
+        )
+        model = _first(
+            "LLM_NARRATIVE_MODEL",
+            "DOUBAO_MODEL",
+            "ARK_MODEL",
+            "LLM_MODEL",
+        )
+    elif provider == "deepseek":
+        api_key = _first("DEEPSEEK_API_KEY", "LLM_API_KEY")
+        base_url = _first("DEEPSEEK_BASE_URL", "LLM_BASE_URL") or "https://api.deepseek.com/v1"
+        model = _first("LLM_NARRATIVE_MODEL", "DEEPSEEK_MODEL", "LLM_MODEL") or "deepseek-chat"
+    elif provider == "openai":
+        api_key = _first("OPENAI_API_KEY", "LLM_API_KEY")
+        base_url = _first("OPENAI_BASE_URL", "LLM_BASE_URL") or "https://api.openai.com/v1"
+        model = _first("LLM_NARRATIVE_MODEL", "OPENAI_MODEL", "LLM_MODEL") or "gpt-4o-mini"
+    else:
+        return None
+
+    if not api_key or not base_url or not model:
+        return None
+    return api_key, base_url, model
+
+
+def _build_messages(section: SectionData, ctx: ReportContext) -> list[dict[str, str]]:
+    """Build the OpenAI chat messages list for one section.
+
+    System message frames the task: brand-operations analyst writing
+    one prose paragraph in the target locale.
+
+    User message carries the structured input (section type, summary,
+    a curated metric subset, and tables truncated to first-3-rows) as
+    JSON so the model has a single, parsable context block. We
+    explicitly forbid markdown and JSON in the output to keep the
+    paragraph drop-in-able into Markdown / CSV / PDF renderers.
+    """
+    is_zh = ctx.locale.startswith("zh")
+    locale_hint = "Simplified Chinese (zh-CN)" if is_zh else "English (en-US)"
+    word_target = "80-120 字" if is_zh else "80-120 words"
+
+    system = (
+        "You are a brand-operations analyst writing the narrative "
+        "paragraph for one section of a GenPano brand report. The "
+        "audience is operators/managers reviewing brand performance "
+        "in LLM ecosystems. Write in "
+        f"{locale_hint}. Output one short paragraph, "
+        f"{word_target}. No markdown, no headings, no bullet lists, "
+        "no JSON — plain prose only. Anchor the paragraph in the "
+        "provided metrics; do not invent numbers."
+    )
+
+    payload = {
+        "section_type": section.section_type,
+        "title": section.title,
+        "summary": section.summary,
+        "metrics": _trim_metrics(section.metrics),
+        "tables": _trim_tables(section.tables),
+    }
+    user = (
+        "Section data follows as JSON. Produce the prose paragraph "
+        "for this section.\n\n" + json.dumps(payload, ensure_ascii=False, default=str)
+    )
+
+    return [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    ]
+
+
+def _trim_metrics(metrics: dict[str, Any] | None) -> dict[str, Any]:
+    """Keep the prompt small: drop None values, cap at 10 keys, stringify
+    nested dicts/lists to compact JSON so the model sees a flat KV view."""
+    if not metrics:
+        return {}
+    trimmed: dict[str, Any] = {}
+    for k, v in metrics.items():
+        if v is None:
+            continue
+        if isinstance(v, dict | list):
+            trimmed[k] = json.dumps(v, ensure_ascii=False, default=str)[:400]
+        else:
+            trimmed[k] = v
+        if len(trimmed) >= 10:
+            break
+    return trimmed
+
+
+def _trim_tables(tables: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """First 3 rows of the first 2 tables. The model rarely needs
+    more than a few rows to ground the paragraph; keeping tokens low
+    is more important."""
+    if not tables:
+        return []
+    out: list[dict[str, Any]] = []
+    for tbl in tables[:2]:
+        out.append(
+            {
+                "name": tbl.get("name"),
+                "row_count": len(tbl.get("rows") or []),
+                "rows": (tbl.get("rows") or [])[:3],
+            }
+        )
+    return out
+
+
+def _normalize_completion(content: str) -> str:
+    """Strip markdown fences / leading bullets / surrounding quotes the
+    model might inject despite the prompt. Collapse internal whitespace."""
+    text = (content or "").strip()
+    if not text:
+        return ""
+    # Drop a fenced block if the whole response is wrapped in one.
+    if text.startswith("```") and text.endswith("```"):
+        inner = text.strip("`")
+        if "\n" in inner:
+            _, _, body = inner.partition("\n")
+            text = body.strip()
+    # Drop leading bullet/quote characters.
+    while text and text[0] in {"-", "*", ">", '"', "'"}:
+        text = text[1:].lstrip()
+    return " ".join(text.split())
 
 
 def _fallback_narrative(section: SectionData, ctx: ReportContext) -> str | None:
