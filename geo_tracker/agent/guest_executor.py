@@ -2852,36 +2852,41 @@ class GuestQueryExecutor:
         if input_el is None and not _recovery_already_submitted:
             input_el = await page.wait_for_selector(cfg["input_selector"].split(",")[0], timeout=10000)
 
-        # 模拟人类行为：随机延迟 + 鼠标移动到输入框
-        # Refs #963 follow-up to PR #1009 live evidence (run 25926214958):
-        # ``bounding_box()`` and ``mouse.move(...)`` had no timeout and a
-        # degenerate page state could hang either of them for the full
-        # outer budget. Each is best-effort (caller's try/except already
-        # tolerates failure) so a tight 5s bound is fine; production
-        # values complete in <100ms when the browser is healthy.
-        await page.wait_for_timeout(random.randint(800, 2000))
-        try:
-            # 先模拟鼠标移动到输入框附近
-            box = await asyncio.wait_for(input_el.bounding_box(), timeout=5)
-            if box:
-                await asyncio.wait_for(
-                    page.mouse.move(
-                        box["x"] + box["width"] * random.uniform(0.2, 0.8),
-                        box["y"] + box["height"] * random.uniform(0.2, 0.8),
-                        steps=random.randint(5, 15),
-                    ),
-                    timeout=5,
-                )
-                await page.wait_for_timeout(random.randint(200, 500))
-        except Exception:
-            pass
+        # Refs #963 issue comment 4470015151: skip the human-behavior
+        # mouse/click setup when recovery has already driven fill+submit
+        # — input_el may be None and the page is mid-flight after the
+        # recovery's own click. Re-doing mouse/click here is unsafe.
+        if not _recovery_already_submitted:
+            # 模拟人类行为：随机延迟 + 鼠标移动到输入框
+            # Refs #963 follow-up to PR #1009 live evidence (run 25926214958):
+            # ``bounding_box()`` and ``mouse.move(...)`` had no timeout and a
+            # degenerate page state could hang either of them for the full
+            # outer budget. Each is best-effort (caller's try/except already
+            # tolerates failure) so a tight 5s bound is fine; production
+            # values complete in <100ms when the browser is healthy.
+            await page.wait_for_timeout(random.randint(800, 2000))
+            try:
+                # 先模拟鼠标移动到输入框附近
+                box = await asyncio.wait_for(input_el.bounding_box(), timeout=5)
+                if box:
+                    await asyncio.wait_for(
+                        page.mouse.move(
+                            box["x"] + box["width"] * random.uniform(0.2, 0.8),
+                            box["y"] + box["height"] * random.uniform(0.2, 0.8),
+                            steps=random.randint(5, 15),
+                        ),
+                        timeout=5,
+                    )
+                    await page.wait_for_timeout(random.randint(200, 500))
+            except Exception:
+                pass
 
-        # 点击输入框（force=True 绕开可见性检查）
-        try:
-            await input_el.click(force=True, timeout=5000)
-        except Exception:
-            pass
-        await page.wait_for_timeout(random.randint(300, 800))
+            # 点击输入框（force=True 绕开可见性检查）
+            try:
+                await input_el.click(force=True, timeout=5000)
+            except Exception:
+                pass
+            await page.wait_for_timeout(random.randint(300, 800))
 
         # 对于 contenteditable（如 Gemini 的 Quill 编辑器），键盘事件依赖真实 focus
         # 在 headless 下元素常常报告"不可见"，导致 keyboard.type() 打到 body 而非编辑器
@@ -3004,7 +3009,11 @@ class GuestQueryExecutor:
                     return "", "", []
 
         # 模拟人类"思考"后再提交
-        await page.wait_for_timeout(random.randint(500, 1500))
+        # Refs #963 issue comment 4470015151: skip the thinking wait when
+        # recovery already submitted; the page is mid-flight and we
+        # should not delay before checking submit_confirm.
+        if not _recovery_already_submitted:
+            await page.wait_for_timeout(random.randint(500, 1500))
 
         # 提交：优先点击 submit_button 里配的 selector，失败时 JS 找 input 附近的 enabled 按钮，
         # 再失败才 fallback 到 Enter
@@ -3023,7 +3032,18 @@ class GuestQueryExecutor:
 
         self._set_execution_stage("prompt_submit")
         submitted = False
-        if cfg.get("submit_button"):
+        # Refs #963 issue comment 4470015151: if recovery already drove
+        # the submit, treat this stage as a no-op so we don't fire a
+        # duplicate click/Enter into the page (the user message was
+        # already sent by the recovery flow). The submit_confirm loop
+        # below will detect the recovery's user-message bubble.
+        if _recovery_already_submitted:
+            submitted = True
+            logger.info(
+                f"[{llm_name}] prompt_submit: skipping; recovery already "
+                f"submitted"
+            )
+        if not submitted and cfg.get("submit_button"):
             for btn_sel in [s.strip() for s in cfg["submit_button"].split(",")]:
                 try:
                     btn = await page.query_selector(btn_sel)
