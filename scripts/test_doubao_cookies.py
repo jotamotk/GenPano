@@ -170,7 +170,9 @@ async def main():
         print("\n🎉 豆包 cookies 测试通过！")
         print(f"\n后续步骤:")
         print(f"  1. 导入数据库: python scripts/import_cookies.py {converted_path}")
-        print(f"  2. 或设置环境变量: export DOUBAO_COOKIES_JSON='{json.dumps(cookies)[:80]}...'")
+        # Phase 3 cleanup (Refs #1118 / Epic #1110): the legacy doubao
+        # env-cookie injection path was removed — doubao runs via vm_session
+        # (ADR-016). Import into AccountPool is now the only supported path.
     else:
         print("\n⚠ 测试未完全通过，请检查输出")
 

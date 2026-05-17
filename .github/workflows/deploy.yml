@@ -326,7 +326,10 @@ jobs:
         uses: appleboy/ssh-action@v1.0.3
         env:
           GEMINI_COOKIES_JSON: ${{ secrets.GEMINI_COOKIES_JSON }}
-          DOUBAO_COOKIES_JSON: ${{ secrets.DOUBAO_COOKIES_JSON }}
+          # Phase 3 cleanup (Refs #1118 / Epic #1110): the legacy doubao /
+          # deepseek env-cookie secrets were removed — those engines now
+          # route through vm_session (ADR-016). Cookies come from
+          # AccountPool + vm_side runner, not the deploy env.
           ACR_REGISTRY_SECRET: ${{ secrets.ACR_REGISTRY }}
           ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
           ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
@@ -339,7 +342,7 @@ jobs:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
-          envs: GEMINI_COOKIES_JSON,DOUBAO_COOKIES_JSON,ACR_REGISTRY_SECRET,ACR_USERNAME,ACR_PASSWORD,CLASH_API_SECRET,HERO_SMS_API_KEY,QG_PROXY_EXTRACT_URL,QG_PROXY_AUTH_KEY,QG_PROXY_AUTH_PASSWORD
+          envs: GEMINI_COOKIES_JSON,ACR_REGISTRY_SECRET,ACR_USERNAME,ACR_PASSWORD,CLASH_API_SECRET,HERO_SMS_API_KEY,QG_PROXY_EXTRACT_URL,QG_PROXY_AUTH_KEY,QG_PROXY_AUTH_PASSWORD
           script_stop: false
           command_timeout: 45m
           script: |
@@ -423,11 +426,10 @@ jobs:
               "import json,sys; s=json.dumps(json.loads(sys.stdin.read())).replace('\$','\$\$'); print('GEMINI_COOKIES_JSON=' + s)" \
               >> .env
 
-            if [ -n "${DOUBAO_COOKIES_JSON}" ]; then
-              printf '%s' "${DOUBAO_COOKIES_JSON}" | python3 -c \
-                "import json,sys; s=json.dumps(json.loads(sys.stdin.read())).replace('\$','\$\$'); print('DOUBAO_COOKIES_JSON=' + s)" \
-                >> .env
-            fi
+            # Phase 3 cleanup (Refs #1118 / Epic #1110): the legacy doubao
+            # env-cookie propagation block was removed — doubao / deepseek
+            # run via vm_session (ADR-016) and pull cookies from AccountPool
+            # + vm_side runner.
 
             python3 - <<'PY' >> .env
             import os
