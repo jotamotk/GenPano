@@ -297,7 +297,77 @@ async def _run_one_rep(
             timeout_secs=remaining,
         )
 
-        # Step 8 already covered via JS textContent extraction inside helper.
+        # Step 7b: if the primary response_selector returned empty, dump
+        # the page HTML + a heuristic scan to artifact so the operator
+        # can identify the correct selector without re-tunneling VNC.
+        if not raw_text or len(raw_text) < 50:
+            try:
+                html_path = artifact_dir / "page.html"
+                content = await page.content()
+                html_path.write_text(content, encoding="utf-8")
+            except Exception as e:
+                failure_signals.append(f"page_content_dump_failed: {e!r}")
+            try:
+                # Heuristic: find any DIV with >= 100 chars textContent that's
+                # not a global container; print the first 5 candidates with
+                # their class lists so we know which selector to use next.
+                candidates = await page.evaluate(
+                    """() => {
+                        const out = [];
+                        const all = document.querySelectorAll("div, article, section");
+                        for (const el of all) {
+                            const t = (el.textContent || "").trim();
+                            if (t.length >= 100 && t.length <= 5000) {
+                                out.push({
+                                    cls: el.className || "",
+                                    id: el.id || "",
+                                    testid: el.getAttribute("data-testid") || "",
+                                    role: el.getAttribute("role") || "",
+                                    chars: t.length,
+                                    snippet: t.slice(0, 80),
+                                });
+                                if (out.length >= 10) break;
+                            }
+                        }
+                        return out;
+                    }"""
+                )
+                cand_path = artifact_dir / "response_candidates.json"
+                cand_path.write_text(
+                    json.dumps(candidates, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+            except Exception as e:
+                failure_signals.append(f"candidate_scan_failed: {e!r}")
+            # Also try a permissive fallback selector that's MUCH wider.
+            try:
+                fallback_text = await page.evaluate(
+                    """() => {
+                        const sels = [
+                            "[data-testid='receive_message']",
+                            "div[class*='markdown']",
+                            "div[class*='message-content']",
+                            "div[class*='assistant']",
+                            "div[class*='reply']",
+                        ];
+                        for (const s of sels) {
+                            const nodes = document.querySelectorAll(s);
+                            if (nodes.length > 0) {
+                                const last = nodes[nodes.length - 1];
+                                const t = (last.textContent || "").trim();
+                                if (t.length >= 50) return { sel: s, text: t };
+                            }
+                        }
+                        return null;
+                    }"""
+                )
+                if fallback_text and fallback_text.get("text"):
+                    raw_text = fallback_text["text"]
+                    failure_signals.append(
+                        f"recovered_via_fallback_selector: {fallback_text.get('sel')}"
+                    )
+            except Exception as e:
+                failure_signals.append(f"fallback_selector_failed: {e!r}")
 
         # Failure detection block #2 — check URL again post-submit + captcha
         try:
