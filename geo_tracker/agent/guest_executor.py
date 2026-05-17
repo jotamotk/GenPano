@@ -1566,7 +1566,54 @@ class GuestQueryExecutor:
                     proxy_diagnostic=proxy_diagnostic,
                 )
 
-            if not input_el:
+            # Refs #963 issue comment 4470015151 (2026-05-17 08:49Z trigger-5):
+            # Q-185617/Q-185626 (account 46) hit ``doubao_auth_state_missing``
+            # and Q-185623 (account 45) hit ``doubao_not_logged_in`` AT this
+            # auth-check site — the no_input bail fires before
+            # ``_browser_query`` ever runs, so PR #1107's page.goto
+            # recovery (which lives inside the submit-confirm retry path)
+            # never fires for these failure modes. Before bailing,
+            # attempt the same ONE-shot recovery via
+            # ``_attempt_doubao_page_regression_recovery``. The trigger-5
+            # investigation (issue #963 2026-05-17T06:23Z) refuted "IP
+            # rotation forces re-login" (0 re-login events in 48h,
+            # sessions surviving 285+ min across rotations), so an
+            # auth-check false positive on a transiently bad SPA state is
+            # plausible. On success, the recovery flow has already driven
+            # fill+submit; call ``_browser_query`` with
+            # ``_recovery_already_submitted=True`` so it skips
+            # prompt_fill+prompt_submit and proceeds to submit_confirm +
+            # response_wait. The per-query latch
+            # ``_doubao_recovery_attempted`` (checked inside the helper)
+            # ensures this can only fire once per query.
+            doubao_auth_recovery_succeeded = False
+            if (
+                not input_el
+                and llm == "doubao"
+                and page_obj is not None
+            ):
+                await self._prefer_doubao_auth_failure_reason(llm, page_obj)
+                if self.last_error_reason in (
+                    "doubao_auth_state_missing",
+                    "doubao_not_logged_in",
+                ):
+                    if await self._attempt_doubao_page_regression_recovery(
+                        page_obj,
+                        config,
+                        llm,
+                        query.id,
+                        query.query_text,
+                    ):
+                        logger.info(
+                            f"[{llm}] auth-check recovery succeeded "
+                            f"(was {self.last_error_reason}); clearing "
+                            f"last_error_reason and proceeding to "
+                            f"response_wait via _browser_query"
+                        )
+                        self.last_error_reason = None
+                        doubao_auth_recovery_succeeded = True
+
+            if not input_el and not doubao_auth_recovery_succeeded:
                 logger.error(f"[{llm}] 找不到输入框")
                 if page_obj:
                     await self._prefer_chatgpt_auth_failure_reason(
@@ -1595,15 +1642,29 @@ class GuestQueryExecutor:
 
             # 执行查询
             self._set_execution_stage("browser_query")
-            resp_text, resp_html, citations = await self._browser_query(
-                page_obj,
-                config,
-                query.query_text,
-                llm,
-                input_el,
-                query_id=query.id,
-                runtime_events=runtime_events,
-            )
+            if doubao_auth_recovery_succeeded:
+                # Auth-check recovery drove fill+submit; jump _browser_query
+                # past prompt_fill + prompt_submit straight to submit_confirm.
+                resp_text, resp_html, citations = await self._browser_query(
+                    page_obj,
+                    config,
+                    query.query_text,
+                    llm,
+                    input_el=None,
+                    query_id=query.id,
+                    runtime_events=runtime_events,
+                    _recovery_already_submitted=True,
+                )
+            else:
+                resp_text, resp_html, citations = await self._browser_query(
+                    page_obj,
+                    config,
+                    query.query_text,
+                    llm,
+                    input_el,
+                    query_id=query.id,
+                    runtime_events=runtime_events,
+                )
 
             if resp_text:
                 self.last_error_reason = None
