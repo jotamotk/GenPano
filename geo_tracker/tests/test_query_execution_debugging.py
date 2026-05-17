@@ -9032,3 +9032,391 @@ def test_doubao_homepage_content_path_saves_all_three_artifacts():
             "HTML it had before. Saving only one artifact left us unable "
             "to root-cause when the failure recurred."
         )
+
+
+# =============================================================================
+# Refs #963 issue comment 4470015151 (2026-05-17 08:49Z trigger-5 dump):
+# PR #1107 added a one-shot ``page.goto(cfg["url"])`` recovery in the
+# submit-confirm retry branch (``_browser_query`` ``elif llm_name == "doubao":``).
+# The trigger-5 evidence showed 5 fresh Doubao queries all failing BEFORE
+# that retry path:
+#   Q-185617, Q-185626 (account 46): ``doubao_auth_state_missing``
+#   Q-185623 (account 45):           ``doubao_not_logged_in``
+#   Q-185620 (account 47):           ``doubao_browser_timeout:prompt_fill``
+#   Q-185614 (account 46):           ``no_response`` (reached submit-confirm
+#                                    but bail conditions didn't match).
+# These tests verify the extension of PR #1107's recovery to the
+# auth-check no_input bail and the fill-failed bail inside _browser_query.
+# Helper extraction is verified separately by call-count assertions.
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_attempt_doubao_page_regression_recovery_returns_true_when_ui_returns(
+    monkeypatch,
+):
+    """Q-185617 / Q-185623 / Q-185620 shape: helper itself, called
+    standalone, fires page.goto, finds the input, refills, clicks submit,
+    returns True. Latch is set so a second invocation is a no-op."""
+    _install_fake_playwright(monkeypatch)
+
+    from geo_tracker.agent import guest_executor as _ge
+    from geo_tracker.agent.guest_executor import GuestQueryExecutor
+
+    async def _noop(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(_ge, "_save_html", _noop)
+    monkeypatch.setattr(_ge, "_save_screenshot", _noop)
+    monkeypatch.setattr(_ge, "_save_runtime_snapshot", _noop)
+
+    class FakeInput:
+        async def is_visible(self):
+            return True
+
+        async def click(self, *_a, **_k):
+            return None
+
+        async def fill(self, *_a, **_k):
+            return None
+
+        async def evaluate(self, *_a, **_k):
+            # is_disabled probe → False so click is allowed.
+            return False
+
+    class FakeSubmitHandle:
+        def as_element(self):
+            return FakeInput()
+
+    class FakePage:
+        url = "https://www.doubao.com/chat"
+
+        def __init__(self):
+            self.goto_calls = []
+
+        async def wait_for_timeout(self, *_a, **_k):
+            return None
+
+        async def goto(self, url, *_a, **_k):
+            self.goto_calls.append(url)
+            return None
+
+        async def wait_for_selector(self, selector, *_a, **_k):
+            return FakeInput()
+
+        async def query_selector(self, selector, *_a, **_k):
+            return FakeInput()
+
+        async def evaluate_handle(self, *_a, **_k):
+            return FakeSubmitHandle()
+
+        async def evaluate(self, *_a, **_k):
+            return False
+
+    executor = GuestQueryExecutor()
+    fake_page = FakePage()
+
+    refill_calls: list[int] = []
+
+    async def fake_fill_plain_text_input(_page, _input_el, _text, _llm):
+        refill_calls.append(1)
+        return True
+
+    monkeypatch.setattr(executor, "_fill_plain_text_input", fake_fill_plain_text_input)
+
+    cfg = {
+        "url": "https://www.doubao.com/chat/",
+        "input_selector": "textarea.semi-input-textarea",
+        "submit_button": "#flow-end-msg-send",
+    }
+
+    recovered = await executor._attempt_doubao_page_regression_recovery(
+        fake_page, cfg, "doubao", 185617, "Q-185617 query text"
+    )
+
+    assert recovered is True, (
+        f"helper must return True when goto+wait+refill+submit all succeed; "
+        f"got {recovered}"
+    )
+    assert fake_page.goto_calls == ["https://www.doubao.com/chat/"], (
+        f"helper must call page.goto with cfg['url'] exactly once; "
+        f"got {fake_page.goto_calls!r}"
+    )
+    assert len(refill_calls) == 1, (
+        f"helper must refill via _fill_plain_text_input once; "
+        f"got {len(refill_calls)} call(s)"
+    )
+    assert executor._doubao_recovery_attempted is True, (
+        "helper must set the per-query latch after firing"
+    )
+
+    # Second invocation: latch enforces ONE-shot, no second goto.
+    recovered_second = await executor._attempt_doubao_page_regression_recovery(
+        fake_page, cfg, "doubao", 185617, "Q-185617 query text"
+    )
+    assert recovered_second is False, (
+        f"second invocation must be a no-op (return False) — looping "
+        f"page.goto is a regression risk (infinite reload); got {recovered_second}"
+    )
+    assert fake_page.goto_calls == ["https://www.doubao.com/chat/"], (
+        f"second invocation must NOT call page.goto; "
+        f"got {fake_page.goto_calls!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_attempt_doubao_page_regression_recovery_returns_false_when_ui_stays_broken(
+    monkeypatch,
+):
+    """Same shape as the recovery-failed branch of PR #1107's submit-confirm
+    test: page.goto fires but the SPA is permanently broken (no input
+    surfaces). Helper returns False; latch is still set; caller bails as
+    today."""
+    _install_fake_playwright(monkeypatch)
+
+    from geo_tracker.agent import guest_executor as _ge
+    from geo_tracker.agent.guest_executor import GuestQueryExecutor
+
+    async def _noop(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(_ge, "_save_html", _noop)
+    monkeypatch.setattr(_ge, "_save_screenshot", _noop)
+    monkeypatch.setattr(_ge, "_save_runtime_snapshot", _noop)
+
+    class FakePage:
+        url = "https://www.doubao.com/chat"
+
+        def __init__(self):
+            self.goto_calls = []
+
+        async def wait_for_timeout(self, *_a, **_k):
+            return None
+
+        async def goto(self, url, *_a, **_k):
+            self.goto_calls.append(url)
+            return None
+
+        async def wait_for_selector(self, *_a, **_k):
+            raise RuntimeError("not found")
+
+        async def query_selector(self, *_a, **_k):
+            return None
+
+        async def evaluate_handle(self, *_a, **_k):
+            class _NoElement:
+                def as_element(self):
+                    return None
+
+            return _NoElement()
+
+        async def evaluate(self, *_a, **_k):
+            return False
+
+    executor = GuestQueryExecutor()
+    fake_page = FakePage()
+
+    cfg = {
+        "url": "https://www.doubao.com/chat/",
+        "input_selector": "textarea.semi-input-textarea",
+        "submit_button": "#flow-end-msg-send",
+    }
+
+    recovered = await executor._attempt_doubao_page_regression_recovery(
+        fake_page, cfg, "doubao", 185620, "Q-185620 query"
+    )
+
+    assert recovered is False, (
+        f"helper must return False when no input element surfaces after "
+        f"page.goto; caller should bail with the original reason. got {recovered}"
+    )
+    assert fake_page.goto_calls == ["https://www.doubao.com/chat/"], (
+        f"helper must still attempt page.goto exactly once even when "
+        f"recovery ultimately fails; got {fake_page.goto_calls!r}"
+    )
+    assert executor._doubao_recovery_attempted is True, (
+        "latch must be set on every invocation (success OR failure) so "
+        "the auth-check + prompt-fill + submit-confirm sites don't ALL "
+        "fire it in one query"
+    )
+
+
+@pytest.mark.asyncio
+async def test_doubao_browser_query_skips_prompt_fill_when_recovery_already_submitted(
+    monkeypatch,
+):
+    """Q-185620 shape: when _browser_query is called with
+    ``_recovery_already_submitted=True``, the prompt_fill mouse/click
+    and the prompt_submit click chain are BOTH skipped — the recovery
+    helper already drove fill+submit and re-doing them would create a
+    duplicate message. Only the submit_confirm poll runs."""
+    _install_fake_playwright(monkeypatch)
+
+    from geo_tracker.agent import guest_executor as _ge
+    from geo_tracker.agent.guest_executor import GuestQueryExecutor
+
+    async def _noop(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(_ge, "_save_html", _noop)
+    monkeypatch.setattr(_ge, "_save_screenshot", _noop)
+    monkeypatch.setattr(_ge, "_save_runtime_snapshot", _noop)
+
+    refill_calls: list[int] = []
+
+    async def fake_fill_plain_text_input(_page, _input_el, _text, _llm):
+        refill_calls.append(1)
+        return True
+
+    class FakeKeyboard:
+        def __init__(self):
+            self.press_calls: list[str] = []
+
+        async def press(self, key, *_a, **_k):
+            self.press_calls.append(key)
+
+        async def type(self, *_a, **_k):
+            return None
+
+    class FakeMouse:
+        async def move(self, *_a, **_k):
+            return None
+
+    class FakeButton:
+        async def is_visible(self):
+            return True
+
+        async def click(self, *_a, **_k):
+            return None
+
+        async def evaluate(self, *_a, **_k):
+            return False
+
+    class FakePage:
+        """Submit_confirm observes the user message bubble (recovery has
+        already submitted), so the post-submit poll succeeds without
+        firing any local clicks."""
+
+        url = "https://www.doubao.com/chat"
+
+        def __init__(self):
+            self.keyboard = FakeKeyboard()
+            self.mouse = FakeMouse()
+            self.query_selector_calls: list[str] = []
+            self.click_calls = 0
+
+        async def wait_for_timeout(self, *_a, **_k):
+            return None
+
+        async def wait_for_selector(self, *_a, **_k):
+            return FakeButton()
+
+        async def query_selector(self, selector, *_a, **_k):
+            self.query_selector_calls.append(selector)
+            return FakeButton()
+
+        async def query_selector_all(self, *_a, **_k):
+            return []
+
+        async def evaluate_handle(self, *_a, **_k):
+            class _Handle:
+                def as_element(self):
+                    return FakeButton()
+
+            return _Handle()
+
+        async def evaluate(self, script, *args):
+            script_text = str(script)
+            # submit_confirmed JS — return True so the post-submit poll
+            # confirms recovery's submit on the first iteration.
+            if "queryText" in script_text:
+                return True
+            return False
+
+        async def content(self):
+            return "<html><body>recovered</body></html>"
+
+        async def goto(self, *_a, **_k):
+            return None
+
+    executor = GuestQueryExecutor()
+    monkeypatch.setattr(executor, "_fill_plain_text_input", fake_fill_plain_text_input)
+
+    fake_page = FakePage()
+    cfg = {
+        "url": "https://www.doubao.com/chat/",
+        "input_selector": "textarea.semi-input-textarea",
+        "submit_button": "#flow-end-msg-send",
+        "response_selector": ".flow-markdown-body",
+        "wait_after_submit": 100,
+        "login_redirect_domains": [],
+    }
+
+    resp_text, resp_html, citations = await executor._browser_query(
+        fake_page,
+        cfg,
+        "Q-185620 query text",
+        "doubao",
+        input_el=None,
+        query_id=185620,
+        runtime_events=[],
+        _recovery_already_submitted=True,
+    )
+
+    # The submit_button selector chain MUST NOT fire (it would be a
+    # duplicate click after recovery's submit). We allow query_selector
+    # to fire elsewhere (e.g. response_wait extraction), but the
+    # submit_button selector specifically must not appear in the
+    # query_selector trace BEFORE submit_confirm completes.
+    assert len(refill_calls) == 0, (
+        f"_fill_plain_text_input MUST NOT fire when "
+        f"_recovery_already_submitted=True (would clear textarea + "
+        f"refill, causing a duplicate submit); got {len(refill_calls)} call(s)"
+    )
+    # No keyboard.press('Enter') either — that would be a duplicate
+    # submit via the prompt_submit fallback.
+    assert "Enter" not in fake_page.keyboard.press_calls, (
+        f"keyboard.press('Enter') MUST NOT fire when "
+        f"_recovery_already_submitted=True; got {fake_page.keyboard.press_calls!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_recovery_latch_reset_per_execute_once(monkeypatch):
+    """``_doubao_recovery_attempted`` must reset at the top of each
+    ``_execute_once`` so a proxy-rotation retry of the same query gets
+    its own ONE-shot budget. Verify by inspecting source for the reset
+    at the start of ``_execute_once``."""
+    _install_fake_playwright(monkeypatch)
+
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parent.parent
+        / "agent" / "guest_executor.py"
+    ).read_text(encoding="utf-8")
+
+    # The reset MUST happen in _execute_once (not just _browser_query)
+    # because the helper latch is on the executor instance, and a
+    # proxy-rotation retry calls _execute_once again on the same
+    # executor.
+    exec_once_idx = source.index("async def _execute_once(")
+    # Take a generous window so the test is not brittle to small
+    # whitespace shifts inside the function.
+    exec_once_block = source[exec_once_idx:exec_once_idx + 2500]
+    assert "self._doubao_recovery_attempted = False" in exec_once_block, (
+        "``_execute_once`` MUST reset ``self._doubao_recovery_attempted``"
+        " near its top so a proxy-rotation retry of the same query gets"
+        " a fresh ONE-shot recovery budget. Per-query reset must NOT"
+        " be moved to ``execute()`` only — _execute_once is the proxy"
+        " retry granularity."
+    )
+
+    # And the helper itself must respect the latch (early return when set).
+    helper_idx = source.index("async def _attempt_doubao_page_regression_recovery(")
+    helper_block = source[helper_idx:helper_idx + 4500]
+    assert "if self._doubao_recovery_attempted:" in helper_block, (
+        "Helper must early-return when the per-query latch is already "
+        "set, otherwise the auth-check + prompt-fill + submit-confirm "
+        "sites could all fire it in one query (infinite reload risk)."
+    )
