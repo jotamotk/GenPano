@@ -16,6 +16,13 @@ set -euo pipefail
 : "${DISPLAY:=:0}"
 export DISPLAY
 
+# Clean up stale X server lock + socket. Without this, Xvfb refuses to
+# start with "Server is already active for display 0" — these files can
+# be baked into the image by package post-install hooks (xfce4-session /
+# mesa) running a transient X server during apt-get, or be left over if
+# a previous container instance died mid-startup.
+rm -f /tmp/.X0-lock /tmp/.X11-unix/X0 2>/dev/null || true
+
 # Workaround: docker mounted /profile may be owned by root; chrome needs rw
 mkdir -p /profile
 chmod 0700 /profile
