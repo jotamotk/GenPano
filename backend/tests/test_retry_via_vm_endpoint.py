@@ -117,8 +117,28 @@ async def admin_operator(db_session: AsyncSession) -> AsyncGenerator[AdminUser, 
         app.dependency_overrides.pop(current_admin, None)
 
 
+@pytest.fixture
+def _patch_table_exists(monkeypatch):
+    """Override ``queries_db._table_exists`` so it works against SQLite.
+
+    The production check uses ``information_schema.tables`` (Postgres-only),
+    which always returns False on SQLite. The retry-via-vm route bails with
+    ``queries_unavailable`` when that happens — matches the production
+    behavior on a fresh DB but breaks every SQLite-based test that DID
+    create the queries table via raw SQL. Match the pattern in
+    ``test_phase_8d_picker.py`` and ``test_phase_3b3_admin_topic_plan_delete.py``
+    of swapping the helper.
+    """
+    from app.admin.queries import db as _queries_db_module
+
+    async def _fake_table_exists(_session, name):
+        return True
+
+    monkeypatch.setattr(_queries_db_module, "_table_exists", _fake_table_exists)
+
+
 @pytest_asyncio.fixture
-async def existing_query(db_session: AsyncSession) -> int:
+async def existing_query(db_session: AsyncSession, _patch_table_exists) -> int:
     """Insert a queries row and return its id.
 
     The route's first step is ``SELECT id, target_llm, query_text FROM queries
