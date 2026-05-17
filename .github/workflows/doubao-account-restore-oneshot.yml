@@ -141,7 +141,7 @@ jobs:
           echo ""
           echo "=== BEFORE state — rows that match account_ids AND llm_name='doubao' ==="
           docker compose exec -T postgres psql -X -U genpano -d genpano -P pager=off -c "
-            SELECT id, phone, status, expired_transition_count, consecutive_fails,
+            SELECT id, phone_number, status, expired_transition_count, consecutive_fails,
                    cooldown_until, cookies_updated_at, created_at, last_login_at
             FROM llm_accounts
             WHERE id IN (${ACCOUNT_IDS})
@@ -187,13 +187,13 @@ jobs:
                 consecutive_fails = 0
             WHERE id IN (${ACCOUNT_IDS})
               AND llm_name = 'doubao'
-            RETURNING id, phone, status, expired_transition_count, consecutive_fails;
+            RETURNING id, phone_number, status, expired_transition_count, consecutive_fails;
           " </dev/null 2>&1
 
           echo ""
           echo "=== AFTER state ==="
           docker compose exec -T postgres psql -X -U genpano -d genpano -P pager=off -c "
-            SELECT id, phone, status, expired_transition_count, consecutive_fails,
+            SELECT id, phone_number, status, expired_transition_count, consecutive_fails,
                    cooldown_until, cookies_updated_at, created_at, last_login_at
             FROM llm_accounts
             WHERE id IN (${ACCOUNT_IDS})
