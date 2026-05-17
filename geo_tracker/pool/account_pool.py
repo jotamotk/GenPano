@@ -181,6 +181,59 @@ async def snapshot_pool_health(
     )
 
 
+async def count_acquirable_accounts(
+    db: AsyncSession,
+    llm_name: str,
+    *,
+    now: datetime | None = None,
+) -> int:
+    """Return the count of ``llm_name`` accounts that :meth:`AccountPool.acquire`
+    would currently consider candidates — i.e. rows that satisfy ALL the same
+    predicates ``acquire()`` filters on, NOT just ``status='active'``.
+
+    Why this exists (Refs #963 Codex P2 review
+    https://github.com/jotamotk/trash_test/pull/1102#discussion_r3253924434):
+    ``snapshot_pool_health.active`` counts every row with ``status='active'``
+    regardless of whether the row has cookies, is in a per-row cooldown window,
+    or has already exhausted ``query_count_today >= daily_limit``. That over-
+    counts when the proactive pre-warm task uses ``active`` as the basis for
+    the deficit calculation: e.g. 3 Doubao rows with ``status='active'`` but
+    all of them with ``cookies_json=NULL`` (or quota-exhausted) produces
+    ``deficit=0`` from snapshot, but ``acquire()`` returns None — the pool
+    is effectively empty. This function mirrors the exact predicate set
+    in :meth:`AccountPool.acquire` (around line 356–370) so callers can
+    compute deficits against the *usable* count, not the *labeled* count.
+
+    Read-only; idempotent. Does NOT promote expired cooldowns (the caller
+    is expected to invoke :func:`promote_expired_cooldowns` first if they
+    want elapsed-cooldown rows to count as usable; otherwise those rows are
+    excluded because ``acquire()`` itself promotes them before filtering).
+    """
+    current = now or datetime.utcnow()
+    count_today = func.coalesce(LLMAccount.query_count_today, 0)
+    stmt = (
+        select(func.count(LLMAccount.id))
+        .where(
+            and_(
+                LLMAccount.llm_name == llm_name,
+                LLMAccount.status == AccountStatus.ACTIVE.value,
+                # 必须有 cookies (matches acquire() line ~363-364)
+                LLMAccount.cookies_json != None,
+                LLMAccount.cookies_json != "",
+                # 冷却已过期 或 从未冷却 (matches acquire() line ~366)
+                (LLMAccount.cooldown_until == None)
+                | (LLMAccount.cooldown_until <= current),
+                # 今日配额未满 (matches acquire() line ~368-369)
+                func.coalesce(LLMAccount.daily_limit, 0) > 0,
+                count_today < LLMAccount.daily_limit,
+            )
+        )
+    )
+    result = await db.execute(stmt)
+    scalar = result.scalar()
+    return int(scalar or 0)
+
+
 async def promote_expired_cooldowns(
     db: AsyncSession,
     llm_name: str | None = None,

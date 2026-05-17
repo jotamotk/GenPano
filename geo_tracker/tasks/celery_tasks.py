@@ -50,6 +50,7 @@ from geo_tracker.db.models import (
 from geo_tracker.pool.account_pool import (
     AccountPool,
     EXPIRED_ACCOUNT_REASONS,
+    count_acquirable_accounts,
     snapshot_pool_health,
 )
 
@@ -1630,10 +1631,13 @@ def cookie_keep_alive() -> dict:
 # the next user query has to wait the full SMS-register round-trip (~60s of
 # browser + LubanSMS) before it can run, and during that window every other
 # query for that engine also fails. Pre-warming runs every N minutes, checks
-# per-engine active counts, and enqueues up to ``TARGET_ACTIVE - active_count``
-# new-account registration tasks so the pool refills before queries arrive.
-# Respects ``should_enqueue_new_account()`` so it cannot double up with the
-# reactive path or skip the 30-min failure cooldown.
+# per-engine *usable* counts (predicates match ``AccountPool.acquire()``), and
+# enqueues at most ONE new-account registration per beat per engine: the
+# platform-wide in-flight lock ``genpano:autologin:newaccount:{platform}``
+# (10-min TTL) serializes new-account registration intentionally, so a deficit
+# of N is drained across N beat cycles rather than burned in a single tight
+# loop. Respects ``should_enqueue_new_account()`` so it cannot double up with
+# the reactive path or skip the 30-min failure cooldown.
 PREWARM_DEFAULT_TARGETS_BY_ENGINE = {
     "doubao": 3,
     # DeepSeek / ChatGPT are not the immediate #963 bottleneck but the pre-warm
@@ -1666,11 +1670,30 @@ def prewarm_account_pool() -> dict:
     Every N minutes (Celery Beat), for each engine in
     ``PREWARM_DEFAULT_TARGETS_BY_ENGINE``:
 
-    1. Snapshot the per-engine pool via :func:`snapshot_pool_health`.
-    2. If ``active_count < TARGET_ACTIVE``, enqueue
-       ``auto_login(platform=engine, new_account=True)`` up to
-       ``(TARGET_ACTIVE - active_count)`` times.
-    3. Each enqueue goes through :func:`should_enqueue_new_account` so we
+    1. Compute ``usable_count`` via :func:`count_acquirable_accounts`,
+       which mirrors :meth:`AccountPool.acquire`'s predicate set
+       (status='active' AND cookies_json present AND cooldown elapsed AND
+       query_count_today < daily_limit). Plain ``status='active'`` count is
+       NOT enough — rows with NULL cookies or exhausted quota are labeled
+       active but ``acquire()`` would skip them. Refs Codex P2 review
+       https://github.com/jotamotk/trash_test/pull/1102#discussion_r3253924434.
+    2. If ``usable_count < TARGET_ACTIVE``, enqueue at most ONE
+       ``auto_login(platform=engine, new_account=True)`` per beat per
+       engine.
+
+       Why at most one and not ``deficit``-many: the gate
+       :func:`should_enqueue_new_account` acquires a platform-wide SETNX
+       lock (``genpano:autologin:newaccount:{platform}``, TTL 10 min) so
+       the FIRST enqueue takes the lock and any second iteration of the
+       loop would immediately see the lock held and break. Looping past
+       a closed gate is a no-op; emit a single enqueue and let the next
+       beat run drain the remaining deficit. With a 10-min beat cadence
+       and ~60s typical SMS registration latency, a pool that has fallen
+       to ``deficit=3`` is fully refilled in ~30–40 min — acceptable given
+       the platform-wide lock's purpose (prevent parallel SMS spend on the
+       same engine — see PR #1042 / #1097 territory). Refs Codex P2 review
+       https://github.com/jotamotk/trash_test/pull/1102#discussion_r3253924436.
+    3. The enqueue goes through :func:`should_enqueue_new_account` so we
        inherit the in-flight lock + 30-min failure cooldown that already
        exists on the reactive path — no double registration, no SMS waste
        during a failure cooldown.
@@ -1689,21 +1712,27 @@ def prewarm_account_pool() -> dict:
             for engine in sorted(PREWARM_DEFAULT_TARGETS_BY_ENGINE.keys()):
                 target = _prewarm_target_active(engine)
                 snap = await snapshot_pool_health(db, engine)
-                deficit = max(0, target - snap.active)
+                # P2 #1 fix: deficit must be based on the count
+                # ``AccountPool.acquire()`` would actually return — not just
+                # ``status='active'``. A row labeled active but with
+                # ``cookies_json=NULL`` or ``query_count_today >= daily_limit``
+                # is NOT acquirable, so it must not count toward the deficit.
+                usable = await count_acquirable_accounts(db, engine)
+                deficit = max(0, target - usable)
                 enqueued_for_engine = 0
                 lock_skips = 0
 
                 # When target<=0 the engine is opted out of pre-warming;
                 # snapshot the pool anyway so operators can grep the same log
                 # line for every engine.
+                #
+                # P2 #2 (Option A): enqueue AT MOST ONE per engine per beat
+                # because ``should_enqueue_new_account`` acquires the
+                # platform-wide in-flight lock; further iterations would
+                # only spin against a closed gate. The remaining deficit is
+                # drained over subsequent beat cycles.
                 if target > 0 and deficit > 0:
-                    for _ in range(deficit):
-                        if not await should_enqueue_new_account(engine):
-                            # In-flight lock held OR failure cooldown is active.
-                            # Stop iterating for this engine — further attempts
-                            # would just keep tripping the same gate.
-                            lock_skips += 1
-                            break
+                    if await should_enqueue_new_account(engine):
                         auto_login.apply_async(
                             kwargs={
                                 "platform": engine,
@@ -1711,12 +1740,17 @@ def prewarm_account_pool() -> dict:
                             },
                             queue="account_login",
                         )
-                        enqueued_for_engine += 1
+                        enqueued_for_engine = 1
                         total_enqueued += 1
+                    else:
+                        # In-flight lock held OR failure cooldown is active.
+                        # Nothing to do this beat; next beat will retry.
+                        lock_skips = 1
 
                 per_engine[engine] = {
                     "target_active": target,
                     "active": snap.active,
+                    "usable": usable,
                     "cooldown": snap.cooldown,
                     "expired": snap.expired,
                     "banned": snap.banned,
