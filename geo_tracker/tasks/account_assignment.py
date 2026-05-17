@@ -17,6 +17,17 @@ def _utcnow_naive() -> datetime:
 
 
 def _has_cookies(account: LLMAccount) -> bool:
+    # Refs Epic #1110 / Issue #1116 (Codex review on PR #1122): vm_session
+    # accounts deliberately have ``cookies_json IS NULL`` — the DB-level
+    # CHECK constraint ``chk_exec_mode_cookies`` (added in PR #1121) enforces
+    # this because the VM holds the persistent logged-in browser, not the
+    # backend. Treating "no cookies" as ineligible for vm_session rows would
+    # make the entire VM-per-account architecture unselectable. Cookies are
+    # still required for the legacy ``local_cookie`` path (the existing
+    # filter that correctly rejects broken legacy rows).
+    execution_mode = getattr(account, "execution_mode", None) or "local_cookie"
+    if execution_mode == "vm_session":
+        return True
     return bool((account.cookies_json or "").strip())
 
 

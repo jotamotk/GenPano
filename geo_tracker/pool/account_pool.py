@@ -294,9 +294,19 @@ async def count_acquirable_accounts(
             and_(
                 LLMAccount.llm_name == llm_name,
                 LLMAccount.status == AccountStatus.ACTIVE.value,
-                # 必须有 cookies (matches acquire() line ~363-364)
-                LLMAccount.cookies_json != None,
-                LLMAccount.cookies_json != "",
+                # 必须有 cookies (matches acquire() line ~363-364) —— except
+                # for vm_session accounts (Refs Epic #1110 / Issue #1116
+                # Codex review on PR #1122). MUST stay in lockstep with the
+                # ``AccountPool.acquire`` predicate above; otherwise the
+                # proactive pre-warm deficit calculation drifts away from
+                # the actual usable pool size and re-introduces the
+                # "snapshot says N active, acquire returns None" symptom
+                # from Codex review r3253924434.
+                (LLMAccount.execution_mode == "vm_session")
+                | (
+                    (LLMAccount.cookies_json != None)
+                    & (LLMAccount.cookies_json != "")
+                ),
                 # 冷却已过期 或 从未冷却 (matches acquire() line ~366)
                 (LLMAccount.cooldown_until == None)
                 | (LLMAccount.cooldown_until <= current),
@@ -489,9 +499,18 @@ class AccountPool:
                 and_(
                     LLMAccount.llm_name == llm_name,
                     LLMAccount.status == AccountStatus.ACTIVE.value,
-                    # 必须有 cookies
-                    LLMAccount.cookies_json != None,
-                    LLMAccount.cookies_json != "",
+                    # 必须有 cookies —— EXCEPT for vm_session accounts, which
+                    # deliberately have ``cookies_json IS NULL`` (Refs Epic
+                    # #1110 / Issue #1116 Codex review on PR #1122; DB-level
+                    # ``chk_exec_mode_cookies`` from PR #1121 forbids them
+                    # from carrying cookies). Without this OR clause, the
+                    # entire VM-per-account architecture is unselectable by
+                    # the pool.
+                    (LLMAccount.execution_mode == "vm_session")
+                    | (
+                        (LLMAccount.cookies_json != None)
+                        & (LLMAccount.cookies_json != "")
+                    ),
                     # 冷却已过期 或 从未冷却
                     (LLMAccount.cooldown_until == None) | (LLMAccount.cooldown_until <= now),
                     # 今日配额未满
