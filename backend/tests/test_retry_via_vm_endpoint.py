@@ -1,3 +1,8 @@
+# ruff: noqa: RUF001
+# RUF001 ambiguous-character is disabled file-wide: the fixture strings are
+# verbatim Chinese characters from a captured Doubao production response and
+# must NOT be re-spelled with ASCII punctuation (would no longer be a real
+# captured value — see AGENTS.md hard rule 4 + Issue #1144 acceptance AC-7).
 """Refs Epic #1110 / Issue #1144 — quick ``POST /api/queries/{id}/retry_via_vm``.
 
 Tests cover the Acceptance Matrix:
@@ -25,13 +30,22 @@ import os
 import sys
 import uuid
 from collections.abc import AsyncGenerator
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
-import pytest_asyncio
-from genpano_models import AdminUser
-from sqlalchemy import text as sa_text
-from sqlalchemy.ext.asyncio import AsyncSession
+# The ``geo_tracker`` package lives at the repo root, one level above
+# ``backend/``. Mirror the sys.path-insert pattern from
+# ``tests/test_issue_588_pipeline_profile_analyzer.py`` so this module
+# can import ``geo_tracker.agent.vm_quick_retry`` regardless of CWD.
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+import pytest  # noqa: E402
+import pytest_asyncio  # noqa: E402
+from genpano_models import AdminUser  # noqa: E402
+from sqlalchemy import text as sa_text  # noqa: E402
+from sqlalchemy.ext.asyncio import AsyncSession  # noqa: E402
 
 os.environ.setdefault("USER_JWT_SECRET", "x" * 64)
 

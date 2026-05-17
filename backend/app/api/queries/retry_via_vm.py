@@ -31,7 +31,7 @@ dispatch — it executes inline, then commits. Audit emit uses
 from __future__ import annotations
 
 import logging
-from typing import Annotated, Any
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
