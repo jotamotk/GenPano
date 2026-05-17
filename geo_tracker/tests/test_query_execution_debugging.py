@@ -1829,6 +1829,382 @@ async def test_chatgpt_submit_retry_does_not_inherit_doubao_bail_reason(
 
 
 @pytest.mark.asyncio
+async def test_doubao_submit_retry_recovers_via_page_goto_when_ui_returns(
+    monkeypatch,
+):
+    """Refs #963 follow-up to PR #1106: when the Doubao SPA regresses to
+    its homepage between fill and submit-confirm (Q-184971 evidence
+    2026-05-17 05:39-05:40 UTC), PR #1106 bailed with
+    ``doubao_input_lost_before_submit``. This follow-up adds a ONE-SHOT
+    ``page.goto(cfg["url"])`` recovery BEFORE the bail. The investigation
+    posted on issue #963 (2026-05-17T06:23Z) refuted IP-rotation-forces-
+    re-login (0 re-login events in 48h, sessions surviving 285+ min
+    across rotations), so the session is still valid and a fresh /chat
+    load should bring the chat UI back.
+
+    Happy path: FakePage returns no input + no submit button on the
+    initial submit (matches Q-184971), but after ``page.goto`` the chat
+    UI is back. Recovery refills, clicks the resurfaced send button,
+    submit_confirmed returns True, and the executor falls through to the
+    normal response-wait path instead of bailing.
+    """
+    _install_fake_playwright(monkeypatch)
+
+    from geo_tracker.agent import guest_executor as _ge
+    from geo_tracker.agent.guest_executor import GuestQueryExecutor
+
+    async def _noop(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(_ge, "_save_html", _noop)
+    monkeypatch.setattr(_ge, "_save_screenshot", _noop)
+    monkeypatch.setattr(_ge, "_save_runtime_snapshot", _noop)
+
+    query_text = "bestCoffer travel advantages?"
+
+    class FakeInput:
+        async def bounding_box(self):
+            return None
+
+        async def click(self, *_a, **_k):
+            return None
+
+        async def fill(self, *_a, **_k):
+            return None
+
+        async def evaluate(self, *_a, **_k):
+            return query_text
+
+    class FakeKeyboard:
+        async def press(self, *_a, **_k):
+            return None
+
+        async def type(self, *_a, **_k):
+            return None
+
+    class FakeMouse:
+        async def move(self, *_a, **_k):
+            return None
+
+    class FakeSubmitHandle:
+        def __init__(self, has_element: bool):
+            self._has = has_element
+
+        def as_element(self):
+            return _FakeButton() if self._has else None
+
+    class _FakeButton:
+        async def is_visible(self):
+            return True
+
+        async def click(self, *_a, **_k):
+            return None
+
+        async def evaluate(self, *_a, **_k):
+            # Disabled-state probe in the submit_button for-loop — return
+            # False so the click path is allowed to proceed.
+            return False
+
+    class FakePage:
+        """Page collapsed to homepage at submit time, then recovers via
+        ``page.goto``.
+
+        Pre-recovery (the initial submit + the retry-input probe at the
+        start of the retry block): query_selector returns None for input
+        and button selectors; evaluate_handle returns a handle whose
+        ``as_element()`` is None (no #flow-end-msg-send). After the
+        executor calls ``page.goto`` the page flips into a recovered
+        state where the input and submit button query_selectors return
+        usable fakes and submit_confirmed yields True.
+        """
+
+        url = "https://www.doubao.com/chat"
+
+        def __init__(self):
+            self.keyboard = FakeKeyboard()
+            self.mouse = FakeMouse()
+            self.recovered = False
+            self.goto_calls: list[str] = []
+            self.refill_called = False
+
+        async def wait_for_timeout(self, *_a, **_k):
+            return None
+
+        async def goto(self, url, *_a, **_k):
+            self.goto_calls.append(url)
+            self.recovered = True
+
+        async def evaluate_handle(self, *_a, **_k):
+            # Submit-button finder: before recovery returns no element so
+            # the retry block enters its "no input + no button" branch;
+            # after recovery returns a usable button so the resubmit path
+            # can click.
+            return FakeSubmitHandle(has_element=self.recovered)
+
+        async def query_selector(self, selector, *_a, **_k):
+            if not self.recovered:
+                return None
+            # After recovery, both input and send-button selectors return
+            # usable fakes.
+            return _FakeButton()
+
+        async def wait_for_selector(self, selector, *_a, **_k):
+            if not self.recovered:
+                raise RuntimeError("not found")
+            return _FakeButton()
+
+        async def query_selector_all(self, *_a, **_k):
+            return []
+
+        async def evaluate(self, script, *args):
+            script_text = str(script)
+            # submit_confirmed: True ONLY after recovery + refill, so the
+            # outer 10-iter confirm poll on the recovered submit succeeds.
+            if "queryText" in script_text:
+                return self.recovered and self.refill_called
+            if "document.body?.innerText" in script_text:
+                return "" if self.recovered else "登录"
+            return ""
+
+        async def content(self):
+            return "<html><body>recovered</body></html>"
+
+    executor = GuestQueryExecutor()
+    fake_page = FakePage()
+
+    refill_calls: list[int] = []
+
+    async def fake_fill_plain_text_input(_self_page, _input_el, _text, _llm):
+        # Track that refill ran AFTER recovery (matches the executor's
+        # call order: recovery → fill on the new input → resubmit).
+        refill_calls.append(1)
+        fake_page.refill_called = True
+        return True
+
+    monkeypatch.setattr(executor, "_fill_plain_text_input", fake_fill_plain_text_input)
+
+    resp_text, resp_html, citations = await executor._browser_query(
+        fake_page,
+        {
+            "input_selector": (
+                "#input-engine-container textarea.semi-input-textarea:not([aria-hidden='true']),"
+                " textarea.semi-input-textarea:not([aria-hidden='true']),"
+                " textarea:not([aria-hidden='true']), [contenteditable='true']"
+            ),
+            "response_selector": ".flow-markdown-body",
+            "submit_button": (
+                "#flow-end-msg-send:not([aria-disabled='true']):not([data-disabled='true']),"
+                " button[id='flow-end-msg-send']"
+            ),
+            "submit_key": "Enter",
+            "wait_after_submit": 100,
+            "load_wait": 100,
+            "login_redirect_domains": [],
+            "url": "https://www.doubao.com/chat/",
+        },
+        query_text,
+        "doubao",
+        input_el=FakeInput(),
+        query_id=184971,
+        runtime_events=[],
+    )
+
+    # Recovery actually called page.goto with the cfg URL exactly once
+    # (ONE-SHOT guarantee).
+    assert fake_page.goto_calls == ["https://www.doubao.com/chat/"], (
+        f"expected one page.goto recovery call to cfg['url']; "
+        f"got {fake_page.goto_calls!r}"
+    )
+    # After recovery the executor refilled the input via the public
+    # _fill_plain_text_input helper before resubmitting.
+    assert len(refill_calls) >= 1, (
+        f"expected _fill_plain_text_input to be called after recovery; "
+        f"got {len(refill_calls)} call(s)"
+    )
+    # The executor did NOT bail with the PR #1106 reason — recovery
+    # succeeded, so the retry path falls through to the response-wait
+    # phase and last_error_reason stays clean of the bail reason.
+    assert executor.last_error_reason != "doubao_input_lost_before_submit", (
+        f"recovery should clear the bail reason; "
+        f"got {executor.last_error_reason!r}"
+    )
+    # Returned tuple is not the early bail empty triple (response
+    # extraction may legitimately produce empty text under this FakePage,
+    # but the explicit ('', '', []) bail triple is what we're guarding
+    # against — verified by NOT seeing the bail reason set above and
+    # confirming that submit_confirmed observed the recovered state).
+
+
+@pytest.mark.asyncio
+async def test_doubao_submit_retry_falls_through_to_bail_when_recovery_fails(
+    monkeypatch,
+):
+    """Refs #963 follow-up to PR #1106: when the page regressed AND the
+    ``page.goto`` recovery does not bring the chat UI back (e.g. the
+    homepage redirect is sticky, or the goto itself errors), the
+    executor MUST fall through to PR #1106's bail rather than press
+    Enter into nothing or hang.
+
+    Failure path: FakePage returns no input / no button regardless of
+    whether page.goto was called (stays regressed). After recovery the
+    executor still sees no input and no clickable button, so it must
+    fall through to the existing bail and set last_error_reason to the
+    specific page-regression reason (doubao_not_logged_in if auth
+    chrome is detected, else doubao_input_lost_before_submit).
+    """
+    _install_fake_playwright(monkeypatch)
+
+    from geo_tracker.agent import guest_executor as _ge
+    from geo_tracker.agent.guest_executor import GuestQueryExecutor
+
+    captured_html_suffixes: list[str] = []
+
+    async def fake_save_html(_page, _query_id, suffix):
+        captured_html_suffixes.append(suffix)
+
+    async def _noop(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(_ge, "_save_html", fake_save_html)
+    monkeypatch.setattr(_ge, "_save_screenshot", _noop)
+    monkeypatch.setattr(_ge, "_save_runtime_snapshot", _noop)
+
+    query_text = "bestCoffer advantages?"
+
+    class FakeInput:
+        async def bounding_box(self):
+            return None
+
+        async def click(self, *_a, **_k):
+            return None
+
+        async def fill(self, *_a, **_k):
+            return None
+
+        async def evaluate(self, *_a, **_k):
+            return query_text
+
+    class FakeKeyboard:
+        async def press(self, *_a, **_k):
+            return None
+
+        async def type(self, *_a, **_k):
+            return None
+
+    class FakeMouse:
+        async def move(self, *_a, **_k):
+            return None
+
+    class FakeSubmitHandle:
+        def as_element(self):
+            return None
+
+    class FakePage:
+        url = "https://www.doubao.com/chat"
+
+        def __init__(self):
+            self.keyboard = FakeKeyboard()
+            self.mouse = FakeMouse()
+            self.goto_calls: list[str] = []
+
+        async def wait_for_timeout(self, *_a, **_k):
+            return None
+
+        async def goto(self, url, *_a, **_k):
+            # Recovery attempted but page stays regressed — input and
+            # button selectors continue to return None after this call.
+            self.goto_calls.append(url)
+
+        async def evaluate_handle(self, *_a, **_k):
+            return FakeSubmitHandle()
+
+        async def query_selector(self, *_a, **_k):
+            return None
+
+        async def wait_for_selector(self, *_a, **_k):
+            raise RuntimeError("not found")
+
+        async def query_selector_all(self, *_a, **_k):
+            return []
+
+        async def evaluate(self, script, *args):
+            script_text = str(script)
+            # Auth marker present → _prefer_doubao_auth_failure_reason
+            # classifies as doubao_not_logged_in (the strongest available
+            # operator reason for a homepage-regression with login chrome).
+            if "document.body?.innerText" in script_text:
+                return "有什么我能帮你的吗？\n登录"
+            if "queryText" in script_text:
+                return False
+            return ""
+
+        async def content(self):
+            return (
+                "<html><body>"
+                "<header><button class=\"login-button\">登录</button></header>"
+                "</body></html>"
+            )
+
+    executor = GuestQueryExecutor()
+    fake_page = FakePage()
+
+    async def fake_fill_plain_text_input(*_a, **_k):
+        return True
+
+    monkeypatch.setattr(executor, "_fill_plain_text_input", fake_fill_plain_text_input)
+
+    resp_text, resp_html, citations = await executor._browser_query(
+        fake_page,
+        {
+            "input_selector": (
+                "#input-engine-container textarea.semi-input-textarea:not([aria-hidden='true']),"
+                " textarea:not([aria-hidden='true'])"
+            ),
+            "response_selector": ".flow-markdown-body",
+            "submit_button": "#flow-end-msg-send",
+            "submit_key": "Enter",
+            "wait_after_submit": 100,
+            "load_wait": 100,
+            "login_redirect_domains": [],
+            "url": "https://www.doubao.com/chat/",
+        },
+        query_text,
+        "doubao",
+        input_el=FakeInput(),
+        query_id=184971,
+        runtime_events=[],
+    )
+
+    # Recovery was attempted exactly once (ONE-SHOT — even on failure we
+    # do not loop more goto attempts).
+    assert fake_page.goto_calls == ["https://www.doubao.com/chat/"], (
+        f"expected exactly one page.goto recovery attempt; "
+        f"got {fake_page.goto_calls!r}"
+    )
+    # After recovery still failed, the executor falls through to
+    # PR #1106's bail: early return ('', '', []) and a specific
+    # operator-useful reason. The auth chrome is visible so the
+    # _prefer_doubao_auth_failure_reason path wins, classifying as
+    # doubao_not_logged_in (stronger than the fallback bail reason).
+    assert (resp_text, resp_html, citations) == ("", "", [])
+    assert "doubao_submit_failed" in captured_html_suffixes, (
+        f"expected _save_html called with doubao_submit_failed suffix; "
+        f"got {captured_html_suffixes!r}"
+    )
+    # last_error_reason landed on a specific, operator-useful page
+    # regression reason — NOT generic ``no_response``.
+    assert executor.last_error_reason in (
+        "doubao_not_logged_in",
+        "doubao_auth_state_missing",
+        "doubao_input_lost_before_submit",
+    ), (
+        f"expected specific page-regression reason; "
+        f"got {executor.last_error_reason!r}"
+    )
+    assert executor.last_error_reason != "no_response"
+
+
+@pytest.mark.asyncio
 async def test_doubao_auth_state_overrides_generic_browser_timeout(monkeypatch):
     _install_fake_playwright(monkeypatch)
 
