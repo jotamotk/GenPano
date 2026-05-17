@@ -111,7 +111,7 @@ async def retry_query_via_vm(
     #    importing this module does not pull Playwright (the test
     #    harness without Playwright installed can still import the
     #    route module for URL discovery).
-    from geo_tracker.agent.vm_quick_retry import (
+    from geo_tracker.agent.vm_quick_retry import (  # type: ignore[import-not-found]
         ERR_CDP_UNREACHABLE,
         ERR_VM_NOT_LOGGED_IN,
         QuickRetryError,
