@@ -15,6 +15,13 @@ set -euo pipefail
 : "${CHROME_TARGET_URL:=https://www.doubao.com/chat}"
 : "${DISPLAY:=:0}"
 export DISPLAY
+# Chrome 116+ silently ignores --remote-debugging-address=0.0.0.0 and only
+# binds CDP to 127.0.0.1 inside this container. We expose CDP externally by
+# running socat as a sidecar: Chrome listens on this internal loopback port,
+# socat listens on the container's external CDP_PORT and forwards. The
+# extra hop means Chrome sees 127.0.0.1 as the source IP and accepts the
+# request instead of TCP-resetting it as a DNS-rebinding attempt.
+: "${CDP_INTERNAL_PORT:=9322}"
 
 # Clean up stale X server lock + socket. Without this, Xvfb refuses to
 # start with "Server is already active for display 0" — these files can
@@ -58,14 +65,13 @@ dbus-launch --exit-with-session startxfce4 \
   > /var/log/xfce.log 2>&1 &
 sleep 5
 
-# ---- 4. Chrome (persistent /profile, CDP exposed on $CDP_PORT) ----
-echo "[entrypoint] starting Chrome (CDP=$CDP_PORT, profile=/profile)..."
-# --remote-debugging-address=0.0.0.0 lets the host bridge to other containers
-# (locked down by docker-compose port mapping + Tailscale ACL, not by Chrome).
+# ---- 4. Chrome (persistent /profile, CDP on internal loopback port) ----
+echo "[entrypoint] starting Chrome (CDP internal=$CDP_INTERNAL_PORT, external via socat=$CDP_PORT, profile=/profile)..."
+# Chrome 116+ refuses to listen on non-loopback for CDP. Bind to localhost
+# only; socat below exposes it on $CDP_PORT.
 google-chrome \
   --user-data-dir=/profile \
-  --remote-debugging-port="$CDP_PORT" \
-  --remote-debugging-address=0.0.0.0 \
+  --remote-debugging-port="$CDP_INTERNAL_PORT" \
   --remote-allow-origins=* \
   --no-sandbox --no-first-run --no-default-browser-check \
   --disable-blink-features=AutomationControlled \
@@ -74,15 +80,25 @@ google-chrome \
   "$CHROME_TARGET_URL" \
   > /var/log/chrome.log 2>&1 &
 
-# Wait for CDP to come up
+# Wait for Chrome's internal CDP to come up
 for i in $(seq 1 30); do
-  if curl -sf "http://127.0.0.1:$CDP_PORT/json/version" >/dev/null 2>&1; then break; fi
+  if curl -sf "http://127.0.0.1:$CDP_INTERNAL_PORT/json/version" >/dev/null 2>&1; then break; fi
   sleep 1
 done
-curl -sf "http://127.0.0.1:$CDP_PORT/json/version" | head -3 || {
-  echo "[entrypoint] WARN: CDP not yet reachable; chrome.log:"
+curl -sf "http://127.0.0.1:$CDP_INTERNAL_PORT/json/version" >/dev/null || {
+  echo "[entrypoint] WARN: Chrome CDP not yet reachable on internal port $CDP_INTERNAL_PORT; chrome.log:"
   tail -20 /var/log/chrome.log
 }
+echo "[entrypoint] Chrome CDP up on internal 127.0.0.1:$CDP_INTERNAL_PORT"
+
+# ---- 4b. socat bridge: external $CDP_PORT (0.0.0.0) -> Chrome 127.0.0.1:$CDP_INTERNAL_PORT ----
+echo "[entrypoint] starting socat CDP bridge: 0.0.0.0:$CDP_PORT -> 127.0.0.1:$CDP_INTERNAL_PORT"
+socat TCP-LISTEN:"$CDP_PORT",reuseaddr,fork TCP:127.0.0.1:"$CDP_INTERNAL_PORT" \
+  > /var/log/socat-cdp.log 2>&1 &
+for i in $(seq 1 10); do
+  if ss -tln 2>/dev/null | grep -q ":$CDP_PORT "; then break; fi
+  sleep 0.5
+done
 
 # ---- 5. x11vnc binds to Xvfb display ----
 echo "[entrypoint] starting x11vnc ..."
