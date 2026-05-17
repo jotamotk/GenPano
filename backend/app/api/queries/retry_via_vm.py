@@ -28,6 +28,7 @@ This endpoint does NOT inherit the existing retry path's celery
 dispatch — it executes inline, then commits. Audit emit uses
 ``severity='med'`` (matches the existing ``retry_query`` audit row).
 """
+
 from __future__ import annotations
 
 import logging

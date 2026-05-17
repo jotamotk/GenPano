@@ -60,8 +60,7 @@ os.environ.setdefault("USER_JWT_SECRET", "x" * 64)
 # response body — NOT a self-seeded "answer-like text" string that
 # would pass even if the helper produced garbage.
 Q184971_RAW_TEXT_REAL_PREFIX = (
-    "是的，bestCoffer 企业级 AI 数据脱敏工具非常适合金融行业的多业务"
-    "场景使用。"
+    "是的，bestCoffer 企业级 AI 数据脱敏工具非常适合金融行业的多业务场景使用。"
 )
 # Extend the prefix to >= 200 chars by including documented Doubao
 # follow-on sentence patterns from the same captured-response evidence
@@ -71,8 +70,7 @@ Q184971_RAW_TEXT_REAL_PREFIX = (
 # documented production answer shape (合规、技术细节、审计日志) so the
 # fixture stays anchored to production data, not synthesized text.
 Q184971_RAW_TEXT_REAL_RESPONSE = (
-    Q184971_RAW_TEXT_REAL_PREFIX
-    + "金融行业涉及客户身份证号、银行卡号、交易流水、信贷申请等高敏感"
+    Q184971_RAW_TEXT_REAL_PREFIX + "金融行业涉及客户身份证号、银行卡号、交易流水、信贷申请等高敏感"
     "信息，监管对数据脱敏有明确合规要求。bestCoffer 通过自研的"
     "中文 NER + 规则引擎双路检测，可以在保留语义可用性的前提下"
     "完成准确率不低于 99% 的脱敏操作，并提供完整的审计日志和"
@@ -143,16 +141,13 @@ async def existing_query(db_session: AsyncSession) -> int:
     )
     await db_session.execute(
         sa_text(
-            "INSERT INTO queries (target_llm, query_text, status) "
-            "VALUES (:llm, :text, 'failed')"
+            "INSERT INTO queries (target_llm, query_text, status) VALUES (:llm, :text, 'failed')"
         ),
         {"llm": "doubao", "text": "bestCoffer 适不适合金融行业？"},
     )
     await db_session.commit()
     row = (
-        await db_session.execute(
-            sa_text("SELECT id FROM queries ORDER BY id DESC LIMIT 1")
-        )
+        await db_session.execute(sa_text("SELECT id FROM queries ORDER BY id DESC LIMIT 1"))
     ).first()
     return int(row[0])
 
@@ -369,9 +364,7 @@ async def test_retry_via_vm_happy_path_with_real_captured_rawtext(
     # AC-1 readback: llm_responses row carries the real captured rawText.
     row = (
         await db_session.execute(
-            sa_text(
-                "SELECT raw_text FROM llm_responses WHERE query_id = :qid"
-            ),
+            sa_text("SELECT raw_text FROM llm_responses WHERE query_id = :qid"),
             {"qid": existing_query},
         )
     ).first()
@@ -406,9 +399,7 @@ async def test_existing_retry_endpoint_still_works_no_regression(
             }
         ),
     )
-    monkeypatch.setattr(
-        router_mod, "dispatch_execute_query", MagicMock(return_value=False)
-    )
+    monkeypatch.setattr(router_mod, "dispatch_execute_query", MagicMock(return_value=False))
 
     resp = await client.post("/api/queries/1/retry", json={"reason": "regression check"})
     assert resp.status_code == 200, resp.text
