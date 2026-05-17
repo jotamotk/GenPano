@@ -661,16 +661,21 @@ _beat_schedule = {
         "schedule": crontab(hour="*/6", minute=30),
     },
     # Refs #963 audit pain point #1 (proactive pool pre-warming).
-    # 10-min cadence: the SMS-register round-trip is ~60-120s end-to-end,
-    # and the 30-min failure cooldown in registration_lock means a too-fast
-    # cadence would just trip the cooldown gate over and over. 10 min is
-    # the smallest cadence that lets the lock + cooldown semantics work
-    # naturally while still refilling the pool well before a typical
-    # user-query batch arrives.
-    "prewarm-account-pool": {
-        "task":     "geo_tracker.tasks.celery_tasks.prewarm_account_pool",
-        "schedule": crontab(minute="*/10"),
-    },
+    #
+    # The ``prewarm_account_pool`` task is INTENTIONALLY NOT auto-scheduled
+    # via Celery Beat. User concern recorded on the #963 thread:
+    # "万一有bug，不是sms的额度一直被扣?" — if a regression in the prewarm
+    # path mis-computes the deficit or bypasses the in-flight lock, an
+    # always-on beat would silently burn LubanSMS credits every tick
+    # forever. The task function itself remains importable so operators can
+    # invoke it manually when they want to refill the pool, e.g.:
+    #
+    #     celery -A geo_tracker.tasks.celery_tasks call \
+    #         geo_tracker.tasks.celery_tasks.prewarm_account_pool
+    #
+    # or via a future admin endpoint. The 3-strike ricochet ban and the
+    # ``count_acquirable_accounts`` helper stay in place — neither spends
+    # SMS credits on its own.
 }
 
 # Auto-schedule daily analysis in production (opt-in via env var)
@@ -1630,12 +1635,16 @@ def cookie_keep_alive() -> dict:
 # 2026-05-16T15:09:58Z showed ``active=0, cooldown=1, expired=22, banned=3``),
 # the next user query has to wait the full SMS-register round-trip (~60s of
 # browser + LubanSMS) before it can run, and during that window every other
-# query for that engine also fails. Pre-warming runs every N minutes, checks
-# per-engine *usable* counts (predicates match ``AccountPool.acquire()``), and
-# enqueues at most ONE new-account registration per beat per engine: the
-# platform-wide in-flight lock ``genpano:autologin:newaccount:{platform}``
-# (10-min TTL) serializes new-account registration intentionally, so a deficit
-# of N is drained across N beat cycles rather than burned in a single tight
+# query for that engine also fails.
+#
+# The pre-warm task below is OPERATOR-INVOKED ONLY (no Celery Beat entry — see
+# the ``_beat_schedule`` comment above and the user's "万一有bug" concern).
+# When an operator does invoke it, it checks per-engine *usable* counts
+# (predicates match ``AccountPool.acquire()``), and enqueues at most ONE
+# new-account registration per invocation per engine: the platform-wide
+# in-flight lock ``genpano:autologin:newaccount:{platform}`` (10-min TTL)
+# serializes new-account registration intentionally, so a deficit of N is
+# drained across N manual invocations rather than burned in a single tight
 # loop. Respects ``should_enqueue_new_account()`` so it cannot double up with
 # the reactive path or skip the 30-min failure cooldown.
 PREWARM_DEFAULT_TARGETS_BY_ENGINE = {
@@ -1667,8 +1676,19 @@ def _prewarm_target_active(engine: str) -> int:
 def prewarm_account_pool() -> dict:
     """Proactive pool pre-warming (Refs #963 audit pain point #1).
 
-    Every N minutes (Celery Beat), for each engine in
-    ``PREWARM_DEFAULT_TARGETS_BY_ENGINE``:
+    Operator-invoked only. The Celery Beat schedule entry was removed
+    because a regression in the prewarm/deficit math would silently burn
+    LubanSMS credits on every tick (user concern on #963:
+    "万一有bug，不是sms的额度一直被扣?"). The task remains importable so
+    operators can fire it manually, e.g.::
+
+        celery -A geo_tracker.tasks.celery_tasks call \\
+            geo_tracker.tasks.celery_tasks.prewarm_account_pool
+
+    or via a future admin endpoint. The task body is otherwise unchanged
+    — every behavior below still applies on each manual invocation.
+
+    For each engine in ``PREWARM_DEFAULT_TARGETS_BY_ENGINE``:
 
     1. Compute ``usable_count`` via :func:`count_acquirable_accounts`,
        which mirrors :meth:`AccountPool.acquire`'s predicate set
@@ -1678,20 +1698,21 @@ def prewarm_account_pool() -> dict:
        active but ``acquire()`` would skip them. Refs Codex P2 review
        https://github.com/jotamotk/trash_test/pull/1102#discussion_r3253924434.
     2. If ``usable_count < TARGET_ACTIVE``, enqueue at most ONE
-       ``auto_login(platform=engine, new_account=True)`` per beat per
-       engine.
+       ``auto_login(platform=engine, new_account=True)`` per invocation
+       per engine.
 
        Why at most one and not ``deficit``-many: the gate
        :func:`should_enqueue_new_account` acquires a platform-wide SETNX
        lock (``genpano:autologin:newaccount:{platform}``, TTL 10 min) so
        the FIRST enqueue takes the lock and any second iteration of the
        loop would immediately see the lock held and break. Looping past
-       a closed gate is a no-op; emit a single enqueue and let the next
-       beat run drain the remaining deficit. With a 10-min beat cadence
-       and ~60s typical SMS registration latency, a pool that has fallen
-       to ``deficit=3`` is fully refilled in ~30–40 min — acceptable given
-       the platform-wide lock's purpose (prevent parallel SMS spend on the
-       same engine — see PR #1042 / #1097 territory). Refs Codex P2 review
+       a closed gate is a no-op; emit a single enqueue and let a later
+       invocation drain the remaining deficit. With ~60s typical SMS
+       registration latency, an operator who wants to refill a pool that
+       has fallen to ``deficit=3`` can simply invoke the task three times
+       a few minutes apart — the platform-wide lock prevents parallel
+       SMS spend on the same engine (see PR #1042 / #1097 territory).
+       Refs Codex P2 review
        https://github.com/jotamotk/trash_test/pull/1102#discussion_r3253924436.
     3. The enqueue goes through :func:`should_enqueue_new_account` so we
        inherit the in-flight lock + 30-min failure cooldown that already
@@ -1726,11 +1747,11 @@ def prewarm_account_pool() -> dict:
                 # snapshot the pool anyway so operators can grep the same log
                 # line for every engine.
                 #
-                # P2 #2 (Option A): enqueue AT MOST ONE per engine per beat
-                # because ``should_enqueue_new_account`` acquires the
-                # platform-wide in-flight lock; further iterations would
-                # only spin against a closed gate. The remaining deficit is
-                # drained over subsequent beat cycles.
+                # P2 #2 (Option A): enqueue AT MOST ONE per engine per
+                # invocation because ``should_enqueue_new_account`` acquires
+                # the platform-wide in-flight lock; further iterations would
+                # only spin against a closed gate. Any remaining deficit is
+                # drained by the operator re-invoking the task.
                 if target > 0 and deficit > 0:
                     if await should_enqueue_new_account(engine):
                         auto_login.apply_async(
@@ -1744,7 +1765,8 @@ def prewarm_account_pool() -> dict:
                         total_enqueued += 1
                     else:
                         # In-flight lock held OR failure cooldown is active.
-                        # Nothing to do this beat; next beat will retry.
+                        # Nothing to do this invocation; the operator can
+                        # re-invoke once the lock/cooldown elapses.
                         lock_skips = 1
 
                 per_engine[engine] = {

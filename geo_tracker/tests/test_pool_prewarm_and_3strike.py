@@ -1,17 +1,22 @@
 """Tests for Refs #963 audit pain points #1 and #2.
 
 Pain point #1: proactive pool pre-warming via the ``prewarm_account_pool``
-celery beat task. When the *usable* pool (status='active' AND cookies present
-AND cooldown elapsed AND query_count_today < daily_limit — the same predicate
-set as ``AccountPool.acquire()``) sits below ``DOUBAO_TARGET_ACTIVE_POOL`` the
-task must enqueue ``auto_login(platform=engine, new_account=True)``. Because
-``should_enqueue_new_account`` acquires a platform-wide SETNX lock with 10-min
-TTL, the task enqueues AT MOST ONE registration per beat per engine; the
-remaining deficit drains across subsequent beats. Refs Codex P2 reviews:
+celery task. The task is OPERATOR-INVOKED ONLY — the Celery Beat schedule
+entry was removed (user concern on #963: "万一有bug，不是sms的额度一直被
+扣?"), so a regression cannot silently burn LubanSMS credits on a tick.
+The task body still applies on each manual invocation: when the *usable*
+pool (status='active' AND cookies present AND cooldown elapsed AND
+query_count_today < daily_limit — the same predicate set as
+``AccountPool.acquire()``) sits below ``DOUBAO_TARGET_ACTIVE_POOL`` the
+task must enqueue ``auto_login(platform=engine, new_account=True)``.
+Because ``should_enqueue_new_account`` acquires a platform-wide SETNX
+lock with 10-min TTL, the task enqueues AT MOST ONE registration per
+invocation per engine; the remaining deficit drains when the operator
+re-invokes. Refs Codex P2 reviews:
 - https://github.com/jotamotk/trash_test/pull/1102#discussion_r3253924434
   (usable-count vs labeled-active count)
 - https://github.com/jotamotk/trash_test/pull/1102#discussion_r3253924436
-  (single enqueue per beat under platform-wide lock)
+  (single enqueue per invocation under platform-wide lock)
 
 Pain point #2: 3-strike permanent ban when a Doubao account ricochets
 ``expired → re-login → active → expired`` via ``doubao_not_logged_in``
@@ -268,23 +273,28 @@ class _FakeAutoLogin:
 
 def test_prewarm_enqueues_when_active_below_target(monkeypatch, tmp_path):
     """When the ``doubao`` *usable* count is below target, the prewarm task
-    enqueues EXACTLY ONE ``auto_login(new_account=True)`` per beat run — not
-    ``target - usable`` many.
+    enqueues EXACTLY ONE ``auto_login(new_account=True)`` per invocation —
+    not ``target - usable`` many.
 
     Why one and not deficit-many (P2 #2 Option A):
     ``should_enqueue_new_account`` acquires a platform-wide SETNX lock
     (``genpano:autologin:newaccount:{platform}``, 10-min TTL). The first
     iteration of any loop takes the lock; the second iteration sees it held
-    and breaks. So in production the loop CAN ONLY enqueue once per beat
-    regardless of how many iterations we run. Option A makes this contract
-    explicit: enqueue once, let the platform-wide lock serialize SMS spend,
-    and drain a deficit of N over N beat cycles (~30–40 min at the current
-    10-min cadence with ~60s SMS round-trip). Refs Codex P2 review:
+    and breaks. So in production the loop CAN ONLY enqueue once per
+    invocation regardless of how many iterations we run. Option A makes
+    this contract explicit: enqueue once, let the platform-wide lock
+    serialize SMS spend, and drain a deficit of N over N operator
+    invocations (~60s typical SMS round-trip per invocation). Refs Codex
+    P2 review:
     https://github.com/jotamotk/trash_test/pull/1102#discussion_r3253924436.
 
     This test still mocks the gate to True so we exercise the enqueue branch
     in isolation — the gate-True/lock-bypass production behavior is the
     happy-path equivalent (Redis available, lock acquired, single enqueue).
+
+    Note: this contract is identical whether the task is auto-scheduled
+    or operator-invoked. The Beat schedule was removed (see module
+    docstring) but the task body is unchanged.
     """
     from geo_tracker.tasks import celery_tasks
 
@@ -401,9 +411,10 @@ def test_prewarm_respects_should_enqueue_new_account_gate(monkeypatch, tmp_path)
 
 
 def test_prewarm_zero_target_does_not_enqueue(monkeypatch, tmp_path):
-    """``DOUBAO_TARGET_ACTIVE_POOL=0`` opts the engine OUT of pre-warming so
-    operators can disable it without removing the beat entry. The snapshot is
-    still logged for visibility."""
+    """``DOUBAO_TARGET_ACTIVE_POOL=0`` opts the engine OUT of pre-warming
+    so an operator can run the task with the engine effectively no-op'd
+    (useful when probing per-engine snapshots without spending SMS). The
+    snapshot is still logged for visibility."""
     from geo_tracker.tasks import celery_tasks
 
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'prewarm-disabled.db'}"
@@ -544,7 +555,7 @@ def test_prewarm_treats_active_with_exhausted_quota_as_unusable(
     assert result["total_enqueued"] == 1
 
 
-def test_prewarm_caps_enqueue_at_one_per_beat_without_mocked_gate(
+def test_prewarm_caps_enqueue_at_one_per_invocation_without_mocked_gate(
     monkeypatch, tmp_path,
 ):
     """P2 #2: assert production behavior of the platform-wide SETNX lock.
@@ -553,12 +564,13 @@ def test_prewarm_caps_enqueue_at_one_per_beat_without_mocked_gate(
     (which lets the legacy loop appear to issue ``deficit``-many calls), this
     test installs a realistic gate that simulates the production SETNX-lock
     semantics: first call returns True (lock acquired), subsequent calls
-    within the same beat return False (lock held). Under this gate, even if
-    the loop tried to iterate ``deficit`` times, it would only enqueue once.
+    within the same invocation return False (lock held). Under this gate,
+    even if the loop tried to iterate ``deficit`` times, it would only
+    enqueue once.
 
     With the Option A fix the loop ALSO only enqueues once and does not
     repeatedly poll the gate — the assertion captures both: exactly one
-    enqueue AND exactly one gate call per beat. Refs Codex P2 review:
+    enqueue AND exactly one gate call per invocation. Refs Codex P2 review:
     https://github.com/jotamotk/trash_test/pull/1102#discussion_r3253924436.
     """
     from geo_tracker.tasks import celery_tasks
@@ -596,8 +608,8 @@ def test_prewarm_caps_enqueue_at_one_per_beat_without_mocked_gate(
 
     result = celery_tasks.prewarm_account_pool.run()
 
-    # Exactly 1 enqueue per beat per engine — the platform-wide lock is the
-    # serialization point, not a defect to work around.
+    # Exactly 1 enqueue per invocation per engine — the platform-wide lock
+    # is the serialization point, not a defect to work around.
     assert result["total_enqueued"] == 1
     assert result["per_engine"]["doubao"]["enqueued"] == 1
     assert len(_FakeAutoLogin.calls) == 1
