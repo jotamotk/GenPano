@@ -40,11 +40,14 @@ on:
         type: string
 
 env:
-  # ACR push target: <namespace>/<repo>. Operator's ACR uses namespace
-  # 'lianwei_ai_lab' and we reuse the existing 'genpano' repo for our
-  # image — tag prefix 'vm-doubao-chrome-' keeps it from colliding with
-  # the main app image already in that repo.
-  IMAGE_REPO: lianwei_ai_lab/genpano
+  # ACR push target. Matches the existing deploy.yml convention: ACR_REGISTRY
+  # secret already bakes in the host + namespace (e.g.
+  # 'crpi-xxx.cn-shanghai.personal.cr.aliyuncs.com/lianwei_ai_lab'), so
+  # IMAGE_REPO is just the repo name 'genpano'. Different image kinds in
+  # that shared repo are namespaced by tag prefix — main app uses
+  # 'backend-...' / 'worker-...' / 'frontend-...' tags (see deploy.yml), we
+  # use 'vm-doubao-chrome-...' so we don't collide.
+  IMAGE_REPO: genpano
   IMAGE_TAG: vm-doubao-chrome-latest
 
 jobs:
