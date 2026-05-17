@@ -580,6 +580,7 @@ class GuestQueryExecutor:
         proxy_url: Optional[str] = None,
         account_cookies: Optional[str] = None,
         connector: Optional[BrowserConnector] = None,
+        account=None,
     ):
         """
         Args:
@@ -592,6 +593,18 @@ class GuestQueryExecutor:
                 VM-per-account architecture (Epic #1110). This parameter
                 is the seam that lets that swap happen without touching
                 query-execution logic.
+            account: The ``LLMAccount`` row this executor is running for
+                (or ``None`` for guest mode). Passed into
+                ``BrowserConnector.acquire_context(llm, account)`` so the
+                ``RemoteCDPConnector`` (Issue #1114) can read
+                ``account.vm_id`` to pick the right VM. The legacy
+                ``LocalLaunchConnector`` ignores it (its account state
+                flows through ``account_cookies`` set on the
+                constructor). Codex review on PR #1121 caught the
+                original prototype passing the ``Query`` object here,
+                which broke the vm_session path with
+                ``NO_ACCOUNT_AVAILABLE`` because ``Query`` has no
+                ``vm_id`` attribute.
         """
         self.proxy_url = proxy_url or os.getenv("CLASH_PROXY_URL") or os.getenv("HTTPS_PROXY") or os.getenv("HTTP_PROXY")
         self.account_cookies = account_cookies
@@ -599,6 +612,11 @@ class GuestQueryExecutor:
         # sites (celery_tasks.py, integration tests) keep the previous
         # behavior with no change. See ``executors/`` for the ABC.
         self.connector: BrowserConnector = connector or LocalLaunchConnector()
+        # Refs Epic #1110 / Issue #1114 (Codex review on PR #1121):
+        # stash the account so ``_execute_once`` can forward it to
+        # ``BrowserConnector.acquire_context(llm, account)``. See the
+        # ABC docstring in ``executors/base.py`` for the contract.
+        self.account = account
         self.last_error_reason: str | None = None
         self.execution_stage: str | None = None
         # Refs #963: when an outer asyncio.wait_for cancels execute(), the page
@@ -816,7 +834,17 @@ class GuestQueryExecutor:
             # qg rotating-IP logic, cookie parsing). Issue #1114 will
             # introduce RemoteCDPConnector for VM-per-account without
             # touching the executor.
-            context = await active_connector.acquire_context(llm, query)
+            #
+            # Refs Codex review on PR #1121 (Bug 1): the second positional
+            # arg is the ``account`` (per ABC contract in
+            # ``executors/base.py``), NOT the ``query``. ``RemoteCDPConnector``
+            # reads ``account.vm_id`` from it; passing ``query`` (which has
+            # no ``vm_id``) would raise ``NO_ACCOUNT_AVAILABLE`` on every
+            # vm_session query. ``LocalLaunchConnector`` ignores the arg so
+            # the symptom was invisible until the remote path was
+            # exercised. The account flows in via ``self.account`` (set
+            # by ``select_executor`` / ``GuestQueryExecutor.__init__``).
+            context = await active_connector.acquire_context(llm, self.account)
             # Post-launch state the rest of _execute_once still needs to
             # read off the connector. Mirror onto local variables so the
             # downstream code path is unchanged.

@@ -92,9 +92,19 @@ def test_executor_default_connector_is_unique_per_instance(monkeypatch):
 @pytest.mark.asyncio
 async def test_execute_once_invokes_connector_acquire_and_release(monkeypatch):
     """Inside ``_execute_once``, the injected connector's
-    ``acquire_context`` must be awaited with ``(llm, query)``, and
+    ``acquire_context`` must be awaited with ``(llm, account)``, and
     ``release_context`` must run on the same context even when the
-    downstream code fails. This pins the seam contract."""
+    downstream code fails. This pins the seam contract.
+
+    Refs Codex review on PR #1121 (Bug 1): the second positional arg is
+    the ``account`` (per ABC in ``executors/base.py``), NOT the ``query``.
+    The earlier version of this test asserted ``is fake_query`` and
+    locked in a broken contract — ``RemoteCDPConnector.acquire_context``
+    reads ``account.vm_id`` from this slot, so passing the ``Query``
+    raised ``NO_ACCOUNT_AVAILABLE`` on every vm_session query. The fix
+    threads ``account`` through ``GuestQueryExecutor.__init__`` and
+    ``select_executor``; this test now pins the corrected contract.
+    """
     _install_fake_playwright(monkeypatch)
 
     from geo_tracker.agent.executors import BrowserConnector
@@ -125,7 +135,13 @@ async def test_execute_once_invokes_connector_acquire_and_release(monkeypatch):
             release_calls.append(context)
 
     connector = _RecordingConnector()
-    executor = GuestQueryExecutor(connector=connector)
+    # Use an account stand-in with a ``vm_id`` attribute so the assertion
+    # below mirrors what ``RemoteCDPConnector.acquire_context`` will
+    # actually read off the arg (``getattr(account, "vm_id", None)``).
+    fake_account = MagicMock()
+    fake_account.vm_id = "vm-test-001"
+    fake_account.id = 99
+    executor = GuestQueryExecutor(connector=connector, account=fake_account)
 
     fake_query = MagicMock()
     fake_query.target_llm = "perplexity"  # 8-engine key with no login
@@ -139,7 +155,10 @@ async def test_execute_once_invokes_connector_acquire_and_release(monkeypatch):
     assert result is None
     assert len(acquire_calls) == 1
     assert acquire_calls[0][0] == "perplexity"
-    assert acquire_calls[0][1] is fake_query
+    # The connector MUST receive the account (so it can read .vm_id),
+    # NOT the query. Bug 1 in PR #1121 had this slot wired to ``query``.
+    assert acquire_calls[0][1] is fake_account
+    assert getattr(acquire_calls[0][1], "vm_id", None) == "vm-test-001"
     assert release_calls == [fake_context]
 
 

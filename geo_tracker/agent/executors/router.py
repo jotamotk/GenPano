@@ -135,19 +135,32 @@ def select_executor(
         # itself does NOT use them (VM owns proxy + session). The DB
         # CHECK ``chk_exec_mode_cookies`` guarantees a vm_session row
         # has no cookies, so account_cookies would be None anyway.
+        #
+        # Refs Codex review on PR #1121 (Bug 1): forward ``account`` so
+        # the executor's ``_execute_once`` can pass it to
+        # ``RemoteCDPConnector.acquire_context(llm, account)`` — the
+        # connector reads ``account.vm_id`` to resolve the right VM.
         return GuestQueryExecutor(
             proxy_url=proxy_url,
             account_cookies=account_cookies,
             connector=factory(),
+            account=account,
         )
 
     # Default path: every existing call site keeps the legacy behavior.
     # We do NOT log here on the default path because the per-query
     # logging would flood the operator log with redundant
     # "routed to local" lines for every successful query.
+    #
+    # Refs Codex review on PR #1121 (Bug 1): forward ``account`` even on
+    # the local path so the contract is uniform. ``LocalLaunchConnector``
+    # ignores the arg (per its docstring), but routing it consistently
+    # avoids "works on local, breaks on remote" surprises if a future
+    # connector starts consuming it.
     factory = local_connector_factory or LocalLaunchConnector
     return GuestQueryExecutor(
         proxy_url=proxy_url,
         account_cookies=account_cookies,
         connector=factory(),
+        account=account,
     )
