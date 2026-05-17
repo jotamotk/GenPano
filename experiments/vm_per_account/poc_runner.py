@@ -62,7 +62,13 @@ ENGINE_CONFIG: dict[str, dict[str, Any]] = {
             "button[id='flow-end-msg-send']"
         ),
         "response_selector": (
+            # Stable: Doubao's markdown renderer applies `md-box-root` to every
+            # assistant reply container (verified 2026-05 via DOM dump). The
+            # legacy `.flow-markdown-body` no longer exists in the new
+            # frontend; keep as a low-priority fallback for old builds.
+            ".md-box-root, "
             ".flow-markdown-body, "
+            "[data-testid='receive_message'] .md-box-root, "
             "[data-testid='receive_message'] .flow-markdown-body"
         ),
         "login_redirect_domains": [
