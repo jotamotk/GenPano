@@ -272,6 +272,29 @@ class LLMAccount(Base):
     # expired transition and reset to 0 by ``save_cookies`` (a successful
     # re-login writes back fresh cookies and flips status to active).
     expired_transition_count = Column(Integer, default=0)
+    # Refs Epic #1110 / Issue #1114: VM-per-account architecture (Phase 1).
+    # ``execution_mode`` declares which BrowserConnector the ``select_executor``
+    # router should pick for this account:
+    #   - 'local_cookie' (default, every existing row backfills to this):
+    #     LocalLaunchConnector — launch Camoufox/Chromium per query and inject
+    #     cookies. Current production path; identical to PR #1120 behavior.
+    #   - 'vm_session':
+    #     RemoteCDPConnector — connect via CDP to a dedicated VM that holds a
+    #     persistent logged-in browser for this single account. Opt-in and
+    #     gated by the VM_EXECUTOR_ENABLED feature flag (default off) plus
+    #     VM_EXECUTOR_ENGINES allow-list. See ``select_executor``.
+    # ``vm_id`` points at the VM record in the registry (env-driven for
+    # Phase 1; Issue #1115 watchdog will push heartbeat state into the same
+    # in-memory store). ``NULL`` for ``local_cookie`` rows.
+    #
+    # DB-level CHECK constraint ``chk_exec_mode_cookies`` enforces that any
+    # row with execution_mode='vm_session' MUST have cookies_json IS NULL —
+    # otherwise the local connector and the remote CDP path could both
+    # attempt to drive the same account from different browsers (R2.5
+    # "self-cloning device" failure mode), which Doubao/ChatGPT treat as a
+    # session theft and ban.
+    execution_mode      = Column(String(32), nullable=False, server_default="local_cookie")
+    vm_id               = Column(String(128), nullable=True)
     created_at          = Column(DateTime, server_default=func.now())
     cookies_updated_at  = Column(DateTime, nullable=True)  # cookies最后更新/验证时间
 
