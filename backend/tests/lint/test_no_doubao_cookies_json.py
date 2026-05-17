@@ -61,13 +61,10 @@ def test_no_doubao_cookies_json_references_in_runtime_code() -> None:
         "docs/ADAPTER_CONTRACT.md",
         "backend/alembic/versions/",
     ]
-    real_violations = [
-        m for m in matches if not any(p in m for p in allowed_patterns)
-    ]
+    real_violations = [m for m in matches if not any(p in m for p in allowed_patterns)]
     assert not real_violations, (
         "DOUBAO/DEEPSEEK_COOKIES_JSON found in runtime code after Phase 3 "
         "cleanup (Refs #1118 / Epic #1110). The env-variable cookie "
         "injection path is deprecated — doubao/deepseek must route through "
-        "vm_session + vm_side runner (ADR-016). Offending lines:\n"
-        + "\n".join(real_violations)
+        "vm_session + vm_side runner (ADR-016). Offending lines:\n" + "\n".join(real_violations)
     )
