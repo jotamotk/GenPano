@@ -1,8 +1,7 @@
 FROM python:3.11-slim
 
-# Refs #963 cache-bust 2026-05-17 04:55Z: force fresh build after killing
-# zombie alembic / pid 679 (stale idle-in-tx llm_accounts holder) on the
-# worker, plus pick up updated QG_PROXY_EXTRACT_URL secret (/get).
+# Refs #963 cache-bust 2026-05-17 05:30Z: pick up updated
+# QG_PROXY_EXTRACT_URL secret (/get?num=1) after quota reset.
 
 # 安装系统依赖（Playwright Chromium + Camoufox Firefox 共用）
 # Refs #963: ``tzdata`` is required by Firefox / glibc to resolve named
