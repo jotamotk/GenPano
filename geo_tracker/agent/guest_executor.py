@@ -2956,13 +2956,52 @@ class GuestQueryExecutor:
                 )
                 self.last_error_reason = "no_input"
                 return "", "", []
+        elif _recovery_already_submitted:
+            # Recovery already drove fill+submit; skip the re-fill that
+            # would otherwise clear the textarea and resubmit.
+            logger.info(
+                f"[{llm_name}] prompt_fill: skipping _fill_plain_text_input "
+                f"because recovery already submitted"
+            )
         else:
             filled = await self._fill_plain_text_input(page, input_el, query_text, llm_name)
             if not filled:
                 logger.warning(f"[{llm_name}] 输入框填充失败，放弃本次提交")
-                self.last_error_reason = "no_input"
-                await _save_html(page, debug_query_id, f"{llm_name}_input_fill_failed")
-                return "", "", []
+                # Refs #963 issue comment 4470015151 Q-185620 shape:
+                # ``doubao_browser_timeout:prompt_fill`` is the operator-
+                # visible reason when an exception bubbles out of this
+                # stage. The explicit fill-failure bail here lands as
+                # ``no_input`` today, but the same SPA-collapsed page
+                # state is the root cause. Try ONE-shot page.goto
+                # recovery before bailing — if it succeeds, recovery has
+                # already driven fill+submit, so continue down the
+                # function (the prompt_submit guards below + the
+                # submit_confirm loop pick up the recovered submit).
+                if (
+                    llm_name == "doubao"
+                    and not self._doubao_recovery_attempted
+                ):
+                    if await self._attempt_doubao_page_regression_recovery(
+                        page,
+                        cfg,
+                        llm_name,
+                        debug_query_id,
+                        query_text,
+                    ):
+                        logger.info(
+                            f"[{llm_name}] prompt_fill recovery succeeded; "
+                            f"continuing to submit_confirm"
+                        )
+                        self.last_error_reason = None
+                        _recovery_already_submitted = True
+                    else:
+                        self.last_error_reason = "no_input"
+                        await _save_html(page, debug_query_id, f"{llm_name}_input_fill_failed")
+                        return "", "", []
+                else:
+                    self.last_error_reason = "no_input"
+                    await _save_html(page, debug_query_id, f"{llm_name}_input_fill_failed")
+                    return "", "", []
 
         # 模拟人类"思考"后再提交
         await page.wait_for_timeout(random.randint(500, 1500))
