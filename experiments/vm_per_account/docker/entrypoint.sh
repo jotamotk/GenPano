@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# Entrypoint for VM-per-account Doubao Chrome container.
+#
+# Each container is one isolated Chrome browser + Xvfb display + x11vnc + noVNC.
+# The container does not run any business code — it's purely a remote browser
+# that the Celery worker on the host (or any Tailscale peer) drives over CDP.
+#
+# Persistent state (cookies / login session / localStorage) lives in /profile
+# which is mounted as a docker volume — survives container restart.
+set -euo pipefail
+
+: "${VNC_PASSWORD:?must set VNC_PASSWORD env}"
+: "${CDP_PORT:=9222}"
+: "${NOVNC_PORT:=6080}"
+: "${CHROME_TARGET_URL:=https://www.doubao.com/chat}"
+: "${DISPLAY:=:0}"
+export DISPLAY
+
+# Workaround: docker mounted /profile may be owned by root; chrome needs rw
+mkdir -p /profile
+chmod 0700 /profile
+
+# ---- 1. VNC password storage ----
+mkdir -p /root/.vnc
+x11vnc -storepasswd "$VNC_PASSWORD" /root/.vnc/passwd
+chmod 0600 /root/.vnc/passwd
+
+# ---- 2. Xvfb on :0 ----
+echo "[entrypoint] starting Xvfb on $DISPLAY ..."
+Xvfb "$DISPLAY" -screen 0 1920x1080x24 -nolisten tcp \
+  > /var/log/xvfb.log 2>&1 &
+
+# Wait for display socket
+for i in $(seq 1 20); do
+  if xdpyinfo -display "$DISPLAY" >/dev/null 2>&1; then break; fi
+  sleep 0.5
+done
+xdpyinfo -display "$DISPLAY" | head -2 || {
+  echo "[entrypoint] FATAL: Xvfb never came up; xvfb.log:"
+  cat /var/log/xvfb.log
+  exit 1
+}
+
+# ---- 3. Xfce desktop ----
+echo "[entrypoint] starting Xfce ..."
+dbus-launch --exit-with-session startxfce4 \
+  > /var/log/xfce.log 2>&1 &
+sleep 5
+
+# ---- 4. Chrome (persistent /profile, CDP exposed on $CDP_PORT) ----
+echo "[entrypoint] starting Chrome (CDP=$CDP_PORT, profile=/profile)..."
+# --remote-debugging-address=0.0.0.0 lets the host bridge to other containers
+# (locked down by docker-compose port mapping + Tailscale ACL, not by Chrome).
+google-chrome \
+  --user-data-dir=/profile \
+  --remote-debugging-port="$CDP_PORT" \
+  --remote-debugging-address=0.0.0.0 \
+  --no-sandbox --no-first-run --no-default-browser-check \
+  --disable-blink-features=AutomationControlled \
+  --disable-dev-shm-usage \
+  --window-size=1920,1080 \
+  "$CHROME_TARGET_URL" \
+  > /var/log/chrome.log 2>&1 &
+
+# Wait for CDP to come up
+for i in $(seq 1 30); do
+  if curl -sf "http://127.0.0.1:$CDP_PORT/json/version" >/dev/null 2>&1; then break; fi
+  sleep 1
+done
+curl -sf "http://127.0.0.1:$CDP_PORT/json/version" | head -3 || {
+  echo "[entrypoint] WARN: CDP not yet reachable; chrome.log:"
+  tail -20 /var/log/chrome.log
+}
+
+# ---- 5. x11vnc binds to Xvfb display ----
+echo "[entrypoint] starting x11vnc ..."
+x11vnc -display "$DISPLAY" -forever -shared \
+  -rfbauth /root/.vnc/passwd \
+  > /var/log/x11vnc.log 2>&1 &
+
+# Wait for VNC socket 5900
+for i in $(seq 1 20); do
+  if ss -tln | grep -q ':5900 '; then break; fi
+  sleep 0.5
+done
+
+# ---- 6. websockify (noVNC) — foreground, keeps container alive ----
+echo "[entrypoint] starting websockify on $NOVNC_PORT (Connect via noVNC)..."
+exec websockify --web /usr/share/novnc "0.0.0.0:$NOVNC_PORT" "localhost:5900"
