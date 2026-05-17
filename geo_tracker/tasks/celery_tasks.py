@@ -47,7 +47,11 @@ from geo_tracker.db.models import (
     BrandMention, SentimentDriver, CitationSource,
     ResponseAnalysis, ProductFeatureMention,
 )
-from geo_tracker.pool.account_pool import AccountPool, EXPIRED_ACCOUNT_REASONS
+from geo_tracker.pool.account_pool import (
+    AccountPool,
+    EXPIRED_ACCOUNT_REASONS,
+    snapshot_pool_health,
+)
 
 # 数据库 & Redis 连接（实际项目从 config 读取）
 from geo_tracker.config import create_task_engine, get_task_async_session, REDIS_URL
@@ -654,6 +658,17 @@ _beat_schedule = {
     "cookie-keep-alive": {
         "task":     "geo_tracker.tasks.celery_tasks.cookie_keep_alive",
         "schedule": crontab(hour="*/6", minute=30),
+    },
+    # Refs #963 audit pain point #1 (proactive pool pre-warming).
+    # 10-min cadence: the SMS-register round-trip is ~60-120s end-to-end,
+    # and the 30-min failure cooldown in registration_lock means a too-fast
+    # cadence would just trip the cooldown gate over and over. 10 min is
+    # the smallest cadence that lets the lock + cooldown semantics work
+    # naturally while still refilling the pool well before a typical
+    # user-query batch arrives.
+    "prewarm-account-pool": {
+        "task":     "geo_tracker.tasks.celery_tasks.prewarm_account_pool",
+        "schedule": crontab(minute="*/10"),
     },
 }
 
@@ -1599,6 +1614,129 @@ def cookie_keep_alive() -> dict:
                     )
 
         return results
+
+    try:
+        return loop.run_until_complete(_run())
+    finally:
+        safe_dispose_engine(loop, task_engine, logger)
+        loop.close()
+
+
+# Refs #963 audit pain point #1: proactive pool pre-warming.
+# Today new-account registration is REACTIVE — ``execute_query`` only enqueues
+# ``auto_login(new_account=True)`` after a query has already failed because the
+# active pool is empty. When the pool collapses (e.g. production verify dump
+# 2026-05-16T15:09:58Z showed ``active=0, cooldown=1, expired=22, banned=3``),
+# the next user query has to wait the full SMS-register round-trip (~60s of
+# browser + LubanSMS) before it can run, and during that window every other
+# query for that engine also fails. Pre-warming runs every N minutes, checks
+# per-engine active counts, and enqueues up to ``TARGET_ACTIVE - active_count``
+# new-account registration tasks so the pool refills before queries arrive.
+# Respects ``should_enqueue_new_account()`` so it cannot double up with the
+# reactive path or skip the 30-min failure cooldown.
+PREWARM_DEFAULT_TARGETS_BY_ENGINE = {
+    "doubao": 3,
+    # DeepSeek / ChatGPT are not the immediate #963 bottleneck but the pre-warm
+    # loop scans them too so operators can flip a target on via env without a
+    # code change. Default target=0 means "do not pre-warm" — pre-existing
+    # reactive behavior is unchanged for them.
+    "deepseek": 0,
+    "chatgpt": 0,
+}
+
+
+def _prewarm_target_active(engine: str) -> int:
+    # Doubao has a dedicated env so operators can tune it independently.
+    if engine == "doubao":
+        return _env_int(
+            "DOUBAO_TARGET_ACTIVE_POOL",
+            PREWARM_DEFAULT_TARGETS_BY_ENGINE.get("doubao", 0),
+        )
+    env_name = f"{engine.upper()}_TARGET_ACTIVE_POOL"
+    return _env_int(
+        env_name,
+        PREWARM_DEFAULT_TARGETS_BY_ENGINE.get(engine, 0),
+    )
+
+
+@app.task(queue="celery")
+def prewarm_account_pool() -> dict:
+    """Proactive pool pre-warming (Refs #963 audit pain point #1).
+
+    Every N minutes (Celery Beat), for each engine in
+    ``PREWARM_DEFAULT_TARGETS_BY_ENGINE``:
+
+    1. Snapshot the per-engine pool via :func:`snapshot_pool_health`.
+    2. If ``active_count < TARGET_ACTIVE``, enqueue
+       ``auto_login(platform=engine, new_account=True)`` up to
+       ``(TARGET_ACTIVE - active_count)`` times.
+    3. Each enqueue goes through :func:`should_enqueue_new_account` so we
+       inherit the in-flight lock + 30-min failure cooldown that already
+       exists on the reactive path — no double registration, no SMS waste
+       during a failure cooldown.
+    4. Emit one INFO summary line so operators can confirm the loop fired.
+    """
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    task_engine = create_task_engine()
+
+    async def _run() -> dict:
+        run_id = f"prewarm_pool:{uuid.uuid4().hex[:12]}"
+        per_engine: dict[str, dict] = {}
+        total_enqueued = 0
+
+        async with get_task_async_session(task_engine) as db:
+            for engine in sorted(PREWARM_DEFAULT_TARGETS_BY_ENGINE.keys()):
+                target = _prewarm_target_active(engine)
+                snap = await snapshot_pool_health(db, engine)
+                deficit = max(0, target - snap.active)
+                enqueued_for_engine = 0
+                lock_skips = 0
+
+                # When target<=0 the engine is opted out of pre-warming;
+                # snapshot the pool anyway so operators can grep the same log
+                # line for every engine.
+                if target > 0 and deficit > 0:
+                    for _ in range(deficit):
+                        if not await should_enqueue_new_account(engine):
+                            # In-flight lock held OR failure cooldown is active.
+                            # Stop iterating for this engine — further attempts
+                            # would just keep tripping the same gate.
+                            lock_skips += 1
+                            break
+                        auto_login.apply_async(
+                            kwargs={
+                                "platform": engine,
+                                "new_account": True,
+                            },
+                            queue="account_login",
+                        )
+                        enqueued_for_engine += 1
+                        total_enqueued += 1
+
+                per_engine[engine] = {
+                    "target_active": target,
+                    "active": snap.active,
+                    "cooldown": snap.cooldown,
+                    "expired": snap.expired,
+                    "banned": snap.banned,
+                    "with_cookies": snap.with_cookies,
+                    "deficit": deficit,
+                    "enqueued": enqueued_for_engine,
+                    "lock_skipped": lock_skips,
+                }
+
+        logger.info(
+            "prewarm_account_pool run_id=%s total_enqueued=%s per_engine=%s",
+            run_id,
+            total_enqueued,
+            per_engine,
+        )
+        return {
+            "run_id": run_id,
+            "total_enqueued": total_enqueued,
+            "per_engine": per_engine,
+        }
 
     try:
         return loop.run_until_complete(_run())
