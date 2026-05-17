@@ -1,0 +1,391 @@
+name: Doubao Trigger 5 + Verify (mutating, scoped)
+
+# Refs #963 post-deploy verification of #1106 + #1107 + #1108 + #1109.
+# Triggers 5 FRESH pending Doubao queries (retry_count=0 rows queued
+# 2026-05-16 14:17 that were never executed) by dispatching them
+# through the standard celery path, then polls for terminal status
+# and dumps per-query evidence:
+#   - queries.status / retry_reason / latency_ms
+#   - llm_responses count + raw_text length + preview
+#   - llm_accounts.expired_transition_count BEFORE and AFTER
+#   - worker log slice grep'd for query_<ID>
+#   - screenshot/HTML/JSON file inventory per query
+#   - latest runtime snapshot JSON page.fingerprint
+#
+# Mutation footprint: this workflow ONLY dispatches existing pending
+# rows. It does NOT zero out expired_transition_count, does NOT
+# reset banned accounts, does NOT change queries.status directly
+# (the celery worker writes status when it processes the task).
+
+on:
+  push:
+    branches:
+      - 'claude/verify-doubao'
+    paths:
+      - '.github/workflows/doubao-trigger-5-verify.yml'
+  workflow_dispatch:
+    inputs:
+      query_ids:
+        description: "Comma-separated Doubao query_id list to dispatch (must be pending, retry_count=0). Default: 185614,185617,185620,185623,185626"
+        required: false
+        default: "185614,185617,185620,185623,185626"
+      poll_seconds:
+        description: "Total max seconds to poll (default 900s = 15 min)"
+        required: false
+        default: "900"
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  trigger-and-verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: SSH dispatch + poll + dump
+        id: ssh
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+          QUERY_IDS: ${{ github.event.inputs.query_ids || '185614,185617,185620,185623,185626' }}
+          POLL_SECONDS: ${{ github.event.inputs.poll_seconds || '900' }}
+          GH_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s' "$SERVER_SSH_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H "$SERVER_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+          # Sanity-validate inputs locally before SSH.
+          if ! echo "$QUERY_IDS" | grep -qE '^[0-9]+(,[0-9]+){0,9}$'; then
+            echo "ERROR: QUERY_IDS must be comma-separated integers (max 10)" >&2
+            exit 1
+          fi
+          if ! echo "$POLL_SECONDS" | grep -qE '^[0-9]+$'; then
+            echo "ERROR: POLL_SECONDS must be integer" >&2
+            exit 1
+          fi
+          if [ "$POLL_SECONDS" -lt 60 ] || [ "$POLL_SECONDS" -gt 1800 ]; then
+            echo "ERROR: POLL_SECONDS out of range [60, 1800]" >&2
+            exit 1
+          fi
+
+          output=$(ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=accept-new \
+            -o ServerAliveInterval=30 -o ServerAliveCountMax=8 \
+            "$SERVER_USER@$SERVER_HOST" \
+            "QUERY_IDS=${QUERY_IDS} POLL_SECONDS=${POLL_SECONDS} GH_RUN_ID=${GH_RUN_ID} bash -s" <<'REMOTE'
+          set -uo pipefail
+          cd /opt/genpano
+
+          psql_cmd() {
+            docker compose exec -T postgres psql -X -v ON_ERROR_STOP=1 -U genpano -d genpano -P pager=off "$@" </dev/null
+          }
+
+          echo "=== Container build identity (worker) ==="
+          docker compose images worker 2>/dev/null | head -3 || true
+
+          echo ""
+          echo "=== Build identity (backend) ==="
+          docker compose images backend 2>/dev/null | head -3 || true
+
+          # IFS-split the integer list once.
+          IFS=',' read -r -a IDS <<<"${QUERY_IDS}"
+          QUERY_IDS_SQL="$(printf '%s,' "${IDS[@]}" | sed 's/,$//')"
+
+          echo ""
+          echo "=== Selected query rows BEFORE dispatch ==="
+          # Sanity-check the IDs exist, are doubao, and are pending.
+          psql_cmd -c "
+            SELECT id, target_llm, status, retry_count, retry_reason, queued_at,
+                   brand_id, prompt_id, account_id
+            FROM queries
+            WHERE id IN (${QUERY_IDS_SQL})
+            ORDER BY id;
+          "
+
+          echo ""
+          echo "=== Account state BEFORE dispatch (top 12 active+cooldown+expired) ==="
+          psql_cmd -c "
+            SELECT id, phone_number, status, query_count_today, daily_limit,
+                   expired_transition_count, consecutive_fails,
+                   cookies_updated_at, last_used_at
+            FROM llm_accounts
+            WHERE llm_name='doubao'
+            ORDER BY (status='active') DESC,
+                     (status='cooldown') DESC,
+                     cookies_updated_at DESC NULLS LAST
+            LIMIT 12;
+          "
+
+          echo ""
+          echo "=== Active doubao account count (cookies <24h) ==="
+          psql_cmd -c "
+            SELECT COUNT(*) AS active_with_fresh_cookies
+            FROM llm_accounts
+            WHERE llm_name='doubao'
+              AND status='active'
+              AND cookies_updated_at > NOW() - INTERVAL '24 hours';
+          "
+
+          echo ""
+          echo "=== Dispatching ${QUERY_IDS} via celery (queue=llm_doubao) ==="
+          # Use the same path execute_query takes when a retry/manual
+          # dispatch fires it. We do NOT mutate queries.status here;
+          # the worker will set it to 'running' when it picks up the
+          # task. retry_count is left untouched (these rows have
+          # retry_count=0 from never having been picked up).
+          docker compose exec -T -e QUERY_IDS="${QUERY_IDS}" worker python - <<'PY'
+          import os
+          from geo_tracker.tasks.celery_tasks import execute_query
+          ids = [int(x) for x in os.environ["QUERY_IDS"].split(",") if x.strip()]
+          for qid in ids:
+              execute_query.apply_async(args=[qid], queue="llm_doubao")
+              print(f"dispatched query_id={qid} queue=llm_doubao")
+          print(f"total dispatched: {len(ids)}")
+          PY
+
+          echo ""
+          echo "=== Polling until all 5 reach terminal status (max ${POLL_SECONDS}s) ==="
+          deadline=$((SECONDS + POLL_SECONDS))
+          poll_n=0
+          while true; do
+            poll_n=$((poll_n + 1))
+            elapsed=$SECONDS
+            echo ""
+            echo "--- poll #${poll_n} at t=${elapsed}s ---"
+            row_table=$(psql_cmd -At -F $'|' -c "
+              SELECT q.id, q.status, q.retry_reason, q.retry_count, q.account_id,
+                     EXTRACT(EPOCH FROM (NOW() - q.queued_at))::int AS sec_since_queue,
+                     (SELECT COUNT(*) FROM llm_responses r WHERE r.query_id=q.id) AS resp_count,
+                     (SELECT MAX(CHAR_LENGTH(r.raw_text)) FROM llm_responses r WHERE r.query_id=q.id) AS max_raw_text_len
+              FROM queries q
+              WHERE q.id IN (${QUERY_IDS_SQL})
+              ORDER BY q.id;
+            ")
+            echo "$row_table"
+            # Terminal when every row has status in {done, failed, completed}.
+            non_terminal=$(printf '%s\n' "$row_table" | awk -F'|' '$2 !~ /^(done|failed|completed)$/' | wc -l)
+            echo "non_terminal_rows=${non_terminal}"
+            if [ "${non_terminal}" -eq 0 ]; then
+              echo "ALL_TERMINAL at t=${elapsed}s"
+              break
+            fi
+            if [ "${SECONDS}" -ge "${deadline}" ]; then
+              echo "POLL_TIMEOUT (${POLL_SECONDS}s, ${non_terminal} rows still non-terminal)"
+              break
+            fi
+            sleep 30
+          done
+
+          echo ""
+          echo "=== Final state per query ==="
+          psql_cmd -c "
+            SELECT q.id, q.status, q.retry_reason, q.retry_count, q.account_id,
+                   q.queued_at, q.started_at, q.finished_at, q.latency_ms,
+                   (SELECT COUNT(*) FROM llm_responses r WHERE r.query_id=q.id) AS resp_count,
+                   (SELECT MAX(id) FROM llm_responses r WHERE r.query_id=q.id) AS latest_response_id,
+                   (SELECT MAX(CHAR_LENGTH(r.raw_text)) FROM llm_responses r WHERE r.query_id=q.id) AS max_raw_text_len,
+                   (SELECT MAX(CHAR_LENGTH(r.response_html)) FROM llm_responses r WHERE r.query_id=q.id) AS max_response_html_len
+            FROM queries q
+            WHERE q.id IN (${QUERY_IDS_SQL})
+            ORDER BY q.id;
+          "
+
+          echo ""
+          echo "=== raw_text first 300 chars per query (NULL if no response row) ==="
+          psql_cmd -c "
+            SELECT q.id AS query_id,
+                   r.id AS response_id,
+                   CHAR_LENGTH(r.raw_text) AS raw_text_len,
+                   SUBSTRING(r.raw_text, 1, 300) AS raw_text_preview
+            FROM queries q
+            LEFT JOIN llm_responses r ON r.query_id = q.id
+            WHERE q.id IN (${QUERY_IDS_SQL})
+            ORDER BY q.id, r.id;
+          "
+
+          echo ""
+          echo "=== Account state AFTER dispatch (same accounts, with delta lens) ==="
+          psql_cmd -c "
+            SELECT id, phone_number, status, query_count_today, daily_limit,
+                   expired_transition_count, consecutive_fails,
+                   cookies_updated_at, last_used_at
+            FROM llm_accounts
+            WHERE llm_name='doubao'
+            ORDER BY (status='active') DESC,
+                     (status='cooldown') DESC,
+                     cookies_updated_at DESC NULLS LAST
+            LIMIT 12;
+          "
+
+          echo ""
+          echo "=== Worker log slice per query_id (last 4000 lines, filtered) ==="
+          for qid in "${IDS[@]}"; do
+            echo "--- log slice for query_id=${qid} ---"
+            docker compose logs --tail 4000 worker 2>&1 \
+              | grep -E "(query_${qid}\b|Query ${qid}\b|\[${qid}\]|\b${qid}\b.*doubao|doubao.*\b${qid}\b)" \
+              | tail -80 || true
+            echo ""
+          done
+
+          echo ""
+          echo "=== Screenshot/snapshot files per query (inside worker container) ==="
+          for qid in "${IDS[@]}"; do
+            echo "--- files for query_id=${qid} ---"
+            docker compose exec -T worker sh -c "ls -lat /data/screenshots/query_${qid}_doubao_* 2>/dev/null | head -10" </dev/null || true
+          done
+
+          echo ""
+          echo "=== Latest runtime snapshot JSON per query (page.fingerprint slice) ==="
+          for qid in "${IDS[@]}"; do
+            echo "--- snapshot for query_id=${qid} ---"
+            docker compose exec -T -e QID="${qid}" worker python3 - <<'PY' </dev/null || true
+          import glob, json, os
+          qid = os.environ["QID"]
+          files = sorted(
+              glob.glob(f"/data/screenshots/query_{qid}_doubao_*.json"),
+              key=os.path.getmtime,
+              reverse=True,
+          )
+          if not files:
+              print(f"(no doubao snapshots for query_{qid})")
+              raise SystemExit(0)
+          path = files[0]
+          print(f"FILE: {path}")
+          with open(path) as f:
+              d = json.load(f)
+          page = d.get("page", {}) or {}
+          fp = page.get("fingerprint", {}) or {}
+          print(f"suffix          : {d.get('suffix')}")
+          print(f"doubaoAuthReason: {d.get('doubaoAuthStateReason')}")
+          print(f"doubaoChallenge : {d.get('doubaoVisualChallenge')}")
+          print(f"url             : {page.get('url')}")
+          print(f"title           : {(page.get('title') or '')[:120]}")
+          print(f"onChatPage      : {fp.get('onChatPage')!r}")
+          print(f"userMessageBubbleCount: {fp.get('userMessageBubbleCount')!r}")
+          print("--- responseSelectors ---")
+          for sel in (page.get("responseSelectors") or [])[:8]:
+              print(json.dumps(
+                  {k: sel.get(k) for k in (
+                      "selector", "count", "visibleCount", "firstText", "error"
+                  )},
+                  ensure_ascii=False,
+              )[:600])
+          print("--- bodyText first 600 chars ---")
+          print((page.get("bodyText") or "")[:600])
+          PY
+            echo ""
+          done
+
+          echo ""
+          echo "=== Latest doubao HTML for each query (size + first response container counts) ==="
+          for qid in "${IDS[@]}"; do
+            echo "--- HTML for query_id=${qid} ---"
+            docker compose exec -T -e QID="${qid}" worker python3 - <<'PY' </dev/null || true
+          import glob, os, re
+          qid = os.environ["QID"]
+          files = sorted(
+              glob.glob(f"/data/screenshots/query_{qid}_doubao_*.html"),
+              key=os.path.getmtime,
+              reverse=True,
+          )
+          if not files:
+              print(f"(no doubao HTML for query_{qid})")
+              raise SystemExit(0)
+          path = files[0]
+          with open(path, "r", encoding="utf-8", errors="replace") as f:
+              html = f.read()
+          print(f"FILE: {path}")
+          print(f"size: {len(html)} bytes")
+          candidates = [
+              ("flow-markdown-body", r"class=['\"][^'\"]*flow-markdown-body[^'\"]*['\"]"),
+              ("send-msg-bubble-bg", r"class=['\"][^'\"]*send-msg-bubble-bg[^'\"]*['\"]"),
+              ("flow-end-msg-send", r"id=['\"]flow-end-msg-send['\"]"),
+              ("message-bubble",    r"class=['\"][^'\"]*message-bubble[^'\"]*['\"]"),
+              ("homepage_cards",    r"有什么我能帮你的"),
+          ]
+          for name, pat in candidates:
+              n = len(re.findall(pat, html))
+              print(f"  {name:<30s}= {n}")
+          PY
+            echo ""
+          done
+
+          echo ""
+          echo "=== expired_transition_count DELTA summary (most recent 6 accounts) ==="
+          # Independent of the before/after table, do a clear delta print
+          # so we can immediately spot whether the fix #1109 prevented any
+          # bumps. Compare with the snapshot we took at the top.
+          psql_cmd -c "
+            SELECT id, status, expired_transition_count, last_used_at
+            FROM llm_accounts
+            WHERE llm_name='doubao'
+              AND id IN (44,45,46,47,48,49,50)
+            ORDER BY id;
+          "
+
+          echo ""
+          echo "=== Doubao queries finished within this run's window (sanity) ==="
+          psql_cmd -c "
+            SELECT q.id, q.status, q.retry_reason, q.account_id, q.finished_at,
+                   (SELECT COUNT(*) FROM llm_responses r WHERE r.query_id=q.id) AS resp_count
+            FROM queries q
+            WHERE q.target_llm='doubao'
+              AND q.finished_at > NOW() - INTERVAL '30 minutes'
+            ORDER BY q.id DESC
+            LIMIT 20;
+          "
+
+          echo ""
+          echo "=== DONE (gh run ${GH_RUN_ID}) ==="
+          REMOTE
+          )
+
+          {
+            echo "$output"
+          } > /tmp/doubao-trigger5-output.txt
+
+          {
+            echo "## Doubao trigger-5 + verify (gh run ${GH_RUN_ID})"
+            echo ""
+            echo "QUERY_IDS: ${QUERY_IDS}"
+            echo "POLL_SECONDS: ${POLL_SECONDS}"
+            echo ""
+            echo '```'
+            head -3000 /tmp/doubao-trigger5-output.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Post result as issue #963 comment
+        if: always()
+        uses: actions/github-script@v7
+        env:
+          QUERY_IDS: ${{ github.event.inputs.query_ids || '185614,185617,185620,185623,185626' }}
+        with:
+          script: |
+            const fs = require('fs');
+            const queryIds = process.env.QUERY_IDS || '';
+            let body = `## Doubao trigger-5 + verify (Q: ${queryIds})\n\n`;
+            try {
+              const out = fs.readFileSync('/tmp/doubao-trigger5-output.txt', 'utf-8');
+              const max = 50000;
+              const trimmed = out.length > max ? out.slice(0, max) + '\n…[truncated]' : out;
+              body += '```\n' + trimmed + '\n```';
+            } catch (e) {
+              body += '⚠️ failed to read output: ' + String(e);
+            }
+            try {
+              await github.rest.issues.createComment({
+                issue_number: 963,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body,
+              });
+              core.notice('Posted trigger-5 verify dump to #963');
+            } catch (e) {
+              core.warning('createComment failed: ' + String(e));
+            }
