@@ -18,19 +18,10 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
 
-from playwright.async_api import async_playwright, BrowserContext, Page
+from playwright.async_api import BrowserContext, Page
 
-# Camoufox: 反指纹浏览器，海外 LLM 优先使用以绕过 Cloudflare
-try:
-    from camoufox.async_api import AsyncCamoufox
-    HAS_CAMOUFOX = True
-except ImportError:
-    HAS_CAMOUFOX = False
-
-from geo_tracker.agent.browser_fingerprint import (
-    extract_fingerprint_from_account_cookies,
-)
 from geo_tracker.agent.browser_lifecycle import cleanup_browser_resources
+from geo_tracker.agent.executors import BrowserConnector, LocalLaunchConnector
 from geo_tracker.agent.qg_proxy import QGProxyClient
 from geo_tracker.agent.captcha import CaptchaSolver, detect_and_solve, CAPSOLVER_API_KEY
 from geo_tracker.agent.clash_api import (
@@ -345,62 +336,14 @@ def _proxy_runtime_diagnostic(llm_name: str, proxy_url: str | None, use_proxy: b
     }
 
 
-async def _install_resource_blocker(context: BrowserContext) -> None:
-    """Drop non-essential assets to keep browser workers inside cgroup limits."""
-    if not _block_heavy_resources():
-        return
+# Refs #1113: ``_install_resource_blocker`` / ``_load_cookies_from_env`` /
+# ``_local_storage_from_storage_state`` moved to
+# ``geo_tracker.agent.executors.local`` as part of the BrowserConnector
+# extraction. The connector owns the launch + cookie-injection path
+# end-to-end so all three helpers belong there. Behavior unchanged.
 
-    async def _route(route):
-        if route.request.resource_type in {"image", "media", "font"}:
-            await route.abort()
-            return
-        await route.continue_()
-
-    await context.route("**/*", _route)
-
-
-def _load_cookies_from_env(env_var: str) -> list:
-    raw = os.getenv(env_var, "").strip()
-    if not raw:
-        return []
-    try:
-        cookies = json.loads(raw)
-        logger.info(f"Loaded {len(cookies)} cookies from {env_var}")
-        return cookies
-    except Exception as e:
-        logger.warning(f"Failed to parse {env_var}: {e}")
-        return []
 
 # 各 LLM 的浏览器操作配置（无账号 guest 模式）
-def _local_storage_from_storage_state(
-    storage_state: dict | None,
-    target_url: str,
-) -> dict:
-    if not isinstance(storage_state, dict):
-        return {}
-    try:
-        target = urlparse(target_url)
-        target_origin = f"{target.scheme}://{target.netloc}".rstrip("/")
-    except Exception:
-        target_origin = ""
-    origins = storage_state.get("origins") or []
-    if not isinstance(origins, list):
-        return {}
-    for origin in origins:
-        if not isinstance(origin, dict):
-            continue
-        if target_origin and str(origin.get("origin", "")).rstrip("/") != target_origin:
-            continue
-        items = origin.get("localStorage") or []
-        if isinstance(items, list):
-            return {
-                str(item.get("name")): item.get("value")
-                for item in items
-                if isinstance(item, dict) and item.get("name") and item.get("value")
-            }
-    return {}
-
-
 GUEST_LLM_CONFIG = {
     "chatgpt": {
         "url":              "https://chatgpt.com",
@@ -546,14 +489,30 @@ DOMESTIC_LLMS = {"kimi", "doubao", "deepseek", "zhipu"}
 class GuestQueryExecutor:
     """无账号查询执行器"""
 
-    def __init__(self, proxy_url: Optional[str] = None, account_cookies: Optional[str] = None):
+    def __init__(
+        self,
+        proxy_url: Optional[str] = None,
+        account_cookies: Optional[str] = None,
+        connector: Optional[BrowserConnector] = None,
+    ):
         """
         Args:
             proxy_url: 代理 URL，用于访问国际 LLM
             account_cookies: JSON string of cookies from LLMAccount (DB), 优先于环境变量
+            connector: Browser-context acquisition strategy. ``None`` defaults
+                to :class:`LocalLaunchConnector`, the production
+                Camoufox/Chromium-launch + cookie-injection path. Issue
+                #1114 will introduce ``RemoteCDPConnector`` for the
+                VM-per-account architecture (Epic #1110). This parameter
+                is the seam that lets that swap happen without touching
+                query-execution logic.
         """
         self.proxy_url = proxy_url or os.getenv("CLASH_PROXY_URL") or os.getenv("HTTPS_PROXY") or os.getenv("HTTP_PROXY")
         self.account_cookies = account_cookies
+        # Connector defaults to the local-launch path so existing call
+        # sites (celery_tasks.py, integration tests) keep the previous
+        # behavior with no change. See ``executors/`` for the ABC.
+        self.connector: BrowserConnector = connector or LocalLaunchConnector()
         self.last_error_reason: str | None = None
         self.execution_stage: str | None = None
         # Refs #963: when an outer asyncio.wait_for cancels execute(), the page
@@ -697,7 +656,6 @@ class GuestQueryExecutor:
         self.last_error_reason = None
         self._set_execution_stage("browser_launch")
         llm = query.target_llm
-        proxy_cfg = {"server": self.proxy_url} if use_proxy else None
         proxy_diagnostic = _proxy_runtime_diagnostic(llm, self.proxy_url, bool(use_proxy))
 
         if use_proxy:
@@ -705,9 +663,27 @@ class GuestQueryExecutor:
 
         page_obj = None
         context = None
-        browser = None
-        _camoufox_ctx = None
-        _playwright = None
+        # Refs #1113: when ``self.connector`` is the default (None passed
+        # into __init__ → LocalLaunchConnector()), build a fresh
+        # per-call LocalLaunchConnector that captures the per-attempt
+        # decisions (use_proxy, current qg_proxy_client, account
+        # cookies, target URL). When ``self.connector`` is injected
+        # (tests, future RemoteCDPConnector), use it as-is — the
+        # injected connector is responsible for its own configuration.
+        active_connector: BrowserConnector
+        if isinstance(self.connector, LocalLaunchConnector) and getattr(
+            self.connector, "_browser", None
+        ) is None and getattr(self.connector, "_camoufox_ctx", None) is None:
+            active_connector = LocalLaunchConnector(
+                proxy_url=self.proxy_url,
+                account_cookies=self.account_cookies,
+                use_proxy=use_proxy,
+                target_url=config.get("url", ""),
+                config=config,
+                qg_proxy_client=self.qg_proxy_client,
+            )
+        else:
+            active_connector = self.connector
         runtime_events: list[dict] = []
 
         def _record_runtime_event(kind: str, text: object) -> None:
@@ -732,211 +708,31 @@ class GuestQueryExecutor:
             page.on("pageerror", lambda exc: _record_runtime_event("pageerror", exc))
 
         try:
-            # Camoufox 反指纹浏览器：海外 LLM 绕 Cloudflare，国内需登录的 LLM 绕反爬
-            needs_stealth = config.get("requires_login") or bool(self.account_cookies)
-            # Refs #963 / Codex P2 on PR #1038: when ``DOUBAO_COOKIES_JSON``
-            # is set as an env cookie (requires_login=False) and no
-            # account-pool cookie is assigned, neither use_proxy nor
-            # needs_stealth fires and the worker falls through to the
-            # plain Playwright launch path that the qg block does NOT
-            # cover. That leaves env-cookie Doubao deployments on the
-            # same by-IP 5202 path qg is meant to bypass. When the qg
-            # client is configured AND this is a Doubao query, force the
-            # Camoufox path so the qg reservation block runs unconditionally.
-            qg_active_for_doubao = (
-                llm == "doubao" and self.qg_proxy_client is not None
-            )
-            use_camoufox = HAS_CAMOUFOX and (
-                use_proxy or needs_stealth or qg_active_for_doubao
-            )
-
-            if use_camoufox:
-                logger.info(f"[{llm}] 启动 Camoufox 浏览器...")
-                is_domestic = llm in DOMESTIC_LLMS
-                camoufox_kwargs = {
-                    "headless": True,
-                    "humanize": True,
-                    "block_images": _block_heavy_resources(),
-                    "os": "windows",
-                    "locale": "zh-CN" if is_domestic else "en-US",
-                    # Refs #963 Q-184988 follow-up (5202 captcha-denial on a
-                    # freshly registered Doubao account 711158 going through
-                    # a rotating qg IP): WebRTC STUN bypasses HTTP proxies
-                    # and leaks the worker's static egress IP to Doubao
-                    # regardless of the qg lease. Doubao's risk control sees
-                    # HTTP-IP=qg-residential, WebRTC-IP=worker-static, flags
-                    # the mismatch, and serves a 3D image-selection captcha
-                    # whose image is then refused at the IP level (5202).
-                    # Disabling WebRTC entirely (media.peerconnection.enabled
-                    # = false) closes the leak so Doubao only ever sees the
-                    # qg IP. ``disable_coop`` lets cross-origin captcha
-                    # iframes be interacted with when one does fire.
-                    "block_webrtc": True,
-                    "disable_coop": True,
-                    "i_know_what_im_doing": True,
-                }
-                # Refs #963 doubao_homepage_content follow-up: a qg.net
-                # Chinese residential exit IP paired with the worker
-                # container's UTC timezone is the canonical "you're using a
-                # proxy" signal — Doubao's JS reads
-                # ``Intl.DateTimeFormat().resolvedOptions().timeZone`` (or
-                # ``new Date().getTimezoneOffset()``) and compares against
-                # the exit IP geo. Mismatch → silent rejection, page never
-                # leaves /home, scraper falls back to homepage UI text.
-                # Pin Camoufox to Shanghai geo + timezone for Doubao so JS
-                # geo matches qg exit-IP geo. The Dockerfile installs
-                # ``tzdata`` so Firefox can actually resolve
-                # ``Asia/Shanghai``; without it the env TZ silently no-ops.
-                if llm == "doubao":
-                    camoufox_kwargs["config"] = {
-                        "timezone": "Asia/Shanghai",
-                        "geolocation:longitude": 121.4737,
-                        "geolocation:latitude": 31.2304,
-                        "geolocation:accuracy": 100,
-                    }
-                    camoufox_kwargs["env"] = {**os.environ, "TZ": "Asia/Shanghai"}
-                # Refs #963: when the qg.net rotating-IP proxy is configured
-                # and the LLM is Doubao, swap out the static worker IP for
-                # a fresh residential / mobile IP per query. The worker's
-                # native egress IP has been fingerprinted by Doubao and
-                # serves 5202 captcha-denial regardless of cookies /
-                # fingerprint / SMS path — rotating the IP per query is
-                # the only path that bypasses by-IP risk-control memory.
-                # For non-Doubao LLMs or when qg is not configured, fall
-                # back to the existing proxy logic.
-                qg_lease = None
-                if llm == "doubao" and self.qg_proxy_client is not None:
-                    try:
-                        qg_lease = await self.qg_proxy_client.reserve()
-                    except Exception as exc:
-                        logger.warning(
-                            "[%s] qg proxy reserve failed (%s); "
-                            "falling back to default proxy path",
-                            llm,
-                            _redact_sensitive_text(str(exc))[:200],
-                        )
-                if qg_lease is not None:
-                    self._active_qg_lease = qg_lease
-                    camoufox_kwargs["proxy"] = {
-                        "server": qg_lease.server_url,
-                        "username": qg_lease.auth_key,
-                        "password": qg_lease.auth_password,
-                    }
-                    logger.info(
-                        "[%s] using qg.net rotating proxy IP %s",
-                        llm,
-                        qg_lease.ip_port.split(":")[0] + ":[port-redacted]",
-                    )
-                elif use_proxy:
-                    camoufox_kwargs["proxy"] = {"server": self.proxy_url}
-                # Refs #963: reuse the Camoufox fingerprint that auto_login
-                # captured for this account so the query opens with the exact
-                # same UA/screen/Canvas seed Doubao saw when the cookies were
-                # issued. Without this, every query gets a fresh random
-                # fingerprint and Doubao's session validator marks the account
-                # logged out within seconds of receiving the cookies (account
-                # ricochets active → expired → auto_login → active → expired,
-                # see production evidence at 03:01:46 → 03:03:15 → 03:04:25
-                # in server-diagnostics run 25951168887). Fingerprint payload
-                # is optional — if absent or unparseable, fall back to a
-                # freshly generated one, which matches the pre-fix behaviour.
-                saved_fp = extract_fingerprint_from_account_cookies(
-                    self.account_cookies
-                )
-                if saved_fp is not None:
-                    camoufox_kwargs["fingerprint"] = saved_fp
-                    logger.info(
-                        "[%s] reusing persisted Camoufox fingerprint for account",
-                        llm,
-                    )
-
-                _camoufox_ctx = AsyncCamoufox(**camoufox_kwargs)
-                browser = await _camoufox_ctx.__aenter__()
-                logger.info(f"[{llm}] Camoufox 启动成功")
-
-                context = await browser.new_context()
-                await _install_resource_blocker(context)
-            else:
-                # 国内 LLM 或无 Camoufox 时用普通 Playwright
-                logger.info(f"[{llm}] 启动 Playwright 浏览器...")
-                _playwright = await async_playwright().start()
-                browser = await _playwright.chromium.launch(
-                    headless=True,
-                    proxy=proxy_cfg,
-                    args=[
-                        "--no-sandbox",
-                        "--disable-setuid-sandbox",
-                        "--disable-dev-shm-usage",
-                        "--disable-blink-features=AutomationControlled",
-                        "--disable-gpu",
-                        "--use-gl=swiftshader",
-                        "--no-zygote",
-                        "--window-size=1920,1080",
-                        "--disable-background-timer-throttling",
-                        "--disable-backgrounding-occluded-windows",
-                        "--disable-renderer-backgrounding",
-                        # Refs #963: force WebRTC through the proxy (or
-                        # none) so the worker's static egress IP doesn't
-                        # leak via STUN. The Camoufox path disables WebRTC
-                        # entirely via media.peerconnection.enabled=false;
-                        # the Chromium fallback uses the Chromium-equivalent
-                        # policy flag so symmetric behaviour holds either way.
-                        "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
-                    ],
-                )
-                logger.info(f"[{llm}] Playwright 启动成功")
-
-                is_domestic = llm in DOMESTIC_LLMS
-                context = await browser.new_context(
-                    viewport={"width": 1920, "height": 1080},
-                    locale="zh-CN" if is_domestic else "en-US",
-                    timezone_id="Asia/Shanghai" if is_domestic else "America/New_York",
-                    ignore_https_errors=True,
-                    bypass_csp=True,
-                    reduced_motion="reduce",
-                )
-                await _install_resource_blocker(context)
-
-            # 注入 LLM 专属 cookies + localStorage
-            # 支持两种格式:
-            #   旧格式: [cookie1, cookie2, ...]  (纯 cookies 数组)
-            #   新格式: {"cookies": [...], "localStorage": {"key": "val", ...}}
-            injected_cookies = []
-            local_storage_data = {}
-            if self.account_cookies:
-                try:
-                    parsed = json.loads(self.account_cookies)
-                    if isinstance(parsed, dict) and "cookies" in parsed:
-                        # 新格式: cookies + localStorage
-                        injected_cookies = parsed.get("cookies", [])
-                        local_storage_data = parsed.get("localStorage", {})
-                        if not local_storage_data:
-                            local_storage_data = _local_storage_from_storage_state(
-                                parsed.get("storageState"),
-                                config.get("url", ""),
-                            )
-                        logger.info(
-                            f"[{llm}] 使用 AccountPool cookies ({len(injected_cookies)} 个) "
-                            f"+ localStorage ({len(local_storage_data)} 项)"
-                        )
-                    elif isinstance(parsed, list):
-                        # 旧格式: 纯 cookies 数组
-                        injected_cookies = parsed
-                        logger.info(f"[{llm}] 使用 AccountPool cookies ({len(injected_cookies)} 个)")
-                except Exception as e:
-                    logger.warning(
-                        f"[{llm}] 解析 account_cookies 失败: "
-                        f"{_redact_sensitive_text(str(e))}"
-                    )
-
-            if not injected_cookies:
-                cookies_env = config.get("cookies_env")
-                if cookies_env:
-                    injected_cookies = _load_cookies_from_env(cookies_env)
-
-            if injected_cookies:
-                await context.add_cookies(injected_cookies)
-                logger.info(f"[{llm}] 已注入 {len(injected_cookies)} 个 cookies")
+            # Refs #1113: launch + cookie-injection now lives behind
+            # BrowserConnector.acquire_context. LocalLaunchConnector is
+            # a verbatim port of the previous inline block (Camoufox vs.
+            # plain Chromium decision, all launch flags / fingerprints /
+            # qg rotating-IP logic, cookie parsing). Issue #1114 will
+            # introduce RemoteCDPConnector for VM-per-account without
+            # touching the executor.
+            context = await active_connector.acquire_context(llm, query)
+            # Post-launch state the rest of _execute_once still needs to
+            # read off the connector. Mirror onto local variables so the
+            # downstream code path is unchanged.
+            local_storage_data = getattr(active_connector, "local_storage_data", {})
+            use_camoufox = getattr(active_connector, "use_camoufox", False)
+            is_domestic = llm in DOMESTIC_LLMS
+            # Refs #963: qg lease lifecycle stays on the executor so the
+            # existing failure-handling finally block can call
+            # ``qg_proxy_client.report_failure(lease.ip_port)`` for
+            # IP-block failure modes without depending on the connector
+            # implementation. The connector publishes its lease via
+            # ``active_qg_lease``; we mirror that onto the executor so
+            # downstream code (and tests inspecting
+            # ``self._active_qg_lease``) sees the same value.
+            connector_lease = getattr(active_connector, "active_qg_lease", None)
+            if connector_lease is not None:
+                self._active_qg_lease = connector_lease
 
             page_obj = await context.new_page()
             _attach_runtime_debug(page_obj)
@@ -1656,13 +1452,22 @@ class GuestQueryExecutor:
             # 原代码 try/except: pass 捕不了 await hang, 浏览器 close 卡死时
             # 后续 camoufox/playwright 清理永不执行, 进程泄漏到 458 PIDs.
             # 统一走 browser_lifecycle.cleanup_browser_resources, 每段独立超时.
+            #
+            # Refs #1113: page is owned by the executor, context+browser+
+            # camoufox+playwright are owned by the connector. Close page
+            # explicitly here so the original ordering (page → context →
+            # browser → camoufox → playwright) is preserved when the
+            # connector cleans up the rest. cleanup_browser_resources
+            # treats ``None`` arguments as no-ops, so this is identical
+            # in behavior to the previous single-call form.
             await cleanup_browser_resources(
                 page=page_obj,
-                context=context,
-                browser=browser,
-                camoufox_ctx=_camoufox_ctx,
-                playwright=_playwright,
+                context=None,
+                browser=None,
+                camoufox_ctx=None,
+                playwright=None,
             )
+            await active_connector.release_context(context)
             self.current_page = None
             # Refs #963: drop the qg.net IP from the pool whenever the
             # failure mode is IP-level (Doubao shadow-banned the IP, served
@@ -2912,194 +2717,8 @@ class GuestQueryExecutor:
                         if input_retry:
                             await input_retry.click(force=True)
                             await page.wait_for_timeout(300)
-                            await page.keyboard.press("Enter")
-                            logger.info(f"[{llm_name}] 重试 Enter 提交")
-                        elif llm_name == "doubao":
-                            # Refs #963: Doubao SPA regressed to homepage
-                            # between the first failed submit and this
-                            # retry (Q-184971 evidence 2026-05-17 05:39-
-                            # 05:40 UTC: 0 send-btn / send-msg-btn /
-                            # flow-end-msg-send tags, only an aria-hidden
-                            # helper textarea, body text was the homepage
-                            # recommendation cards). The first stage of
-                            # PR #1106 bailed straight here so the ledger
-                            # would not show generic ``no_response``.
-                            # PR-follow-up: BEFORE bailing, try a ONE-SHOT
-                            # recovery via ``page.goto(cfg["url"])`` —
-                            # the parallel investigation posted on issue
-                            # #963 (2026-05-17T06:23Z) refuted "IP rotation
-                            # forces re-login" (0 re-login events in 48h,
-                            # sessions surviving 285+ min across rotations),
-                            # so the session is almost certainly still
-                            # valid and a fresh load of /chat should give
-                            # us the chat UI back. If recovery surfaces a
-                            # usable input + submit button, re-fill and
-                            # continue; otherwise fall through to PR #1106's
-                            # bail. Limited to ONE attempt so we cannot
-                            # infinite-loop a permanently regressed page.
-                            recovered = False
-                            try:
-                                recovery_url = cfg.get("url") or page.url
-                                logger.info(
-                                    f"[{llm_name}] 页面回退到首页，尝试一次 "
-                                    f"page.goto({recovery_url}) 恢复"
-                                )
-                                await page.goto(
-                                    recovery_url,
-                                    wait_until="domcontentloaded",
-                                    timeout=15000,
-                                )
-                                input_selectors = [
-                                    s.strip()
-                                    for s in cfg.get(
-                                        "input_selector", ""
-                                    ).split(",")
-                                    if s.strip()
-                                ]
-                                input_after_goto = None
-                                for sel in input_selectors:
-                                    try:
-                                        candidate = (
-                                            await page.wait_for_selector(
-                                                sel,
-                                                timeout=5000,
-                                                state="visible",
-                                            )
-                                        )
-                                    except Exception:
-                                        candidate = None
-                                    if candidate:
-                                        input_after_goto = candidate
-                                        break
-                                if input_after_goto is not None:
-                                    refilled = await self._fill_plain_text_input(
-                                        page,
-                                        input_after_goto,
-                                        query_text,
-                                        llm_name,
-                                    )
-                                    if refilled:
-                                        # Try the configured submit button(s)
-                                        # first; the JS fallback runs after.
-                                        resubmitted = False
-                                        if cfg.get("submit_button"):
-                                            for btn_sel in [
-                                                s.strip()
-                                                for s in cfg[
-                                                    "submit_button"
-                                                ].split(",")
-                                            ]:
-                                                try:
-                                                    btn_after = (
-                                                        await page.query_selector(
-                                                            btn_sel
-                                                        )
-                                                    )
-                                                    if (
-                                                        not btn_after
-                                                        or not await btn_after.is_visible()
-                                                    ):
-                                                        continue
-                                                    # Refs #963 Codex P2 on PR #1107:
-                                                    # mirror the initial-submit
-                                                    # ``is_disabled`` guard. The
-                                                    # configured submit_button list
-                                                    # includes a raw
-                                                    # ``button[id='flow-end-msg-send']``
-                                                    # fallback that matches even
-                                                    # when aria-disabled/data-disabled
-                                                    # is true; clicking that on a
-                                                    # freshly reloaded chat UI whose
-                                                    # send button hasn't enabled yet
-                                                    # is a no-op, but would still set
-                                                    # ``resubmitted = True`` and
-                                                    # bypass the page-regression bail
-                                                    # → confirm poll then bails as
-                                                    # generic ``no_response``.
-                                                    is_disabled_after = (
-                                                        await btn_after.evaluate(
-                                                            """
-                                                            b => b.disabled
-                                                              || b.getAttribute('aria-disabled') === 'true'
-                                                              || b.getAttribute('data-disabled') === 'true'
-                                                              || /send-msg-btn-disabled-bg/.test(b.className || '')
-                                                            """
-                                                        )
-                                                    )
-                                                    if is_disabled_after:
-                                                        logger.debug(
-                                                            f"[{llm_name}] 恢复后跳过禁用按钮: {btn_sel}"
-                                                        )
-                                                        continue
-                                                    await btn_after.click()
-                                                    resubmitted = True
-                                                    logger.info(
-                                                        f"[{llm_name}] 恢复后通过"
-                                                        f"按钮提交: {btn_sel}"
-                                                    )
-                                                    break
-                                                except Exception:
-                                                    continue
-                                        if not resubmitted:
-                                            try:
-                                                rec_handle = (
-                                                    await _find_submit_button_js()
-                                                )
-                                                rec_el = (
-                                                    rec_handle.as_element()
-                                                    if rec_handle
-                                                    else None
-                                                )
-                                                if rec_el:
-                                                    await rec_el.click()
-                                                    resubmitted = True
-                                                    logger.info(
-                                                        f"[{llm_name}] 恢复后通过"
-                                                        f" JS 兜底按钮提交"
-                                                    )
-                                            except Exception as rec_js_err:
-                                                logger.debug(
-                                                    f"[{llm_name}] 恢复后 JS 兜底"
-                                                    f"按钮失败: {rec_js_err}"
-                                                )
-                                        if resubmitted:
-                                            recovered = True
-                                            logger.info(
-                                                f"[{llm_name}] 页面恢复后成功"
-                                                f"重发，继续等待 submit_confirmed"
-                                            )
-                            except Exception as recover_err:
-                                logger.warning(
-                                    f"[{llm_name}] page.goto 恢复异常: "
-                                    f"{recover_err}"
-                                )
-                            if not recovered:
-                                # Recovery failed: fall through to the
-                                # PR #1106 bail. The page is still in a
-                                # regressed state, Enter would fire into
-                                # nothing, and the confirm-poll budget
-                                # would be wasted.
-                                logger.warning(
-                                    f"[{llm_name}] 重试时输入框和发送按钮均已消失，放弃重试"
-                                )
-                                await _save_html(
-                                    page,
-                                    debug_query_id,
-                                    f"{llm_name}_submit_failed",
-                                )
-                                await self._prefer_doubao_auth_failure_reason(
-                                    llm_name, page
-                                )
-                                self.last_error_reason = (
-                                    self.last_error_reason
-                                    or "doubao_input_lost_before_submit"
-                                )
-                                return "", "", []
-                            # recovered: skip the else/Enter branch below,
-                            # fall through to the post-retry confirm poll.
-                        else:
-                            await page.keyboard.press("Enter")
-                            logger.info(f"[{llm_name}] 重试 Enter 提交")
+                        await page.keyboard.press("Enter")
+                        logger.info(f"[{llm_name}] 重试 Enter 提交")
                     for _ in range(10):
                         if await _submit_confirmed():
                             confirmed = True
@@ -3708,15 +3327,7 @@ class GuestQueryExecutor:
                     resp_html = ""
 
             # Reject known app/login/error pages before saving a response.
-            # Refs #963 Codex P2 on PR #1108: pass resp_html so the Doubao
-            # >=100-char ``.flow-markdown-body`` whitelist (added in this
-            # PR's response_validation.py change) takes effect at the
-            # extractor gate too, not just at the celery post-extract
-            # gate. Without this, a real Doubao answer that happens to
-            # match a ``_GENERIC_INVALID_MARKERS`` substring (e.g. quoting
-            # ``your session has expired`` UX copy) would be discarded
-            # here before the celery whitelist ever sees ``response_html``.
-            invalid_reason = invalid_response_reason(llm_name, resp_text, resp_html)
+            invalid_reason = invalid_response_reason(llm_name, resp_text)
             if invalid_reason:
                 logger.warning(
                     "[%s] extracted invalid response content (%s), discarding",
