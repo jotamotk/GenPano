@@ -1327,6 +1327,26 @@ class GuestQueryExecutor:
                                     artifact_error,
                                 )
                     self.last_error_reason = self.last_error_reason or "page_load_failed"
+                    if llm == "doubao" and page_obj is not None:
+                        try:
+                            recovered = await self._attempt_doubao_page_regression_recovery(
+                                page_obj,
+                                config,
+                                llm,
+                                query.id,
+                                query.query_text,
+                            )
+                        except Exception:
+                            logger.exception(
+                                "doubao page-regression recovery raised in page_load_failed"
+                            )
+                            recovered = False
+                        if recovered:
+                            logger.info(
+                                "doubao page-regression recovery succeeded after "
+                                "page_load_failed; clearing last_error_reason for outer retry"
+                            )
+                            self.last_error_reason = None
                     return None
 
             # 页面加载后检查是否被重定向到登录页
@@ -1358,6 +1378,26 @@ class GuestQueryExecutor:
                 logger.warning(f"[{llm}] 页面加载后仍在登录页: {current_url}，cookies/token 已失效")
                 self.last_error_reason = "cookies_expired"
                 await _save_screenshot(page_obj, query.id, f"{llm}_login_after_load")
+                if llm == "doubao" and page_obj is not None:
+                    try:
+                        recovered = await self._attempt_doubao_page_regression_recovery(
+                            page_obj,
+                            config,
+                            llm,
+                            query.id,
+                            query.query_text,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "doubao page-regression recovery raised in cookies_expired"
+                        )
+                        recovered = False
+                    if recovered:
+                        logger.info(
+                            "doubao page-regression recovery succeeded after "
+                            "cookies_expired; clearing last_error_reason for outer retry"
+                        )
+                        self.last_error_reason = None
                 if self.account_cookies:
                     return None  # 让上层标记 cookies_expired
                 return None
