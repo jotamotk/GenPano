@@ -611,8 +611,19 @@ def _doubao_has_visible_login_dialog(combined: str) -> bool:
     )
 
 
-def invalid_response_reason(llm_name: str, text: str | None) -> str | None:
-    """Return a reason when extracted page text is not an LLM answer."""
+def invalid_response_reason(
+    llm_name: str,
+    text: str | None,
+    response_html: str | None = None,
+) -> str | None:
+    """Return a reason when extracted page text is not an LLM answer.
+
+    ``response_html`` is optional and only consulted for Doubao: when the
+    response carries >=100 chars in a known Doubao response selector,
+    the generic English logout markers must NOT veto persistence —
+    Refs #963 Q-184971/Q-184988 verify-readonly evidence (issue #963
+    comment 4469617051).
+    """
     if not text:
         return None
 
@@ -622,6 +633,11 @@ def invalid_response_reason(llm_name: str, text: str | None) -> str | None:
         auth_reason = chatgpt_auth_state_reason(text)
         if auth_reason:
             return auth_reason
+
+    if llm == "doubao" and _doubao_has_persistence_whitelist_answer(
+        text, response_html
+    ):
+        return None
 
     for marker, reason in _GENERIC_INVALID_MARKERS.items():
         if marker in lower:
