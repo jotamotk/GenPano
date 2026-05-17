@@ -113,8 +113,14 @@ case "$ACTION" in
     } > .env.tmp && mv .env.tmp .env
     # Login to ACR + pull image (no local build — image already built and
     # pushed by the GH Actions runner before this step ran).
-    echo "$ACR_PASSWORD" | sudo docker login "$ACR_REGISTRY" \
-      -u "$ACR_USERNAME" --password-stdin
+    # Use same privilege path as `dc` helper (which auto-sudos if user not
+    # yet in docker group). Otherwise `sudo docker login` would store
+    # creds under root, but `dc pull` would run as user and fail to auth.
+    if groups | grep -q docker; then
+      echo "$ACR_PASSWORD" | docker login "$ACR_REGISTRY" -u "$ACR_USERNAME" --password-stdin
+    else
+      echo "$ACR_PASSWORD" | sudo docker login "$ACR_REGISTRY" -u "$ACR_USERNAME" --password-stdin
+    fi
     dc pull
     echo "=== bootstrap complete ==="
     docker --version 2>/dev/null || sudo docker --version

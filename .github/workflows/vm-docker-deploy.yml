@@ -114,7 +114,11 @@ jobs:
           set -euxo pipefail
           PORT="${SERVER_SSH_PORT:-22}"
           REMOTE="${SERVER_USER}@${SERVER_HOST}"
-          VM_IMAGE="${ACR_REGISTRY}/${IMAGE_REPO}:${IMAGE_TAG}"
+          # Use the immutable :$github.sha tag for ECS pull so two
+          # overlapping dispatches can't race past each other. The :latest
+          # tag is still pushed for human convenience but not used for
+          # the actual deploy.
+          VM_IMAGE="${ACR_REGISTRY}/${IMAGE_REPO}:${{ github.sha }}"
           # 1. Ensure VM_DEPLOY_PATH exists on ECS
           ssh -i ~/.ssh/id_ssh -p "$PORT" "$REMOTE" \
             "sudo mkdir -p '$VM_DEPLOY_PATH' && sudo chown -R \$(whoami):\$(whoami) '$VM_DEPLOY_PATH'"
