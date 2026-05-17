@@ -146,6 +146,93 @@ RESPONSE_WAIT_STAGE_BUDGET_S = 240
 POST_FAILURE_PAGE_READ_TIMEOUT_S = 5
 POST_FAILURE_SCREENSHOT_TIMEOUT_S = 10
 
+# Refs #963 issue comment 4470015151 (2026-05-17 08:49Z trigger-5 dump):
+# PR #1107 added a one-shot ``page.goto(cfg["url"])`` recovery in the
+# submit-confirm retry branch (``_browser_query`` ``elif llm_name ==
+# "doubao":``). That implementation called a CLOSURE local to
+# ``_browser_query`` (``_find_submit_button_js``) to locate the send
+# button via JS. To re-use the same finder from
+# ``_attempt_doubao_page_regression_recovery`` (which lives OUTSIDE
+# ``_browser_query`` so the auth-check + prompt-fill bail sites can
+# invoke it), promote the JS source to a module-level constant. Both
+# the original closure and the new helper now invoke
+# ``page.evaluate_handle(DOUBAO_FIND_SUBMIT_BUTTON_JS)`` — the JS body
+# is unchanged from PR #1107 so the production submit-button
+# discovery semantics are preserved bit-for-bit.
+DOUBAO_FIND_SUBMIT_BUTTON_JS = """
+() => {
+    const isEnabled = (b) => {
+        if (!b) return false;
+        if (b.disabled) return false;
+        if (b.getAttribute('data-disabled') === 'true') return false;
+        if (b.getAttribute('aria-disabled') === 'true') return false;
+        const cls = b.className || '';
+        if (typeof cls === 'string' && /send-msg-btn-disabled-bg/.test(cls)) return false;
+        return true;
+    };
+
+    // 最优先：稳定的 id（线上 DOM 验证）
+    const byId = document.getElementById('flow-end-msg-send');
+    if (byId && isEnabled(byId)) return byId;
+
+    const all = [...document.querySelectorAll('button, [role="button"]')];
+
+    // 其次：按 class 匹配（稳定的 Tailwind/业务类名）
+    const byClass = all.find(b => {
+        if (!isEnabled(b)) return false;
+        const cls = b.className || '';
+        if (typeof cls !== 'string') return false;
+        return /send-msg-btn/.test(cls);
+    });
+    if (byClass) return byClass;
+
+    // 然后：.send-btn-wrapper（不含 !hidden）内的 button
+    const wrappers = [...document.querySelectorAll('.send-btn-wrapper')];
+    for (const w of wrappers) {
+        const wcls = w.className || '';
+        if (typeof wcls === 'string' && /!hidden/.test(wcls)) continue;
+        const b = w.querySelector('button');
+        if (isEnabled(b)) return b;
+    }
+
+    // 然后：aria-label / title 含 send/发送
+    const byAria = all.find(b => {
+        if (!isEnabled(b)) return false;
+        const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+        const title = (b.getAttribute('title') || '').toLowerCase();
+        return /send|发送|提交/.test(aria) || /send|发送|提交/.test(title);
+    });
+    if (byAria) return byAria;
+
+    // 次选：input 附近、含 svg 图标、文本为空或极短、enabled 的按钮
+    const input = document.querySelector(
+        'textarea:not([aria-hidden="true"]), [contenteditable="true"]'
+    );
+    if (!input) return null;
+    const ir = input.getBoundingClientRect();
+    let best = null, bestScore = -Infinity;
+    for (const b of all) {
+        if (!isEnabled(b)) continue;
+        const cls = b.className || '';
+        if (typeof cls === 'string' && /toggle-button/.test(cls)) continue;
+        const r = b.getBoundingClientRect();
+        if (r.width === 0 || r.height === 0) continue;
+        const txt = (b.textContent || '').trim();
+        if (txt.length > 0) continue;  // avoid mode/search toggles
+        if (!b.querySelector('svg, img, i')) continue;  // 必须有图标
+        // 限制在 input 正下方/右侧附近 150px 以内
+        const dx = Math.max(0, r.left - ir.right, ir.left - r.right);
+        const dy = Math.max(0, r.top - ir.bottom, ir.top - r.bottom);
+        if (dx > 300 || dy > 200) continue;
+        if ((r.left + r.width / 2) < (ir.left + ir.width * 0.55)) continue;
+        const verticalPenalty = Math.abs((r.top + r.bottom) / 2 - (ir.top + ir.bottom) / 2);
+        const score = (r.left + r.width) - verticalPenalty - dx - dy;
+        if (score > bestScore) { bestScore = score; best = b; }
+    }
+    return best;
+}
+"""
+
 
 _SENSITIVE_TEXT_PATTERNS = [
     (
@@ -583,6 +670,15 @@ class GuestQueryExecutor:
         # so the bad IP is dropped from the pool.
         self.qg_proxy_client = QGProxyClient.from_env()
         self._active_qg_lease = None
+        # Refs #963 issue comment 4470015151 (2026-05-17 08:49Z trigger-5):
+        # PR #1107's page.goto recovery is now invoked from THREE call
+        # sites (auth-check no_input bail, prompt-fill fill-failed bail,
+        # and the submit-confirm retry). To enforce the "ONE recovery
+        # attempt per query, MAX" contract (looping is a regression risk
+        # — infinite reload), track whether the helper has already fired
+        # for the current query. Reset in ``_execute_once`` so a fresh
+        # query (or a proxy-rotation retry) gets its own attempt.
+        self._doubao_recovery_attempted: bool = False
 
     def _set_execution_stage(self, stage: str) -> None:
         self.execution_stage = stage
@@ -695,6 +791,12 @@ class GuestQueryExecutor:
         # N-1's stale reason and mask the real exception of attempt N. Scope
         # the preservation to within a single _execute_once invocation.
         self.last_error_reason = None
+        # Refs #963 issue comment 4470015151: same per-attempt reset for
+        # the page-regression recovery latch. A proxy-rotation retry of
+        # the same query gets a fresh ONE-shot recovery budget; the
+        # within-attempt latch still prevents the auth-check, prompt-fill,
+        # and submit-confirm sites from all firing it inside one attempt.
+        self._doubao_recovery_attempted = False
         self._set_execution_stage("browser_launch")
         llm = query.target_llm
         proxy_cfg = {"server": self.proxy_url} if use_proxy else None
@@ -2854,82 +2956,17 @@ class GuestQueryExecutor:
         # 提交：优先点击 submit_button 里配的 selector，失败时 JS 找 input 附近的 enabled 按钮，
         # 再失败才 fallback 到 Enter
         async def _find_submit_button_js():
-            """豆包新 UI 无 testid，通过稳定 id / class + 位置 + 图标找 send 按钮。"""
-            return await page.evaluate_handle(
-                """
-                () => {
-                    const isEnabled = (b) => {
-                        if (!b) return false;
-                        if (b.disabled) return false;
-                        if (b.getAttribute('data-disabled') === 'true') return false;
-                        if (b.getAttribute('aria-disabled') === 'true') return false;
-                        const cls = b.className || '';
-                        if (typeof cls === 'string' && /send-msg-btn-disabled-bg/.test(cls)) return false;
-                        return true;
-                    };
+            """豆包新 UI 无 testid，通过稳定 id / class + 位置 + 图标找 send 按钮。
 
-                    // 最优先：稳定的 id（线上 DOM 验证）
-                    const byId = document.getElementById('flow-end-msg-send');
-                    if (byId && isEnabled(byId)) return byId;
-
-                    const all = [...document.querySelectorAll('button, [role="button"]')];
-
-                    // 其次：按 class 匹配（稳定的 Tailwind/业务类名）
-                    const byClass = all.find(b => {
-                        if (!isEnabled(b)) return false;
-                        const cls = b.className || '';
-                        if (typeof cls !== 'string') return false;
-                        return /send-msg-btn/.test(cls);
-                    });
-                    if (byClass) return byClass;
-
-                    // 然后：.send-btn-wrapper（不含 !hidden）内的 button
-                    const wrappers = [...document.querySelectorAll('.send-btn-wrapper')];
-                    for (const w of wrappers) {
-                        const wcls = w.className || '';
-                        if (typeof wcls === 'string' && /!hidden/.test(wcls)) continue;
-                        const b = w.querySelector('button');
-                        if (isEnabled(b)) return b;
-                    }
-
-                    // 然后：aria-label / title 含 send/发送
-                    const byAria = all.find(b => {
-                        if (!isEnabled(b)) return false;
-                        const aria = (b.getAttribute('aria-label') || '').toLowerCase();
-                        const title = (b.getAttribute('title') || '').toLowerCase();
-                        return /send|发送|提交/.test(aria) || /send|发送|提交/.test(title);
-                    });
-                    if (byAria) return byAria;
-
-                    // 次选：input 附近、含 svg 图标、文本为空或极短、enabled 的按钮
-                    const input = document.querySelector(
-                        'textarea:not([aria-hidden="true"]), [contenteditable="true"]'
-                    );
-                    if (!input) return null;
-                    const ir = input.getBoundingClientRect();
-                    let best = null, bestScore = -Infinity;
-                    for (const b of all) {
-                        if (!isEnabled(b)) continue;
-                        const cls = b.className || '';
-                        if (typeof cls === 'string' && /toggle-button/.test(cls)) continue;
-                        const r = b.getBoundingClientRect();
-                        if (r.width === 0 || r.height === 0) continue;
-                        const txt = (b.textContent || '').trim();
-                        if (txt.length > 0) continue;  // avoid mode/search toggles
-                        if (!b.querySelector('svg, img, i')) continue;  // 必须有图标
-                        // 限制在 input 正下方/右侧附近 150px 以内
-                        const dx = Math.max(0, r.left - ir.right, ir.left - r.right);
-                        const dy = Math.max(0, r.top - ir.bottom, ir.top - r.bottom);
-                        if (dx > 300 || dy > 200) continue;
-                        if ((r.left + r.width / 2) < (ir.left + ir.width * 0.55)) continue;
-                        const verticalPenalty = Math.abs((r.top + r.bottom) / 2 - (ir.top + ir.bottom) / 2);
-                        const score = (r.left + r.width) - verticalPenalty - dx - dy;
-                        if (score > bestScore) { bestScore = score; best = b; }
-                    }
-                    return best;
-                }
-                """
-            )
+            Refs #963 issue comment 4470015151: JS source moved to module-
+            level ``DOUBAO_FIND_SUBMIT_BUTTON_JS`` so the new
+            ``_attempt_doubao_page_regression_recovery`` helper (called
+            from the auth-check + prompt-fill bail sites that PR #1107
+            did not cover) can invoke the same finder from outside this
+            closure. JS body is bit-for-bit identical to the pre-extract
+            version.
+            """
+            return await page.evaluate_handle(DOUBAO_FIND_SUBMIT_BUTTON_JS)
 
         self._set_execution_stage("prompt_submit")
         submitted = False
