@@ -121,7 +121,11 @@ jobs:
         # leak outside the job.
         run: |
           set -euxo pipefail
-          VNC_PW=$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 8)
+          # Use openssl to avoid the classic `tr | head` SIGPIPE-under-pipefail
+          # trap: head closes the pipe after 8 bytes, tr exits 141 (SIGPIPE),
+          # and `set -o pipefail` propagates the failure. `openssl rand -hex 4`
+          # produces 8 hex chars with no pipeline.
+          VNC_PW=$(openssl rand -hex 4)
           # NOT using ::add-mask:: — it would block summary step from echoing the value.
           # The pw is one-shot for this runner and is rotated next dispatch.
           printf '%s' "$VNC_PW" > /tmp/.vncpw.plain
