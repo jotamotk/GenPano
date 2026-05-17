@@ -1,0 +1,279 @@
+name: vm-poc-smoke
+
+# Tier-0 smoke test for Issue #1115 / Epic #1110.
+#
+# What this workflow validates:
+#   - The vm_side runner can boot inside a clean Ubuntu environment with xvfb +
+#     a headless Chromium running on the same loopback CDP ports it expects in
+#     production (9222 for doubao, 9223 for deepseek).
+#   - The runner exposes /healthz and /run on 127.0.0.1:7000 without crashing.
+#   - /run returns a *structured* failure response (not a 500) when the
+#     attached Chrome is parked on about:blank — i.e. the failure-signal
+#     pipeline works end-to-end.
+#
+# What this workflow does NOT validate (per AGENTS.md `### Tiered E2E`):
+#   - Real Doubao or DeepSeek login (Tier-3, requires operator manual login on
+#     a real VM; tracked in Epic #1110 / Issue #1111).
+#   - Cookie persistence across reboots (Tier-3).
+#   - Production prompt -> response success (Tier-3 business gate).
+#
+# We deliberately point the smoke runner at about:blank instead of doubao.com
+# so the test does not depend on outbound network reachability to the prod
+# engines and does not generate any traffic to them from CI.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "experiments/vm_per_account/**"
+      - "vm_side/**"
+      - ".github/workflows/vm-poc-smoke.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vm-poc-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    name: vm_side runner smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      DOUBAO_CDP_PORT: "9222"
+      DEEPSEEK_CDP_PORT: "9223"
+      RUNNER_HOST: "127.0.0.1"
+      RUNNER_PORT: "7000"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install xvfb + curl + jq
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends xvfb curl jq
+
+      - name: Install vm_side requirements + Chromium via Playwright
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r vm_side/requirements.txt
+          # playwright install --with-deps installs both the chromium binary
+          # (into ~/.cache/ms-playwright/chromium-*/chrome-linux/chrome) AND all
+          # system libs (libnss3, libatk-bridge2.0-0, libgbm1, libasound2 or
+          # libasound2t64 depending on the runner image, etc). This avoids
+          # the "chromium-browser apt package not found on Ubuntu 24.04" failure.
+          python -m playwright install --with-deps chromium
+
+      - name: Resolve Playwright Chromium binary path
+        run: |
+          CHROMIUM_BIN="$(python -c "from playwright.sync_api import sync_playwright; p = sync_playwright().start(); print(p.chromium.executable_path); p.stop()")"
+          echo "Resolved CHROMIUM_BIN=$CHROMIUM_BIN"
+          echo "CHROMIUM_BIN=$CHROMIUM_BIN" >> "$GITHUB_ENV"
+
+      - name: Start headless Chromium on CDP port 9222 (doubao slot)
+        env:
+          PORT: ${{ env.DOUBAO_CDP_PORT }}
+        run: |
+          mkdir -p /tmp/cdp-profile-doubao
+          python - <<'PY'
+          import os, subprocess
+          port = os.environ["PORT"]
+          # --headless=new uses the modern headless mode (Chrome 109+) which
+          # still creates a persistent profile and a default browser context.
+          # Playwright connect_over_cdp can attach and see browser.contexts[0].
+          subprocess.Popen([
+              os.environ["CHROMIUM_BIN"],
+              f"--remote-debugging-port={port}",
+              "--remote-debugging-address=127.0.0.1",
+              "--no-sandbox",
+              "--user-data-dir=/tmp/cdp-profile-doubao",
+              "--headless=new",
+              "--disable-gpu",
+              "--no-first-run",
+              "about:blank",
+          ])
+          PY
+          # Wait up to 30s for the CDP port to accept connections.
+          for i in $(seq 1 30); do
+            if curl -fsS "http://127.0.0.1:${PORT}/json/version" >/dev/null 2>&1; then
+              echo "CDP port ${PORT} is up"
+              curl -fsS "http://127.0.0.1:${PORT}/json/version"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "CDP port ${PORT} never came up" >&2
+          exit 1
+
+      - name: Start headless Chromium on CDP port 9223 (deepseek slot)
+        env:
+          PORT: ${{ env.DEEPSEEK_CDP_PORT }}
+        run: |
+          mkdir -p /tmp/cdp-profile-deepseek
+          python - <<'PY'
+          import os, subprocess
+          port = os.environ["PORT"]
+          subprocess.Popen([
+              os.environ["CHROMIUM_BIN"],
+              f"--remote-debugging-port={port}",
+              "--remote-debugging-address=127.0.0.1",
+              "--no-sandbox",
+              "--user-data-dir=/tmp/cdp-profile-deepseek",
+              "--headless=new",
+              "--disable-gpu",
+              "--no-first-run",
+              "about:blank",
+          ])
+          PY
+          for i in $(seq 1 30); do
+            if curl -fsS "http://127.0.0.1:${PORT}/json/version" >/dev/null 2>&1; then
+              echo "CDP port ${PORT} is up"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "CDP port ${PORT} never came up" >&2
+          exit 1
+
+      - name: Start vm_side runner in background
+        run: |
+          # Launch under xvfb-run to give Playwright a DISPLAY in case any of
+          # its in-process bits expect one. The Chromiums above are headless
+          # so xvfb is belt-and-suspenders.
+          xvfb-run -a python -m vm_side runner >/tmp/vm_side.log 2>&1 &
+          echo "vm_side PID: $!"
+          # Wait up to 30s for /healthz to come back 200.
+          for i in $(seq 1 30); do
+            if curl -fsS "http://${RUNNER_HOST}:${RUNNER_PORT}/healthz" >/dev/null 2>&1; then
+              echo "runner /healthz is up"
+              curl -fsS "http://${RUNNER_HOST}:${RUNNER_PORT}/healthz" | tee /tmp/healthz.json
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "runner /healthz never came up" >&2
+          tail -n 200 /tmp/vm_side.log >&2 || true
+          exit 1
+
+      - name: Smoke assertion — POST /run engine=doubao prompt=hello
+        run: |
+          # The expectation: the CODE PATH works (no Python exception, HTTP
+          # 200, structured RunResponse). Because the attached Chrome is on
+          # about:blank, the runner cannot navigate to doubao.com without
+          # network; even if it does, the input selector won't match. The
+          # response should report success=false with failure_signals
+          # populated. This is the Tier-0 smoke assertion: structured failure
+          # is the correct behavior, NOT a stack trace.
+          RESP="$(curl -fsS -X POST \
+            "http://${RUNNER_HOST}:${RUNNER_PORT}/run" \
+            -H 'content-type: application/json' \
+            -d '{"engine":"doubao","prompt":"hello","timeout_secs":30}')"
+          echo "$RESP" | tee /tmp/run.json
+          # Parse with jq and assert structure.
+          SUCCESS="$(echo "$RESP" | jq -r '.success')"
+          SIGNALS="$(echo "$RESP" | jq -r '.failure_signals | length')"
+          RAW_LEN="$(echo "$RESP" | jq -r '.raw_text_len')"
+          echo "success=$SUCCESS failure_signals_count=$SIGNALS raw_text_len=$RAW_LEN"
+          if [ "$SUCCESS" != "false" ]; then
+            echo "EXPECTED success=false (Chrome on about:blank cannot fulfil the prompt)" >&2
+            exit 1
+          fi
+          if [ "$SIGNALS" = "0" ]; then
+            echo "EXPECTED at least one failure_signal but got zero" >&2
+            exit 1
+          fi
+          echo "Tier-0 smoke OK: structured failure reported, no 500 / no traceback"
+
+      - name: Cross-component smoke — poc_runner.py drives the same Chromium via CDP
+        run: |
+          # This step validates the CROSS-COMPONENT path that the user flagged
+          # as untested: poc_runner.py (operator-facing PoC driver) → Playwright
+          # connect_over_cdp → the SAME headless Chromium that vm_side.runner
+          # uses for /run. Without this step, vm_side and poc_runner.py would
+          # be tested in isolation and the wiring between them (CDP attach,
+          # browser.contexts[0] reuse, failure-signal pipeline) would only be
+          # validated by the operator on a real VM — too late.
+          #
+          # Like the vm_side /run smoke above, this is a Tier-0 structural
+          # check: about:blank can't fulfil a Doubao prompt, so we expect
+          # success=false with failure_signals[] populated and exit code 1
+          # from poc_runner. The acceptance is "no Python exception, valid
+          # result.json structure", not business success.
+          set +e
+          python experiments/vm_per_account/poc_runner.py \
+            --cdp-endpoint "http://127.0.0.1:${DOUBAO_CDP_PORT}" \
+            --engine doubao \
+            --prompt-text "hello" \
+            --prompt-id ci_cross_smoke \
+            --timeout-secs 30 \
+            --output-dir /tmp/poc_runner_runs
+          POC_EXIT=$?
+          set -e
+          echo "poc_runner exit code: $POC_EXIT"
+          ARTIFACT_DIR="/tmp/poc_runner_runs/doubao/ci_cross_smoke/1"
+          if [ ! -f "$ARTIFACT_DIR/result.json" ]; then
+            echo "EXPECTED result.json at $ARTIFACT_DIR/result.json" >&2
+            ls -la /tmp/poc_runner_runs/ >&2 || true
+            exit 1
+          fi
+          cat "$ARTIFACT_DIR/result.json" | tee /tmp/poc_cross.json
+          # Structural assertions (NOT business):
+          SUCCESS="$(jq -r '.success' "$ARTIFACT_DIR/result.json")"
+          SIGNALS="$(jq -r '.failure_signals | length' "$ARTIFACT_DIR/result.json")"
+          ENGINE="$(jq -r '.engine' "$ARTIFACT_DIR/result.json")"
+          if [ "$ENGINE" != "doubao" ]; then
+            echo "EXPECTED engine=doubao in result.json, got $ENGINE" >&2
+            exit 1
+          fi
+          if [ "$SUCCESS" != "false" ]; then
+            echo "EXPECTED success=false (about:blank can't fulfil prompt), got $SUCCESS" >&2
+            exit 1
+          fi
+          if [ "$SIGNALS" = "0" ]; then
+            echo "EXPECTED at least one failure_signal, got 0" >&2
+            exit 1
+          fi
+          # poc_runner exits 1 on any non-success — confirm exit aligned with result.
+          if [ "$POC_EXIT" != "1" ]; then
+            echo "EXPECTED poc_runner exit 1 on structured failure, got $POC_EXIT" >&2
+            exit 1
+          fi
+          echo "Cross-component smoke OK: poc_runner.py + vm_side share the same CDP target"
+
+      - name: Smoke assertion — POST /run rejects unknown engine
+        run: |
+          STATUS="$(curl -s -o /tmp/bad.json -w '%{http_code}' \
+            -X POST "http://${RUNNER_HOST}:${RUNNER_PORT}/run" \
+            -H 'content-type: application/json' \
+            -d '{"engine":"unknown_engine","prompt":"hi"}')"
+          echo "status=$STATUS body=$(cat /tmp/bad.json)"
+          # Either pydantic validation 422 or app-level 400 is acceptable.
+          if [ "$STATUS" != "400" ] && [ "$STATUS" != "422" ]; then
+            echo "EXPECTED 400 or 422 for unknown engine, got $STATUS" >&2
+            exit 1
+          fi
+
+      - name: Run vm_side unit tests
+        run: |
+          python -m pip install pytest pytest-asyncio
+          pytest tests/vm_side/ -v --tb=short
+
+      - name: Upload smoke artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vm-poc-smoke-artifacts
+          path: |
+            /tmp/vm_side.log
+            /tmp/healthz.json
+            /tmp/run.json
+            /tmp/bad.json
+          if-no-files-found: ignore
