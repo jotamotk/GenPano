@@ -47,7 +47,7 @@ jobs:
 
             echo "=== alembic upgrade head locks (postgres) ==="
             docker compose exec -T postgres psql -X -U genpano -d genpano -P pager=off -c "
-              SELECT pid, state, wait_event_type, wait_event, query
+              SELECT pid, state, wait_event_type, wait_event, xact_start, state_change, LEFT(query, 200) AS query
               FROM pg_stat_activity
               WHERE datname='genpano' AND state <> 'idle' AND query LIKE '%llm_accounts%';
             " || true
@@ -56,7 +56,13 @@ jobs:
             docker compose exec -T postgres psql -X -U genpano -d genpano -P pager=off -c "
               SELECT pg_terminate_backend(pid)
               FROM pg_stat_activity
-              WHERE datname='genpano' AND state <> 'idle' AND wait_event = 'relation' AND query LIKE '%llm_accounts%';
+              WHERE datname='genpano'
+                AND state IN ('idle in transaction', 'idle in transaction (aborted)', 'active')
+                AND (
+                  (wait_event = 'relation' AND query LIKE '%llm_accounts%')
+                  OR (state = 'idle in transaction' AND query LIKE '%llm_accounts%' AND xact_start < NOW() - interval '30 seconds')
+                  OR (state = 'idle in transaction (aborted)' AND query LIKE '%llm_accounts%')
+                );
             " || true
 
             echo "=== SUMMARY ==="
