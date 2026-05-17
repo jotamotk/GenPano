@@ -1331,10 +1331,96 @@ async def test_luban_get_keyword_sms_raises_with_length_and_sha8_when_no_digits(
     assert "无法从短信中提取验证码" in message
     assert "[sms-text-redacted" in message
     assert f"len={expected_len}" in message
-    assert f"sha8={expected_sha8}" in message
-    # sha8 must be exactly 8 hex chars (not raw body, not the full digest).
-    sha8_match = re.search(r"sha8=([0-9a-f]+)", message)
+    # Refs PR #1101 Codex P2 review
+    # (https://github.com/jotamotk/trash_test/pull/1101#discussion_r3253891280):
+    # the sha8 must be emitted with a leading ``h`` so the downstream
+    # ``redact_sensitive_text`` cannot match it as a 4–8 digit SMS code.
+    assert f"sha8=h{expected_sha8}" in message
+    # sha8 must be exactly 8 hex chars after the ``h`` prefix (not raw
+    # body, not the full digest).
+    sha8_match = re.search(r"sha8=h([0-9a-f]+)", message)
     assert sha8_match is not None
     assert len(sha8_match.group(1)) == 8
     # And the body itself must NOT leak into the error message.
     assert fixture_body not in message
+
+
+@pytest.mark.asyncio
+async def test_luban_sha8_survives_redact_sensitive_text_for_all_digit_hash(
+    monkeypatch,
+) -> None:
+    """Refs PR #1101 Codex P2 review
+    (https://github.com/jotamotk/trash_test/pull/1101#discussion_r3253891280):
+    the ``sha8=`` diagnostic suffix is emitted by ``get_keyword_sms`` and
+    then wrapped in ``base.py`` through ``redact_sensitive_text``, whose
+    ``SMS_CODE_RE = re.compile(r"(?<!\\*)\\b\\d{4,8}\\b")`` would replace
+    a bare all-digit 8-char sha8 with ``[sms-code-redacted]`` — silently
+    dropping ~10% of diagnostic samples (probability
+    ``(10/16)^8 ≈ 10%``). This test pins the worker log path: it picks a
+    deterministic fixture whose ``sha256[:8]`` is all digits (the worst
+    case Codex flagged), runs the full RuntimeError string through
+    ``redact_sensitive_text``, and asserts the ``sha8=h<hex>`` token
+    survives intact. If the production code ever regresses to emitting
+    a bare ``sha8={hex}`` (no ``h`` prefix), this test fails for the same
+    reason Codex flagged: the 8-digit run is matched and clobbered."""
+    import hashlib
+    import re
+
+    from geo_tracker.agent.sms_redaction import redact_sensitive_text
+
+    monkeypatch.setenv("LUBANSMS_TOKEN", "unit-token")
+    from geo_tracker.agent.sms_login.luban_client import LubanSMSClient
+
+    # Deterministic fixture: ``sha256("欢迎使用豆包，请激活账号 126")[:8] ==
+    # "39752629"`` (all digits). Chosen by brute force over integer
+    # suffixes so a future reader can re-derive it offline.
+    fixture_body = "欢迎使用豆包，请激活账号 126"
+    expected_sha8 = hashlib.sha256(fixture_body.encode()).hexdigest()[:8]
+    assert expected_sha8.isdigit(), (
+        "fixture must produce an all-digit sha8 so the test exercises "
+        "the redact_sensitive_text SMS_CODE_RE worst case"
+    )
+    assert expected_sha8 == "39752629"
+
+    class _FakeResponse:
+        def __init__(self, payload: dict) -> None:
+            self._payload = payload
+
+        def json(self) -> dict:
+            return self._payload
+
+    class _FakeHttpxClient:
+        async def get(self, _url: str, params=None) -> _FakeResponse:
+            return _FakeResponse({"code": 0, "msg": fixture_body})
+
+        async def aclose(self) -> None:
+            return None
+
+    client = LubanSMSClient()
+    client.client = _FakeHttpxClient()
+
+    with pytest.raises(RuntimeError) as excinfo:
+        await client.get_keyword_sms("13800000000", "豆包", timeout=5)
+
+    raw_message = str(excinfo.value)
+    # Sanity: production string carries the h-prefixed sha8.
+    assert f"sha8=h{expected_sha8}" in raw_message
+
+    # The actual regression check: run the RuntimeError text through the
+    # exact redaction hop used by ``base.py`` and confirm the ``sha8=h``
+    # token is preserved end-to-end.
+    redacted = redact_sensitive_text(excinfo.value)
+    assert f"sha8=h{expected_sha8}" in redacted, (
+        "h-prefixed sha8 must survive redact_sensitive_text even when "
+        f"sha8 is all-digits; got: {redacted!r}"
+    )
+    assert "[sms-code-redacted]" not in redacted.split("sha8=", 1)[1], (
+        "the sha8 token must NOT be clobbered by SMS_CODE_RE; if this "
+        "fails the production code likely regressed to emitting bare "
+        "sha8={hex} without the leading h"
+    )
+    # Belt-and-braces: extracting the sha8 from the redacted string must
+    # still yield the exact 8-digit hash.
+    match = re.search(r"sha8=h([0-9a-f]{8})", redacted)
+    assert match is not None
+    assert match.group(1) == expected_sha8
