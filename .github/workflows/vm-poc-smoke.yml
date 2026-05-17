@@ -56,23 +56,27 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install xvfb + chromium system deps
+      - name: Install xvfb + curl + jq
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y --no-install-recommends \
-            xvfb chromium-browser \
-            libnss3 libatk-bridge2.0-0 libdrm2 libgbm1 libxkbcommon0 libxcomposite1 \
-            libxdamage1 libxfixes3 libxrandr2 libgtk-3-0 libasound2 \
-            curl jq
-          # chromium-browser is the Snap-less APT binary on Ubuntu 22.04+/24.04;
-          # the executable is /usr/bin/chromium-browser.
-          chromium-browser --version || true
+          sudo apt-get install -y --no-install-recommends xvfb curl jq
 
-      - name: Install vm_side requirements
+      - name: Install vm_side requirements + Chromium via Playwright
         run: |
           python -m pip install --upgrade pip
           pip install -r vm_side/requirements.txt
+          # playwright install --with-deps installs both the chromium binary
+          # (into ~/.cache/ms-playwright/chromium-*/chrome-linux/chrome) AND all
+          # system libs (libnss3, libatk-bridge2.0-0, libgbm1, libasound2 or
+          # libasound2t64 depending on the runner image, etc). This avoids
+          # the "chromium-browser apt package not found on Ubuntu 24.04" failure.
           python -m playwright install --with-deps chromium
+
+      - name: Resolve Playwright Chromium binary path
+        run: |
+          CHROMIUM_BIN="$(python -c "from playwright.sync_api import sync_playwright; p = sync_playwright().start(); print(p.chromium.executable_path); p.stop()")"
+          echo "Resolved CHROMIUM_BIN=$CHROMIUM_BIN"
+          echo "CHROMIUM_BIN=$CHROMIUM_BIN" >> "$GITHUB_ENV"
 
       - name: Start headless Chromium on CDP port 9222 (doubao slot)
         env:
@@ -86,7 +90,7 @@ jobs:
           # still creates a persistent profile and a default browser context.
           # Playwright connect_over_cdp can attach and see browser.contexts[0].
           subprocess.Popen([
-              "chromium-browser",
+              os.environ["CHROMIUM_BIN"],
               f"--remote-debugging-port={port}",
               "--remote-debugging-address=127.0.0.1",
               "--no-sandbox",
@@ -118,7 +122,7 @@ jobs:
           import os, subprocess
           port = os.environ["PORT"]
           subprocess.Popen([
-              "chromium-browser",
+              os.environ["CHROMIUM_BIN"],
               f"--remote-debugging-port={port}",
               "--remote-debugging-address=127.0.0.1",
               "--no-sandbox",
