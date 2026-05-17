@@ -31,19 +31,19 @@ on:
   workflow_dispatch:
     inputs:
       action:
-        description: 'What to do on the ECS'
+        description: 'What to do on the ECS. Values: status / inspect / up / down / restart / logs / pull / bootstrap / destroy'
         required: true
         type: choice
         options:
-          - status        # docker compose ps + free -h + uptime + ufw
-          - inspect       # find genpano/trash_test repo path + disk usage (read-only)
-          - up            # write .env from secrets, then docker compose up -d
-          - down          # docker compose down (keeps profile volumes)
-          - restart       # docker compose restart <container>
-          - logs          # docker compose logs --tail=200 <container>
-          - pull          # git pull on ECS_REPO_PATH (sync to main)
-          - bootstrap     # install docker + ufw + clone repo (first run)
-          - destroy       # docker compose down + remove profile volumes (DANGER)
+          - status
+          - inspect
+          - up
+          - down
+          - restart
+          - logs
+          - pull
+          - bootstrap
+          - destroy
         default: 'status'
       container:
         description: 'Which container (for restart/logs). Use "all" or leave blank for all.'
