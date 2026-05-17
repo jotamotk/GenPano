@@ -186,6 +186,10 @@ class LocalLaunchConnector(BrowserConnector):
           launch, or ``None``. Caller is responsible for calling
           ``qg_proxy_client.report_failure(lease.ip_port)`` when
           appropriate (IP-block failure modes).
+        - :attr:`injected_cookies_count` -- int. Number of cookies the
+          connector added to the context via ``add_cookies``. The
+          ChatGPT session-refresh block in ``guest_executor`` reads
+          this to decide whether to attempt the post-launch refresh.
     """
 
     def __init__(
@@ -217,6 +221,13 @@ class LocalLaunchConnector(BrowserConnector):
         self.local_storage_data: dict = {}
         self.use_camoufox: bool = False
         self.active_qg_lease: Any = None
+        # Refs #1113: ChatGPT post-launch session-refresh in
+        # ``guest_executor._execute_once`` gates on whether any cookies
+        # were actually injected. Surfaced as an int rather than the
+        # raw list so the inner cookie payload (which may contain
+        # sensitive session tokens) does not leak across the connector
+        # boundary; truthiness alone is enough for the gate.
+        self.injected_cookies_count: int = 0
 
     async def acquire_context(self, llm: str, account) -> "BrowserContext":
         """Launch the browser and return a cookie-injected ``BrowserContext``.
@@ -291,6 +302,12 @@ class LocalLaunchConnector(BrowserConnector):
             logger.info(f"[{llm}] 已注入 {len(injected_cookies)} 个 cookies")
 
         self.local_storage_data = local_storage_data
+        # Number of cookies actually injected into the context.
+        # ``guest_executor`` reads this in its ChatGPT post-launch
+        # session-refresh block (the block gates on "did we inject
+        # cookies?"); preserving the truthiness signal across the
+        # extraction is part of the zero-behavior-change contract.
+        self.injected_cookies_count = len(injected_cookies)
         return context
 
     async def release_context(self, context: "BrowserContext") -> None:

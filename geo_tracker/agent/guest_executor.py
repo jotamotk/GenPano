@@ -16,9 +16,8 @@ import re
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
-from urllib.parse import urlparse
 
-from playwright.async_api import BrowserContext, Page
+from playwright.async_api import Page
 
 from geo_tracker.agent.browser_lifecycle import cleanup_browser_resources
 from geo_tracker.agent.executors import BrowserConnector, LocalLaunchConnector
@@ -721,6 +720,13 @@ class GuestQueryExecutor:
             # downstream code path is unchanged.
             local_storage_data = getattr(active_connector, "local_storage_data", {})
             use_camoufox = getattr(active_connector, "use_camoufox", False)
+            # Mirrors the previous local ``injected_cookies`` list — only
+            # its truthiness is read downstream (ChatGPT session-refresh
+            # block), so we expose the count rather than leaking the
+            # cookie payload across the connector boundary.
+            injected_cookies = getattr(
+                active_connector, "injected_cookies_count", 0
+            )
             is_domestic = llm in DOMESTIC_LLMS
             # Refs #963: qg lease lifecycle stays on the executor so the
             # existing failure-handling finally block can call
