@@ -1367,11 +1367,17 @@ def execute_query(self, query_id: int) -> dict:
                 # 账号失败上报走独立 try，避免把主状态写回再次打断
                 if account_id and pool:
                     try:
+                        # Refs #963 Codex P1 on PR #1108: don't pass
+                        # ``query_id`` — ``settle_failure`` has a kw-only
+                        # ``reason`` signature (account_quota_settlement.py:37-43)
+                        # and the unsupported kwarg raised ``TypeError``
+                        # caught by the surrounding ``except``, leaking
+                        # the reserved account quota under exception
+                        # failures until capacity exhausted.
                         await quota_settlement.settle_failure(
                             db,
                             pool,
                             reason="exception",
-                            query_id=query_id,
                         )
                     except Exception as pool_err:
                         logger.error(
