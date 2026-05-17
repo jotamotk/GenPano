@@ -32,7 +32,7 @@ dispatch — it executes inline, then commits. Audit emit uses
 from __future__ import annotations
 
 import logging
-from typing import Annotated
+from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
@@ -118,12 +118,31 @@ async def retry_query_via_vm(
         run_quick_retry,
     )
 
+    # Optional body params: {"vm_id": "doubao-01"|"doubao-02"} so the
+    # operator can pick which container (= which logged-in Doubao account)
+    # runs the retry. Maps to CDP port via VM_QUICK_RETRY_CDP_<id> env or
+    # the static doubao-01 → 9222, doubao-02 → 9223 convention. Empty
+    # body keeps default behaviour (env-derived endpoint, vm_id from env).
+    body: dict = {}
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    requested_vm = (body.get("vm_id") if isinstance(body, dict) else None) or None
+    cdp_override: Optional[str] = None  # type: ignore[name-defined]
+    if requested_vm == "doubao-01":
+        cdp_override = "http://127.0.0.1:9222"
+    elif requested_vm == "doubao-02":
+        cdp_override = "http://127.0.0.1:9223"
+
     try:
         result = await run_quick_retry(
             query_id=query_id,
             query_text=query_text,
             target_llm=target_llm,
             session=session,
+            cdp_endpoint=cdp_override,
+            vm_id=requested_vm,
         )
     except QuickRetryError as exc:
         # Audit the failed attempt so the operator log shows the
