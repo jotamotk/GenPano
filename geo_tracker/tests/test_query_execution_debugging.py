@@ -7705,6 +7705,104 @@ def test_classify_execution_failure_unchanged_for_existing_callers():
     )
 
 
+# Refs Epic #1110 / Issue #1114. Codex review on PR #1121 (Bug 2).
+#
+# RemoteCDPConnector raises ``AdapterError(code="PROXY_DEAD", ...)`` when
+# the VM is unreachable. The error bubbles up through
+# ``GuestQueryExecutor._execute_once``'s generic ``except Exception``,
+# which calls ``resolve_execution_failure_reason(exc, prior)``.
+#
+# Before the Bug 2 fix, that function fell through to
+# ``classify_execution_failure`` which mapped AdapterError to the generic
+# ``browser_exception``. The downstream consequence: ``AccountPool.report_failure``
+# never saw ``reason == "PROXY_DEAD"`` on a vm_session account, so the
+# 30-minute VM-local cooldown branch (account_pool.py:624) was never
+# exercised → the dispatcher kept retrying the dead VM/account, defeating
+# the entire point of the vm_session error taxonomy.
+#
+# The fix propagates ``exc.code`` directly when it matches the known
+# ADAPTER_ERROR_CODES set so PROXY_DEAD / PAGE_CRASHED /
+# NO_ACCOUNT_AVAILABLE survive the trip to ``report_failure``.
+def test_resolve_execution_failure_reason_propagates_adapter_proxy_dead_code():
+    """An AdapterError(code="PROXY_DEAD") MUST surface as ``PROXY_DEAD``
+    in the reason string so AccountPool's vm_session cooldown branch
+    matches it. This is the Bug 2 acceptance assertion."""
+    from geo_tracker.agent.executors.remote_vm import AdapterError
+
+    exc = AdapterError("PROXY_DEAD", detail="vm 'vm-001' unreachable", proxyId="vm-001")
+    assert resolve_execution_failure_reason(exc, prior=None) == "PROXY_DEAD"
+
+
+def test_resolve_execution_failure_reason_propagates_adapter_page_crashed_code():
+    """PAGE_CRASHED is the canonical code for "VM Chrome has no default
+    context" — propagated identically so the retry layer can restart the
+    context rather than burning an account strike."""
+    from geo_tracker.agent.executors.remote_vm import AdapterError
+
+    exc = AdapterError("PAGE_CRASHED", detail="vm chrome has no default context")
+    assert resolve_execution_failure_reason(exc, prior=None) == "PAGE_CRASHED"
+
+
+def test_resolve_execution_failure_reason_propagates_adapter_no_account_code():
+    """NO_ACCOUNT_AVAILABLE on a vm_session account without a vm_id is
+    an account-config bug; propagate the code so the failure log shows
+    the canonical taxonomy string instead of opaque ``browser_exception``."""
+    from geo_tracker.agent.executors.remote_vm import AdapterError
+
+    exc = AdapterError(
+        "NO_ACCOUNT_AVAILABLE", detail="vm_session account without vm_id"
+    )
+    assert resolve_execution_failure_reason(exc, prior=None) == "NO_ACCOUNT_AVAILABLE"
+
+
+def test_resolve_execution_failure_reason_unknown_code_falls_back_to_classifier():
+    """An exception with a ``code`` attribute that is NOT in the
+    canonical ADAPTER_ERROR_CODES set must NOT pollute the failure
+    taxonomy — fall back to the existing classifier. This guards
+    against accidentally forwarding e.g. an OSError's ``errno`` or a
+    third-party HTTP library's error code into the reason string."""
+
+    class _StrayException(Exception):
+        code = "SOMETHING_RANDOM"
+
+    exc = _StrayException("not in the adapter taxonomy")
+    # Generic exception with no timeout/epipe markers → classifier picks
+    # "browser_exception", NOT the stray "SOMETHING_RANDOM".
+    assert (
+        resolve_execution_failure_reason(exc, prior=None) == "browser_exception"
+    )
+
+
+def test_resolve_execution_failure_reason_prior_still_wins_over_adapter_code():
+    """The Refs #928 contract still holds: a precise inner-branch
+    ``prior`` reason wins over the exception's own code. If the executor
+    has already classified the failure (e.g. ``doubao_not_logged_in``)
+    we must not overwrite it just because the bubbling exception carries
+    an AdapterError code."""
+    from geo_tracker.agent.executors.remote_vm import AdapterError
+
+    exc = AdapterError("PROXY_DEAD", detail="late-bubbling adapter error")
+    assert (
+        resolve_execution_failure_reason(exc, prior="doubao_not_logged_in")
+        == "doubao_not_logged_in"
+    )
+
+
+def test_adapter_error_codes_set_is_aligned_with_remote_vm_module():
+    """The ADAPTER_ERROR_CODES allow-list in query_failure.py is a
+    deliberate duplication of the codes RemoteCDPConnector raises (avoid
+    importing the Playwright-heavy remote_vm module here). Pin the
+    alignment so a new code added in remote_vm.py without updating
+    query_failure.py is caught by CI rather than silently classifying as
+    ``browser_exception`` again."""
+    from geo_tracker.tasks.query_failure import ADAPTER_ERROR_CODES
+
+    # The three codes documented in remote_vm.py and ADAPTER_CONTRACT.md §6.1.
+    assert ADAPTER_ERROR_CODES == frozenset(
+        {"NO_ACCOUNT_AVAILABLE", "PROXY_DEAD", "PAGE_CRASHED"}
+    )
+
+
 # Refs #928: the AccountSessionLockTimeout caught at celery_tasks.py used to
 # hardcode failure_reason="browser_timeout", masking Redis session-lock
 # contention as if it were a Playwright timeout. The new value

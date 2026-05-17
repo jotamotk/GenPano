@@ -599,6 +599,80 @@ class AccountPool:
         # failures stay on cooldown so they can retry later without a ban.
         previous_status = str(account.status or "")
 
+        # Refs Epic #1110 / Issue #1114: VM-per-account architecture.
+        # ``execution_mode == 'vm_session'`` accounts have their session
+        # liveness managed by the VM-side login_watchdog (Issue #1115),
+        # not by the per-query ricochet machinery. The local 3-strike
+        # ban gate is wrong for these accounts because:
+        #   - A PROXY_DEAD reason (vm unreachable) is a VM infra
+        #     incident, not an account problem. We must NOT bump
+        #     expired_transition_count toward a permanent ban — that
+        #     would let a transient VM heartbeat blip burn the account.
+        #     Mark a VM-local cooldown so the dispatcher avoids the
+        #     account until the VM comes back, and exit before the
+        #     local cookie-ricochet logic runs.
+        #   - Any other failure code on a vm_session account is owned
+        #     by the watchdog / CAPTCHA pipeline (see
+        #     docs/ADAPTER_CONTRACT.md §6.1 + §9): login_redirect goes
+        #     to login_watchdog, CAPTCHA goes through §9, etc. The
+        #     pool's ricochet counter has no jurisdiction.
+        # The existing ``local_cookie`` branch below is UNCHANGED so
+        # Phase 1 dead-code deploy keeps production behavior identical
+        # until the operator opts an account in to vm_session.
+        execution_mode = getattr(account, "execution_mode", None) or "local_cookie"
+        if execution_mode == "vm_session":
+            if reason == "PROXY_DEAD":
+                # VM-local cooldown 30 minutes per the Issue #1114 plan.
+                # This is intentionally shorter than the ``rate_limit``
+                # COOLDOWN_HOURS (12h) — VM infra blips typically clear
+                # within minutes once the watchdog restarts the
+                # process, so a 30-min ceiling lets the dispatcher
+                # re-attempt without burning a strike.
+                cooldown_minutes = 30
+                account.status = AccountStatus.COOLDOWN.value
+                account.cooldown_until = (
+                    datetime.utcnow() + timedelta(minutes=cooldown_minutes)
+                )
+                _log_account_state_transition(
+                    account,
+                    previous_status=previous_status,
+                    new_status=AccountStatus.COOLDOWN.value,
+                    reason=reason,
+                    evidence=(
+                        evidence
+                        or f"vm_session_proxy_dead_cooldown minutes={cooldown_minutes}"
+                    ),
+                    provider=provider,
+                    price_bucket=price_bucket,
+                    run_id=run_id,
+                )
+                logger.warning(
+                    "account_id=%s engine=%s execution_mode=vm_session "
+                    "PROXY_DEAD → VM-local cooldown %s minutes (no strike). "
+                    "expired_transition_count UNCHANGED at %s.",
+                    account.id,
+                    account.llm_name,
+                    cooldown_minutes,
+                    int(account.expired_transition_count or 0),
+                )
+            else:
+                # Pass-through: login_watchdog and the CAPTCHA pipeline
+                # own these. We still record the rotation log row so
+                # the operator can audit, but we do NOT mutate status
+                # or strike count.
+                logger.info(
+                    "account_id=%s engine=%s execution_mode=vm_session "
+                    "reason=%s → pass-through (login_watchdog owns "
+                    "session liveness; pool ricochet counter not bumped)",
+                    account.id,
+                    account.llm_name,
+                    reason,
+                )
+            log = AccountRotationLog(account_id=account_id, reason=reason)
+            self.db.add(log)
+            await self.db.commit()
+            return
+
         if reason in EXPIRED_ACCOUNT_REASONS:
             # Refs #963 audit pain point #2: increment the per-account
             # expired-transition counter BEFORE deciding final status. Doubao

@@ -204,6 +204,14 @@ def _run_query_execution_case(
     monkeypatch.setattr(celery_tasks, "get_task_async_session", get_session)
     monkeypatch.setattr(celery_tasks, "acquire_query_account", fake_acquire_query_account)
     monkeypatch.setattr(celery_tasks, "GuestQueryExecutor", FakeGuestQueryExecutor)
+
+    # Refs #1114: celery_tasks now constructs GuestQueryExecutor via
+    # select_executor() which routes by account.execution_mode + feature
+    # flags. Patch select_executor too so the fake survives the indirection.
+    def _fake_select_executor(account, *args, **kwargs):
+        return FakeGuestQueryExecutor()
+
+    monkeypatch.setattr(celery_tasks, "select_executor", _fake_select_executor)
     monkeypatch.setattr(celery_tasks, "analyze_response", FakeAnalyzeResponseTask)
 
     result = celery_tasks.execute_query.run(query_id)

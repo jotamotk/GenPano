@@ -3,6 +3,25 @@ from __future__ import annotations
 from typing import Any
 
 
+# Refs Epic #1110 / Issue #1114. Codex review on PR #1121 (Bug 2).
+# AdapterError codes raised by ``RemoteCDPConnector`` (see
+# ``geo_tracker/agent/executors/remote_vm.py`` AdapterError class and
+# ``docs/ADAPTER_CONTRACT.md`` §6.1). The set is duplicated here rather
+# than imported because ``geo_tracker.agent.executors.remote_vm`` imports
+# Playwright at module load — this module is consumed by
+# ``celery_tasks.py`` paths that must remain importable in lightweight
+# test environments where Playwright is stubbed. The list is short and
+# changes only when the canonical taxonomy in ADAPTER_CONTRACT.md §6.1
+# does, so the duplication is bounded.
+ADAPTER_ERROR_CODES = frozenset(
+    {
+        "NO_ACCOUNT_AVAILABLE",
+        "PROXY_DEAD",
+        "PAGE_CRASHED",
+    }
+)
+
+
 INFRASTRUCTURE_FAILURE_REASONS = frozenset(
     {
         "browser_epipe",
@@ -74,6 +93,25 @@ def resolve_execution_failure_reason(exc: BaseException, prior: str | None) -> s
     # The outer except must not overwrite that precise reason with "browser_timeout".
     if prior:
         return prior
+    # Refs Epic #1110 / Issue #1114. Codex review on PR #1121 (Bug 2).
+    # ``RemoteCDPConnector`` raises ``AdapterError(code=...)`` whose ``code``
+    # is the canonical taxonomy string (PROXY_DEAD / NO_ACCOUNT_AVAILABLE /
+    # PAGE_CRASHED, per ADAPTER_CONTRACT.md §6.1). Before this branch, those
+    # codes were classified as the generic ``browser_exception`` by
+    # ``classify_execution_failure`` — which meant ``AccountPool.report_failure``
+    # never saw ``reason == "PROXY_DEAD"`` on a vm_session account, so the
+    # 30-minute VM-local cooldown branch (account_pool.py:624) was never
+    # exercised and the dispatcher kept retrying the dead VM.
+    #
+    # Propagate the code directly when it matches the known set so the
+    # cooldown / pool side-effect machinery can react. We allow-list the
+    # codes rather than blindly forwarding ``exc.code`` so an unrelated
+    # third-party exception that happens to have a ``code`` attribute
+    # (e.g. ``OSError`` subclasses with ``errno`` or some HTTP libs) can't
+    # pollute the failure-reason taxonomy.
+    exc_code = getattr(exc, "code", None)
+    if isinstance(exc_code, str) and exc_code in ADAPTER_ERROR_CODES:
+        return exc_code
     return classify_execution_failure(exc)
 
 

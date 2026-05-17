@@ -27,6 +27,7 @@ from geo_tracker.agent.browser_lifecycle import (
     cleanup_browser_resources,
     install_resource_blocker,
 )
+from geo_tracker.agent.executors.router import select_executor
 from geo_tracker.agent.guest_executor import GuestQueryExecutor, GUEST_LLM_CONFIG, DOMESTIC_LLMS
 from geo_tracker.agent.response_validation import (
     chatgpt_auth_state_reason,
@@ -1028,7 +1029,15 @@ def execute_query(self, query_id: int) -> dict:
 
                 async def _execute_browser_session() -> LLMResponse | None:
                     nonlocal guest_executor
-                    guest_executor = GuestQueryExecutor(
+                    # Refs Epic #1110 / Issue #1114: per-account executor
+                    # routing. ``select_executor`` picks the
+                    # LocalLaunchConnector (default) or RemoteCDPConnector
+                    # based on the three feature gates (VM_EXECUTOR_ENABLED,
+                    # VM_EXECUTOR_ENGINES, account.execution_mode). All gates
+                    # default OFF, so existing production traffic continues
+                    # to hit LocalLaunchConnector with no behavior change.
+                    guest_executor = select_executor(
+                        account,
                         proxy_url=proxy_url,
                         account_cookies=account_cookies,
                     )
