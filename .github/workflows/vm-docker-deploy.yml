@@ -1,0 +1,237 @@
+name: VM Docker Deploy (SSH to ECS)
+
+# CI/CD-driven deployment of the VM-per-account Docker containers on the
+# user's existing ECS (host: $ECS_SSH_HOST). Operator dispatches this
+# workflow with an action verb; CI SSHes in with the key from secret and
+# runs the requested docker-compose command.
+#
+# Required secrets (set in repo Settings → Secrets and variables → Actions):
+#   ECS_SSH_PRIVATE_KEY   - PEM-format private key (ed25519 or RSA)
+#                           — corresponding pubkey must be in ECS's
+#                             ~/.ssh/authorized_keys for ECS_SSH_USER
+#   ECS_SSH_HOST          - ECS public IP or DNS name (e.g. 116.62.36.xxx)
+#   ECS_SSH_USER          - SSH login user (e.g. "root" or "ubuntu")
+#   ECS_REPO_PATH         - absolute path on ECS where the repo is cloned
+#                           (e.g. /opt/trash_test or /root/trash_test).
+#                           Must contain experiments/vm_per_account/docker/.
+#   VNC_PASSWORD_01       - password for doubao-01 noVNC (e.g. openssl rand -hex 4)
+#   VNC_PASSWORD_02       - password for doubao-02 noVNC
+#
+# Optional secrets:
+#   ECS_SSH_PORT          - default 22
+#
+# The first time you run this workflow:
+#   1. Set action=bootstrap to install docker + ufw rules + clone repo +
+#      build images. Idempotent — safe to re-run.
+#   2. Set action=up to start containers.
+#
+# Operator browser access to noVNC: see job step output for the SSH tunnel
+# command you can run from your local machine (Windows PowerShell or any
+# OpenSSH client) to forward ports 6080-6081 + 9222-9223 to localhost.
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'What to do on the ECS'
+        required: true
+        type: choice
+        options:
+          - status        # docker compose ps + free -h + uptime
+          - up            # write .env from secrets, then docker compose up -d
+          - down          # docker compose down (keeps profile volumes)
+          - restart       # docker compose restart <container>
+          - logs          # docker compose logs --tail=200 <container>
+          - pull          # git pull on ECS_REPO_PATH (sync to main)
+          - bootstrap     # install docker + ufw + clone repo (first run)
+          - destroy       # docker compose down + remove profile volumes (DANGER)
+        default: 'status'
+      container:
+        description: 'Which container (for restart/logs). Use "all" or leave blank for all.'
+        required: false
+        default: ''
+        type: string
+      tail_lines:
+        description: 'How many log lines (for logs action)'
+        required: false
+        default: '200'
+        type: string
+
+jobs:
+  ssh-deploy:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+
+    steps:
+      - name: Setup SSH key + known_hosts
+        env:
+          ECS_SSH_PRIVATE_KEY: ${{ secrets.ECS_SSH_PRIVATE_KEY }}
+          ECS_SSH_HOST: ${{ secrets.ECS_SSH_HOST }}
+          ECS_SSH_PORT: ${{ secrets.ECS_SSH_PORT }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 0700 ~/.ssh
+          printf '%s\n' "$ECS_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 0600 ~/.ssh/id_ed25519
+          PORT="${ECS_SSH_PORT:-22}"
+          # Trust on first use: scan host key, write to known_hosts
+          ssh-keyscan -p "$PORT" -H "$ECS_SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          # Verify we can reach + auth (run `echo ok`)
+          ssh -i ~/.ssh/id_ed25519 -p "$PORT" \
+            -o BatchMode=yes -o ConnectTimeout=10 \
+            "${{ secrets.ECS_SSH_USER }}@$ECS_SSH_HOST" 'echo ok'
+
+      - name: Run requested action on ECS
+        env:
+          ECS_SSH_HOST: ${{ secrets.ECS_SSH_HOST }}
+          ECS_SSH_PORT: ${{ secrets.ECS_SSH_PORT }}
+          ECS_SSH_USER: ${{ secrets.ECS_SSH_USER }}
+          ECS_REPO_PATH: ${{ secrets.ECS_REPO_PATH }}
+          VNC_PASSWORD_01: ${{ secrets.VNC_PASSWORD_01 }}
+          VNC_PASSWORD_02: ${{ secrets.VNC_PASSWORD_02 }}
+          ACTION: ${{ inputs.action }}
+          CONTAINER: ${{ inputs.container }}
+          TAIL_LINES: ${{ inputs.tail_lines }}
+        run: |
+          set -euxo pipefail
+          PORT="${ECS_SSH_PORT:-22}"
+          SSH="ssh -i ~/.ssh/id_ed25519 -p $PORT $ECS_SSH_USER@$ECS_SSH_HOST"
+          DOCKER_DIR="$ECS_REPO_PATH/experiments/vm_per_account/docker"
+
+          case "$ACTION" in
+            bootstrap)
+              # Idempotent: install docker, ufw rules, clone repo if absent
+              $SSH bash <<EOF
+              set -euxo pipefail
+              # docker
+              if ! command -v docker >/dev/null; then
+                curl -fsSL https://get.docker.com | sh
+                usermod -aG docker $ECS_SSH_USER || true
+              fi
+              # ufw — lock noVNC + CDP to loopback + SSH-tunnel only
+              if ! command -v ufw >/dev/null; then
+                apt-get update -qq && apt-get install -y ufw
+              fi
+              ufw --force default deny incoming || true
+              ufw --force default allow outgoing || true
+              ufw allow OpenSSH || ufw allow 22/tcp || true
+              ufw deny in proto tcp to any port 6080:6090 || true
+              ufw deny in proto tcp to any port 9222:9232 || true
+              ufw --force enable
+              ufw status numbered
+              # repo
+              if [ ! -d "$ECS_REPO_PATH/.git" ]; then
+                mkdir -p $(dirname $ECS_REPO_PATH)
+                # Note: requires GitHub clone access from ECS. If repo is
+                # private, configure deploy key separately on ECS.
+                git clone https://github.com/jotamotk/trash_test.git $ECS_REPO_PATH
+              fi
+              cd $ECS_REPO_PATH && git fetch origin main && git checkout main && git pull
+              # build images
+              cd $DOCKER_DIR
+              docker compose build
+              echo "=== bootstrap complete ==="
+              docker --version
+              docker compose version
+              ufw status
+              df -h $ECS_REPO_PATH
+EOF
+              ;;
+            up)
+              # Render .env from secrets, then start
+              $SSH bash <<EOF
+              set -euxo pipefail
+              cd $DOCKER_DIR
+              # Write .env (NEVER logged — secrets piped through bash heredoc)
+              cat > .env <<ENVFILE
+VNC_PASSWORD_01=$VNC_PASSWORD_01
+VNC_PASSWORD_02=$VNC_PASSWORD_02
+ENVFILE
+              chmod 0600 .env
+              docker compose up -d
+              sleep 3
+              docker compose ps
+EOF
+              ;;
+            down)
+              $SSH "cd $DOCKER_DIR && docker compose down"
+              ;;
+            restart)
+              if [ -z "$CONTAINER" ] || [ "$CONTAINER" = "all" ]; then
+                $SSH "cd $DOCKER_DIR && docker compose restart"
+              else
+                $SSH "cd $DOCKER_DIR && docker compose restart $CONTAINER"
+              fi
+              ;;
+            logs)
+              TARGET=""
+              if [ -n "$CONTAINER" ] && [ "$CONTAINER" != "all" ]; then
+                TARGET="$CONTAINER"
+              fi
+              $SSH "cd $DOCKER_DIR && docker compose logs --tail=$TAIL_LINES $TARGET"
+              ;;
+            pull)
+              $SSH "cd $ECS_REPO_PATH && git fetch origin main && git checkout main && git pull"
+              ;;
+            status)
+              $SSH bash <<'EOF'
+              set -uo pipefail
+              echo "=== uptime ==="
+              uptime
+              echo "=== free -h ==="
+              free -h
+              echo "=== df -h / ==="
+              df -h / | head -3
+              echo "=== ufw status ==="
+              sudo ufw status numbered || ufw status numbered || true
+EOF
+              $SSH "cd $DOCKER_DIR && docker compose ps"
+              ;;
+            destroy)
+              # Removes container + named volumes (PROFILES = LOGIN STATE)
+              # Requires manual confirmation via input
+              $SSH bash <<EOF
+              set -euxo pipefail
+              cd $DOCKER_DIR
+              docker compose down -v
+              rm -rf ./data/profile-doubao-01 ./data/profile-doubao-02
+              echo "=== profiles destroyed; next 'up' will need fresh login ==="
+EOF
+              ;;
+            *)
+              echo "Unknown action: $ACTION"
+              exit 2
+              ;;
+          esac
+
+      - name: Print operator next-step (SSH tunnel for noVNC)
+        if: ${{ inputs.action == 'up' || inputs.action == 'bootstrap' }}
+        env:
+          ECS_SSH_USER: ${{ secrets.ECS_SSH_USER }}
+          ECS_SSH_HOST: ${{ secrets.ECS_SSH_HOST }}
+          ECS_SSH_PORT: ${{ secrets.ECS_SSH_PORT }}
+        run: |
+          PORT="${ECS_SSH_PORT:-22}"
+          {
+            echo "## 🚀 Containers up — open noVNC from your local machine"
+            echo ""
+            echo "On your Windows / Mac / Linux operator machine, run this SSH tunnel command:"
+            echo ""
+            echo "\`\`\`bash"
+            echo "ssh -N -p $PORT \\"
+            echo "  -L 6080:127.0.0.1:6080 -L 6081:127.0.0.1:6081 \\"
+            echo "  -L 9222:127.0.0.1:9222 -L 9223:127.0.0.1:9223 \\"
+            echo "  $ECS_SSH_USER@$ECS_SSH_HOST"
+            echo "\`\`\`"
+            echo ""
+            echo "Then open in your local browser:"
+            echo "- http://localhost:6080/vnc.html  (doubao-01)"
+            echo "- http://localhost:6081/vnc.html  (doubao-02)"
+            echo ""
+            echo "VNC password: see VNC_PASSWORD_01 / VNC_PASSWORD_02 secret value (operator-set, not echoed here)."
+            echo ""
+            echo "First-time only: click **Connect** → enter password → in Chrome click **手机号登录** → enter your phone → receive SMS → enter code → done. Session persists in /profile docker volume."
+          } >> "$GITHUB_STEP_SUMMARY"
