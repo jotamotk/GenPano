@@ -1,0 +1,64 @@
+name: Cleanup Stuck Alembic
+
+# Manual-only workflow: SSH into the worker host and kill zombie
+# `docker compose run --rm backend alembic upgrade head` one-shot containers
+# (named like *backend-run-* / *alembic*) that were left behind by a previous
+# deploy. Those zombies hold postgres advisory locks on `alembic_version` /
+# `llm_accounts`, which causes every subsequent `Build & Deploy` run to hang
+# waiting on the migration step.
+#
+# Also terminates orphaned postgres backends that are still blocked on the
+# `llm_accounts` relation lock so the next deploy can acquire the lock cleanly.
+#
+# This workflow is read-only on application code; it only kills containers and
+# terminates postgres backends. It does NOT modify deploy.yml, the alembic
+# migration, or any other workflow.
+on:
+  workflow_dispatch:
+
+jobs:
+  cleanup:
+    name: Kill zombie alembic one-shot containers
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Cleanup via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script_stop: false
+          command_timeout: 10m
+          script: |
+            cd /opt/genpano
+            echo "=== zombie one-shot containers ==="
+            docker ps --filter "name=backend-run" --format '{{.Names}} {{.Status}} {{.Command}}' || true
+            docker ps --filter "name=alembic" --format '{{.Names}} {{.Status}} {{.Command}}' || true
+
+            echo "=== killing them ==="
+            KILLED_BACKEND_RUN=$(docker ps --filter "name=backend-run" -q | wc -l)
+            KILLED_ALEMBIC=$(docker ps --filter "name=alembic" -q | wc -l)
+            docker ps --filter "name=backend-run" -q | xargs -r docker kill || true
+            docker ps --filter "name=alembic" -q | xargs -r docker kill || true
+
+            echo "=== leftover containers ==="
+            docker ps --format '{{.Names}} {{.Status}}' | head -30
+
+            echo "=== alembic upgrade head locks (postgres) ==="
+            docker compose exec -T postgres psql -X -U genpano -d genpano -P pager=off -c "
+              SELECT pid, state, wait_event_type, wait_event, query
+              FROM pg_stat_activity
+              WHERE datname='genpano' AND state <> 'idle' AND query LIKE '%llm_accounts%';
+            " || true
+
+            echo "=== kill orphaned postgres connections waiting on llm_accounts lock ==="
+            docker compose exec -T postgres psql -X -U genpano -d genpano -P pager=off -c "
+              SELECT pg_terminate_backend(pid)
+              FROM pg_stat_activity
+              WHERE datname='genpano' AND state <> 'idle' AND wait_event = 'relation' AND query LIKE '%llm_accounts%';
+            " || true
+
+            echo "=== SUMMARY ==="
+            echo "backend-run containers killed: ${KILLED_BACKEND_RUN}"
+            echo "alembic containers killed:     ${KILLED_ALEMBIC}"
