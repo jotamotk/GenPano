@@ -1,0 +1,11 @@
+{
+  "_comment": "Operator: paste real prompt text for each query_id from production DB. poc_runner.py --prompt-id looks up this file. M1 doesn't strictly require filled prompts — poc_runner.py also accepts --prompt-text directly.",
+  "queries": [
+    {"prompt_id": "184968", "engine": "doubao", "prompt_text": "TODO: paste prompt for query 184968 here"},
+    {"prompt_id": "184971", "engine": "doubao", "prompt_text": "TODO: paste prompt for query 184971 here"},
+    {"prompt_id": "184974", "engine": "doubao", "prompt_text": "TODO: paste prompt for query 184974 here"},
+    {"prompt_id": "control_hello", "engine": "doubao", "prompt_text": "你好"},
+    {"prompt_id": "control_time", "engine": "doubao", "prompt_text": "现在几点了"},
+    {"prompt_id": "control_brand", "engine": "doubao", "prompt_text": "推荐一个性价比高的国产手机品牌"}
+  ]
+}
