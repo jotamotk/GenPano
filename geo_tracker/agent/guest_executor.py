@@ -13,6 +13,7 @@ import logging
 import os
 import random
 import re
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -145,6 +146,27 @@ RESPONSE_WAIT_STAGE_BUDGET_S = 240
 # hard-capped regardless of which call goes degenerate.
 POST_FAILURE_PAGE_READ_TIMEOUT_S = 5
 POST_FAILURE_SCREENSHOT_TIMEOUT_S = 10
+
+# Refs #963 Q-184971 (issue #963 verify-readonly comment 4469617051) and
+# Q-185614 (08:49Z trigger-5 comment 4470015151) production timelines:
+# the Doubao SPA can collapse back to the homepage in the ~9s gap
+# between prompt-fill completion and the first submit click attempt.
+# The pre-PR code burned that ~9s on:
+#   (1) a 500-1500ms random "human thinking" wait_for_timeout, and
+#   (2) a sequential ``for btn_sel in submit_button selectors`` loop
+#       where each iteration did ``query_selector + is_visible +
+#       evaluate(disabled check)`` and each individual call could take
+#       ~1s during DOM transitions, summing to 7-8s across the 7-8
+#       configured selectors.
+# This PR parallelizes Doubao submit-button discovery (first selector
+# to return a visible+enabled handle wins via asyncio.wait), shortens
+# the "human thinking" wait to a near-zero 200ms for Doubao only
+# (chatgpt / deepseek keep the legacy 500-1500ms random window because
+# the anti-bot story there is different), and hard-caps the entire
+# discovery sequence so a stuck DOM cannot grow the gap past 2.5s
+# before falling through to JS fallback then Enter.
+DOUBAO_SUBMIT_THINK_MS = 200
+DOUBAO_SUBMIT_DISCOVERY_BUDGET_S = 2.5
 
 
 _SENSITIVE_TEXT_PATTERNS = [
@@ -2665,7 +2687,16 @@ class GuestQueryExecutor:
                 return "", "", []
 
         # 模拟人类"思考"后再提交
-        await page.wait_for_timeout(random.randint(500, 1500))
+        # Refs #963 Q-184971/Q-185614: for Doubao, the 500-1500ms random
+        # delay is part of the ~9s fill→submit gap that lets the SPA
+        # collapse back to the homepage between fill and submit.
+        # Shorten it to ~200ms for Doubao only. Keep the legacy random
+        # window for chatgpt/deepseek because their anti-bot stories
+        # are different and we have no evidence the delay hurts there.
+        if llm_name == "doubao":
+            await page.wait_for_timeout(DOUBAO_SUBMIT_THINK_MS)
+        else:
+            await page.wait_for_timeout(random.randint(500, 1500))
 
         # 提交：优先点击 submit_button 里配的 selector，失败时 JS 找 input 附近的 enabled 按钮，
         # 再失败才 fallback 到 Enter
@@ -2749,42 +2780,178 @@ class GuestQueryExecutor:
 
         self._set_execution_stage("prompt_submit")
         submitted = False
-        if cfg.get("submit_button"):
-            for btn_sel in [s.strip() for s in cfg["submit_button"].split(",")]:
-                try:
-                    btn = await page.query_selector(btn_sel)
-                    if not btn or not await btn.is_visible():
-                        continue
-                    # 二次校验：豆包等使用 aria-disabled / data-disabled / class 表达禁用态，
-                    # CSS :not([disabled]) 抓不到，会误点禁用按钮变成 no-op，导致后面 JS 兜底被跳过。
-                    is_disabled = await btn.evaluate(
-                        """
-                        b => b.disabled
-                          || b.getAttribute('aria-disabled') === 'true'
-                          || b.getAttribute('data-disabled') === 'true'
-                          || /send-msg-btn-disabled-bg/.test(b.className || '')
-                        """
-                    )
-                    if is_disabled:
-                        logger.debug(f"[{llm_name}] 跳过禁用按钮: {btn_sel}")
-                        continue
-                    await btn.click()
-                    submitted = True
-                    logger.info(f"[{llm_name}] 通过按钮提交: {btn_sel}")
-                    break
-                except Exception:
-                    continue
-        if not submitted and llm_name in ("doubao", "deepseek"):
-            # JS 兜底：找 input 附近的 send 图标按钮
+
+        # 二次校验脚本：豆包等用 aria-disabled / data-disabled / class
+        # 表达禁用态，CSS :not([disabled]) 抓不到，会误点禁用按钮变成
+        # no-op 跳过后面的 JS 兜底。复用给顺序和并发两条路径。
+        _disabled_check_js = (
+            "b => b.disabled"
+            " || b.getAttribute('aria-disabled') === 'true'"
+            " || b.getAttribute('data-disabled') === 'true'"
+            " || /send-msg-btn-disabled-bg/.test(b.className || '')"
+        )
+
+        async def _discover_selector(btn_sel: str):
+            """Resolve one selector to a clickable (visible+enabled) handle.
+
+            Returns ``(selector, handle)`` on success, ``None`` otherwise.
+            All exceptions are swallowed so a single bad selector does
+            not abort the parallel race below.
+            """
             try:
-                handle = await _find_submit_button_js()
-                as_element = handle.as_element() if handle else None
-                if as_element:
-                    await as_element.click()
+                btn = await page.query_selector(btn_sel)
+                if not btn or not await btn.is_visible():
+                    return None
+                is_disabled = await btn.evaluate(_disabled_check_js)
+                if is_disabled:
+                    logger.debug(f"[{llm_name}] 跳过禁用按钮: {btn_sel}")
+                    return None
+                return btn_sel, btn
+            except Exception:
+                return None
+
+        selectors = (
+            [s.strip() for s in cfg["submit_button"].split(",")]
+            if cfg.get("submit_button")
+            else []
+        )
+
+        if llm_name == "doubao" and selectors:
+            # Refs #963 Q-184971 5:39:44 → 5:39:53 (9s gap) and
+            # Q-185614 08:49Z trigger-5: the sequential ``for btn_sel in
+            # selectors`` loop took ~1s per selector during DOM
+            # transitions × 7-8 selectors = 7-9s, wide enough for the
+            # Doubao SPA to regress back to the homepage between fill
+            # and submit. Run all selectors in parallel via
+            # asyncio.wait/FIRST_COMPLETED; the first visible+enabled
+            # handle wins, the rest are cancelled. Hard-cap the total
+            # discovery (parallel selectors + JS fallback) at
+            # DOUBAO_SUBMIT_DISCOVERY_BUDGET_S so a stuck DOM cannot
+            # grow the gap past 2.5s before we fall through to Enter.
+            discovery_started = time.monotonic()
+            tasks = [
+                asyncio.create_task(_discover_selector(sel))
+                for sel in selectors
+            ]
+            winning_btn = None
+            winning_sel = None
+            try:
+                pending = set(tasks)
+                remaining = DOUBAO_SUBMIT_DISCOVERY_BUDGET_S
+                while pending and remaining > 0 and winning_btn is None:
+                    loop_started = time.monotonic()
+                    done, pending = await asyncio.wait(
+                        pending,
+                        timeout=remaining,
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if not done:
+                        # Timeout fired with nothing complete — the
+                        # discovery budget is exhausted with no winner.
+                        break
+                    for task in done:
+                        try:
+                            result = task.result()
+                        except Exception:
+                            result = None
+                        if result and winning_btn is None:
+                            winning_sel, winning_btn = result
+                    remaining -= time.monotonic() - loop_started
+            finally:
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                # Drain cancellations so we do not leak warnings;
+                # ignore CancelledError from cancelled tasks.
+                if tasks:
+                    await asyncio.gather(*tasks, return_exceptions=True)
+
+            if winning_btn is not None:
+                try:
+                    await winning_btn.click()
                     submitted = True
-                    logger.info(f"[{llm_name}] 通过 JS 兜底按钮提交")
-            except Exception as e:
-                logger.debug(f"[{llm_name}] JS 找 submit 按钮失败: {e}")
+                    logger.info(
+                        f"[{llm_name}] 通过按钮提交: {winning_sel}"
+                    )
+                except Exception:
+                    submitted = False
+
+            if not submitted:
+                # JS 兜底：找 input 附近的 send 图标按钮。Also bounded
+                # by the same overall budget so a hung evaluate cannot
+                # push the discovery past 2.5s.
+                budget_left = DOUBAO_SUBMIT_DISCOVERY_BUDGET_S - (
+                    time.monotonic() - discovery_started
+                )
+                if budget_left > 0:
+                    try:
+                        handle = await asyncio.wait_for(
+                            _find_submit_button_js(),
+                            timeout=budget_left,
+                        )
+                        as_element = (
+                            handle.as_element() if handle else None
+                        )
+                        if as_element:
+                            await as_element.click()
+                            submitted = True
+                            logger.info(
+                                f"[{llm_name}] 通过 JS 兜底按钮提交"
+                            )
+                    except asyncio.TimeoutError:
+                        logger.debug(
+                            f"[{llm_name}] JS 兜底按钮超出 discovery 预算"
+                        )
+                    except Exception as e:
+                        logger.debug(
+                            f"[{llm_name}] JS 找 submit 按钮失败: {e}"
+                        )
+
+            discovery_ms = int(
+                (time.monotonic() - discovery_started) * 1000
+            )
+            logger.info(
+                f"[{llm_name}] submit-button discovery took {discovery_ms} ms"
+            )
+        else:
+            # 非豆包 (chatgpt / deepseek / 其他): 保留顺序 selector
+            # 行为不变。这些引擎没有 SPA 折叠回首页的证据，且 ChatGPT
+            # 的反爬可能依赖于顺序点击节奏，不在本 PR 优化范围。
+            if selectors:
+                for btn_sel in selectors:
+                    try:
+                        btn = await page.query_selector(btn_sel)
+                        if not btn or not await btn.is_visible():
+                            continue
+                        is_disabled = await btn.evaluate(_disabled_check_js)
+                        if is_disabled:
+                            logger.debug(
+                                f"[{llm_name}] 跳过禁用按钮: {btn_sel}"
+                            )
+                            continue
+                        await btn.click()
+                        submitted = True
+                        logger.info(
+                            f"[{llm_name}] 通过按钮提交: {btn_sel}"
+                        )
+                        break
+                    except Exception:
+                        continue
+            if not submitted and llm_name == "deepseek":
+                # JS 兜底：找 input 附近的 send 图标按钮 (deepseek 同样依赖)。
+                try:
+                    handle = await _find_submit_button_js()
+                    as_element = handle.as_element() if handle else None
+                    if as_element:
+                        await as_element.click()
+                        submitted = True
+                        logger.info(
+                            f"[{llm_name}] 通过 JS 兜底按钮提交"
+                        )
+                except Exception as e:
+                    logger.debug(
+                        f"[{llm_name}] JS 找 submit 按钮失败: {e}"
+                    )
         if not submitted:
             await page.keyboard.press("Enter")
             logger.info(f"[{llm_name}] 通过 Enter 键提交")
