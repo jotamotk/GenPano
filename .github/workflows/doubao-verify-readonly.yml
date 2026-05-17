@@ -73,6 +73,95 @@ jobs:
           docker compose images worker 2>/dev/null | head -5 || true
 
           echo ""
+          echo "=== [MODE-CLASS] most recent ~12 doubao failed queries in past 2 hours ==="
+          # User reported "同时我还跑了几个query，全部失败" — classify each row
+          # by mode (A=submit never confirmed, B=submit fired but no
+          # response render, C=real answer captured but validator rejected).
+          # Decision tree applied to this output:
+          #   resp_row_count>0 AND max_raw_text_len>=100 -> Mode C
+          #   resp_row_count=0 + retry_reason='no_response'/'doubao_input_lost_before_submit' -> Mode A or B (need log)
+          #   otherwise -> other:<reason>
+          # Column is `response_html`, not `raw_html` (geo_tracker/db/models.py:404).
+          docker compose exec -T postgres psql -X -U genpano -d genpano -P pager=off -c "
+            SELECT q.id, q.account_id, q.status, q.retry_reason,
+                   q.queued_at, q.finished_at,
+                   (SELECT COUNT(*) FROM llm_responses r WHERE r.query_id=q.id) AS resp_row_count,
+                   (SELECT MAX(CHAR_LENGTH(raw_text)) FROM llm_responses r WHERE r.query_id=q.id) AS max_raw_text_len,
+                   (SELECT MAX(CHAR_LENGTH(response_html)) FROM llm_responses r WHERE r.query_id=q.id) AS max_response_html_len
+            FROM queries q
+            WHERE q.target_llm='doubao'
+              AND q.finished_at > NOW() - INTERVAL '2 hours'
+              AND q.status='failed'
+            ORDER BY q.finished_at DESC
+            LIMIT 12;
+          " </dev/null 2>&1 || true
+
+          echo ""
+          echo "=== [MODE-C] raw_text first 200 chars per row (failed-with-response, past 2h) ==="
+          # For any row that classified as Mode C in the table above, dump
+          # the first 200 chars of llm_responses.raw_text so we can SEE
+          # whether the captured response is a real Doubao answer (proving
+          # validator false-positive) or noise.
+          docker compose exec -T postgres psql -X -U genpano -d genpano -P pager=off -c "
+            SELECT q.id AS query_id,
+                   q.retry_reason,
+                   LENGTH(r.raw_text) AS raw_text_len,
+                   SUBSTRING(r.raw_text, 1, 200) AS raw_text_preview
+            FROM queries q
+            JOIN llm_responses r ON r.query_id = q.id
+            WHERE q.target_llm='doubao'
+              AND q.finished_at > NOW() - INTERVAL '2 hours'
+              AND q.status='failed'
+              AND LENGTH(COALESCE(r.raw_text,'')) >= 100
+            ORDER BY q.finished_at DESC
+            LIMIT 12;
+          " </dev/null 2>&1 || true
+
+          echo ""
+          echo "=== [MODE-CLASS] active doubao account count (cookies_updated_at within 24h) ==="
+          # Quota check: if this is small (<3), we may be running out of
+          # usable accounts independent of mode classification.
+          docker compose exec -T postgres psql -X -U genpano -d genpano -P pager=off -c "
+            SELECT COUNT(*) AS active_with_fresh_cookies
+            FROM llm_accounts
+            WHERE llm_name='doubao'
+              AND status='active'
+              AND cookies_updated_at > NOW() - INTERVAL '24 hours';
+          " </dev/null 2>&1 || true
+
+          echo ""
+          echo "=== [MODE-CLASS] active doubao account detail (top 10) ==="
+          docker compose exec -T postgres psql -X -U genpano -d genpano -P pager=off -c "
+            SELECT id, phone_number, status, query_count_today, daily_limit,
+                   cookies_updated_at, last_used_at, consecutive_fails
+            FROM llm_accounts
+            WHERE llm_name='doubao'
+              AND status='active'
+            ORDER BY cookies_updated_at DESC NULLS LAST
+            LIMIT 10;
+          " </dev/null 2>&1 || true
+
+          echo ""
+          echo "=== [MODE-CLASS] worker log slice for top-3 recent failed doubao queries (past 2h) ==="
+          # AGENTS.md Evidence-First step 1: capture broken-surface output.
+          # Distinguish Mode A (re-trial detected no message sent) vs
+          # Mode B (submit fired but awaiting_answer never resolved).
+          for qid in $(docker compose exec -T postgres psql -X -At -U genpano -d genpano -P pager=off -c "
+            SELECT q.id FROM queries q
+            WHERE q.target_llm='doubao'
+              AND q.finished_at > NOW() - INTERVAL '2 hours'
+              AND q.status='failed'
+            ORDER BY q.finished_at DESC
+            LIMIT 3;
+          " </dev/null 2>&1); do
+            qid_clean=$(echo "$qid" | tr -d '[:space:]')
+            if [ -z "$qid_clean" ]; then continue; fi
+            echo "--- worker log slice for query_id=$qid_clean ---"
+            docker compose logs --tail 4000 worker 2>&1 | grep -E "query_${qid_clean}\b|\b${qid_clean}\b" | head -60 || true
+            echo ""
+          done
+
+          echo ""
           echo "=== TZ env in worker container ==="
           docker compose exec -T worker sh -c 'echo TZ=$TZ; date; ls -la /usr/share/zoneinfo/Asia/Shanghai 2>&1 | head -2' </dev/null 2>&1 || true
 
@@ -895,99 +984,6 @@ jobs:
           except Exception as e:
               print(f"could not import LLM_CONFIG: {e}")
           PYEND
-
-          echo ""
-          echo "=== Mode-classification: most recent ~12 doubao failed queries in past 2 hours ==="
-          # User reported "同时我还跑了几个query，全部失败" — classify each row
-          # by mode (A=submit never confirmed, B=submit fired but no
-          # response render, C=real answer captured but validator rejected).
-          # Decision tree applied to this output:
-          #   resp_row_count>0 AND max_raw_text_len>=100 -> Mode C
-          #   resp_row_count=0 + retry_reason='no_response'/'doubao_input_lost_before_submit' -> Mode A or B (need log)
-          #   otherwise -> other:<reason>
-          docker compose exec -T postgres psql -X -U genpano -d genpano -P pager=off -c "
-            SELECT q.id, q.account_id, q.status, q.retry_reason,
-                   q.queued_at, q.finished_at,
-                   (SELECT COUNT(*) FROM llm_responses r WHERE r.query_id=q.id) AS resp_row_count,
-                   (SELECT MAX(CHAR_LENGTH(raw_text)) FROM llm_responses r WHERE r.query_id=q.id) AS max_raw_text_len,
-                   (SELECT MAX(CHAR_LENGTH(raw_html)) FROM llm_responses r WHERE r.query_id=q.id) AS max_raw_html_len
-            FROM queries q
-            WHERE q.target_llm='doubao'
-              AND q.finished_at > NOW() - INTERVAL '2 hours'
-              AND q.status='failed'
-            ORDER BY q.finished_at DESC
-            LIMIT 12;
-          " </dev/null 2>&1 || true
-
-          echo ""
-          echo "=== Mode C raw_text dump: first 200 chars per row (failed-with-response in past 2h) ==="
-          # For any row that classified as Mode C in the table above, dump
-          # the first 200 chars of llm_responses.raw_text so we can SEE
-          # whether the captured response is a real Doubao answer (proving
-          # validator false-positive) or noise. Quote the actual text in
-          # the report so the user can verify.
-          docker compose exec -T postgres psql -X -U genpano -d genpano -P pager=off -c "
-            SELECT q.id AS query_id,
-                   q.retry_reason,
-                   LENGTH(r.raw_text) AS raw_text_len,
-                   SUBSTRING(r.raw_text, 1, 200) AS raw_text_preview
-            FROM queries q
-            JOIN llm_responses r ON r.query_id = q.id
-            WHERE q.target_llm='doubao'
-              AND q.finished_at > NOW() - INTERVAL '2 hours'
-              AND q.status='failed'
-              AND LENGTH(COALESCE(r.raw_text,'')) >= 100
-            ORDER BY q.finished_at DESC
-            LIMIT 12;
-          " </dev/null 2>&1 || true
-
-          echo ""
-          echo "=== Worker log slice for top-3 recent failed doubao queries (past 2h) ==="
-          # AGENTS.md Evidence-First step 1: capture the broken-surface
-          # output. For the 3 most recent failed rows, pull the worker
-          # log slice so we can verify the Mode A/B classification by
-          # looking for "重试后仍未检测到发送的消息" (A) vs "通过按钮提交"
-          # + "awaiting_answer" (B).
-          for qid in $(docker compose exec -T postgres psql -X -At -U genpano -d genpano -P pager=off -c "
-            SELECT q.id FROM queries q
-            WHERE q.target_llm='doubao'
-              AND q.finished_at > NOW() - INTERVAL '2 hours'
-              AND q.status='failed'
-            ORDER BY q.finished_at DESC
-            LIMIT 3;
-          " </dev/null 2>&1); do
-            qid_clean=$(echo "$qid" | tr -d '[:space:]')
-            if [ -z "$qid_clean" ]; then continue; fi
-            echo "--- worker log slice for query_id=$qid_clean ---"
-            docker compose logs --tail 4000 worker 2>&1 | grep -E "query_${qid_clean}\b|\b${qid_clean}\b" | head -60 || true
-            echo ""
-          done
-
-          echo ""
-          echo "=== Active doubao account count (cookies_updated_at within 24h) ==="
-          # Quota check: if this is small (<3), we may be running out of
-          # usable accounts independent of mode classification, which can
-          # cause user-visible 'all failed' even when the scraper code is
-          # healthy.
-          docker compose exec -T postgres psql -X -U genpano -d genpano -P pager=off -c "
-            SELECT COUNT(*) AS active_with_fresh_cookies
-            FROM llm_accounts
-            WHERE llm_name='doubao'
-              AND status='active'
-              AND cookies_updated_at > NOW() - INTERVAL '24 hours';
-          " </dev/null 2>&1 || true
-
-          echo ""
-          echo "=== Active doubao account detail (top 10 by cookies_updated_at) ==="
-          docker compose exec -T postgres psql -X -U genpano -d genpano -P pager=off -c "
-            SELECT id, phone_number, status, query_count_today, daily_limit,
-                   cookies_updated_at, last_used_at, consecutive_fails
-            FROM llm_accounts
-            WHERE llm_name='doubao'
-              AND status='active'
-            ORDER BY cookies_updated_at DESC NULLS LAST
-            LIMIT 10;
-          " </dev/null 2>&1 || true
 
           echo ""
           echo "=== Doubao worker log tail (last 50 lines mentioning doubao) ==="
