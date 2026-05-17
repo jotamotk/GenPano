@@ -62,7 +62,13 @@ ENGINE_CONFIG: dict[str, dict[str, Any]] = {
             "button[id='flow-end-msg-send']"
         ),
         "response_selector": (
+            # Stable: Doubao's markdown renderer applies `md-box-root` to every
+            # assistant reply container (verified 2026-05 via DOM dump). The
+            # legacy `.flow-markdown-body` no longer exists in the new
+            # frontend; keep as a low-priority fallback for old builds.
+            ".md-box-root, "
             ".flow-markdown-body, "
+            "[data-testid='receive_message'] .md-box-root, "
             "[data-testid='receive_message'] .flow-markdown-body"
         ),
         "login_redirect_domains": [
@@ -256,15 +262,36 @@ async def _run_one_rep(
         except Exception as e:
             failure_signals.append(f"type_failed: {e!r}")
 
-        # Step 6: 2-5s pause then click
+        # Step 6: 2-5s pause then click. Try several click strategies because
+        # Doubao SPA has a `semi-modal-wrap` element that intercepts pointer
+        # events even when it's not visually rendered (Semi Design transition
+        # artifact). Strategies in order:
+        #   1. ESC to dismiss any visible/invisible modal
+        #   2. Normal click (passes Playwright actionability checks)
+        #   3. force=True click (bypasses intercept check)
+        #   4. keyboard Enter (Doubao accepts this since textarea has focus)
         await asyncio.sleep(random.uniform(2.0, 5.0))
         try:
-            await page.click(cfg["submit_button"], timeout=15_000)
+            await page.keyboard.press("Escape")
+            await asyncio.sleep(0.3)
+        except Exception:
+            pass
+        submitted = False
+        try:
+            await page.click(cfg["submit_button"], timeout=8_000)
+            submitted = True
         except Exception as e:
-            # Fallback: press Enter (Doubao accepts this)
-            failure_signals.append(f"submit_click_failed_fallback_to_enter: {e!r}")
+            failure_signals.append(f"submit_click_failed: {e!r}")
+        if not submitted:
+            try:
+                await page.click(cfg["submit_button"], force=True, timeout=4_000)
+                submitted = True
+            except Exception as e:
+                failure_signals.append(f"submit_force_click_failed: {e!r}")
+        if not submitted:
             try:
                 await page.keyboard.press("Enter")
+                submitted = True
             except Exception as e2:
                 failure_signals.append(f"submit_enter_failed: {e2!r}")
 
@@ -276,7 +303,77 @@ async def _run_one_rep(
             timeout_secs=remaining,
         )
 
-        # Step 8 already covered via JS textContent extraction inside helper.
+        # Step 7b: if the primary response_selector returned empty, dump
+        # the page HTML + a heuristic scan to artifact so the operator
+        # can identify the correct selector without re-tunneling VNC.
+        if not raw_text or len(raw_text) < 50:
+            try:
+                html_path = artifact_dir / "page.html"
+                content = await page.content()
+                html_path.write_text(content, encoding="utf-8")
+            except Exception as e:
+                failure_signals.append(f"page_content_dump_failed: {e!r}")
+            try:
+                # Heuristic: find any DIV with >= 100 chars textContent that's
+                # not a global container; print the first 5 candidates with
+                # their class lists so we know which selector to use next.
+                candidates = await page.evaluate(
+                    """() => {
+                        const out = [];
+                        const all = document.querySelectorAll("div, article, section");
+                        for (const el of all) {
+                            const t = (el.textContent || "").trim();
+                            if (t.length >= 100 && t.length <= 5000) {
+                                out.push({
+                                    cls: el.className || "",
+                                    id: el.id || "",
+                                    testid: el.getAttribute("data-testid") || "",
+                                    role: el.getAttribute("role") || "",
+                                    chars: t.length,
+                                    snippet: t.slice(0, 80),
+                                });
+                                if (out.length >= 10) break;
+                            }
+                        }
+                        return out;
+                    }"""
+                )
+                cand_path = artifact_dir / "response_candidates.json"
+                cand_path.write_text(
+                    json.dumps(candidates, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+            except Exception as e:
+                failure_signals.append(f"candidate_scan_failed: {e!r}")
+            # Also try a permissive fallback selector that's MUCH wider.
+            try:
+                fallback_text = await page.evaluate(
+                    """() => {
+                        const sels = [
+                            "[data-testid='receive_message']",
+                            "div[class*='markdown']",
+                            "div[class*='message-content']",
+                            "div[class*='assistant']",
+                            "div[class*='reply']",
+                        ];
+                        for (const s of sels) {
+                            const nodes = document.querySelectorAll(s);
+                            if (nodes.length > 0) {
+                                const last = nodes[nodes.length - 1];
+                                const t = (last.textContent || "").trim();
+                                if (t.length >= 50) return { sel: s, text: t };
+                            }
+                        }
+                        return null;
+                    }"""
+                )
+                if fallback_text and fallback_text.get("text"):
+                    raw_text = fallback_text["text"]
+                    failure_signals.append(
+                        f"recovered_via_fallback_selector: {fallback_text.get('sel')}"
+                    )
+            except Exception as e:
+                failure_signals.append(f"fallback_selector_failed: {e!r}")
 
         # Failure detection block #2 — check URL again post-submit + captcha
         try:
