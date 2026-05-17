@@ -1,34 +1,31 @@
 #!/usr/bin/env bash
 # Single deploy script invoked by .github/workflows/vm-docker-deploy.yml.
-# Each "action" the workflow accepts maps to a case branch here.
+#
+# All required files (Dockerfile, docker-compose.yml, entrypoint.sh, this
+# script) are SCP'd to the ECS host by the workflow *before* this runs.
+# We never git clone on the ECS side — the user's repo is private and we
+# don't want to fight credentials. The workflow already has the repo
+# checked out on the GH Actions runner via actions/checkout.
+#
+# Layout on ECS after workflow scp:
+#   $VM_DEPLOY_PATH/Dockerfile
+#   $VM_DEPLOY_PATH/docker-compose.yml
+#   $VM_DEPLOY_PATH/entrypoint.sh
+#   $VM_DEPLOY_PATH/.env.example
+#   $VM_DEPLOY_PATH/scripts/deploy.sh   (this file)
+#   $VM_DEPLOY_PATH/data/profile-doubao-01  (created at runtime)
 #
 # Call: ACTION=inspect bash deploy.sh
-#       ACTION=bootstrap CONTAINER= TAIL_LINES=200 ECS_REPO_PATH=/opt/foo \
-#                        VNC_PASSWORD_01=... VNC_PASSWORD_02=... bash deploy.sh
-#
-# This file is uploaded to the ECS via scp by the workflow; runs as the
-# SSH user (root or ubuntu) with sudo NOPASSWD assumed.
 set -uo pipefail
 
 : "${ACTION:?must set ACTION env}"
-ECS_REPO_PATH="${ECS_REPO_PATH:-/opt/trash_test}"
+VM_DEPLOY_PATH="${VM_DEPLOY_PATH:-/opt/vm-per-account-deploy}"
 CONTAINER="${CONTAINER:-}"
 TAIL_LINES="${TAIL_LINES:-200}"
 
-# DOCKER_DIR resolution: prefer the existing $ECS_REPO_PATH if it has the
-# docker subdir (user's existing repo, no mutation needed). Otherwise fall
-# back to the suffix path that bootstrap clones fresh into.
-PRIMARY_DOCKER_DIR="$ECS_REPO_PATH/experiments/vm_per_account/docker"
-FORK_DOCKER_DIR="${ECS_REPO_PATH}-vm-deploy/experiments/vm_per_account/docker"
-if [ -d "$PRIMARY_DOCKER_DIR" ]; then
-  DOCKER_DIR="$PRIMARY_DOCKER_DIR"
-elif [ -d "$FORK_DOCKER_DIR" ]; then
-  DOCKER_DIR="$FORK_DOCKER_DIR"
-else
-  # Neither exists yet — bootstrap will create one. Use primary as default
-  # for error messages.
-  DOCKER_DIR="$PRIMARY_DOCKER_DIR"
-fi
+# The workflow scp's the docker/ subdir contents directly into VM_DEPLOY_PATH,
+# so DOCKER_DIR == VM_DEPLOY_PATH.
+DOCKER_DIR="$VM_DEPLOY_PATH"
 
 # Helper: run docker compose, fallback to sudo if user not in docker group
 dc() {
@@ -67,6 +64,9 @@ case "$ACTION" in
     echo "=== disk usage ==="
     df -h | head -10
     echo
+    echo "=== VM_DEPLOY_PATH state ==="
+    ls -la "$VM_DEPLOY_PATH" 2>/dev/null || echo "($VM_DEPLOY_PATH does not exist)"
+    echo
     echo "=== systemd services (genpano backend etc.) ==="
     systemctl list-units --type=service --no-pager 2>/dev/null \
       | grep -iE "(genpano|fastapi|celery|backend|gunicorn|uvicorn)" \
@@ -86,64 +86,33 @@ case "$ACTION" in
     fi
     sudo ufw --force default deny incoming
     sudo ufw --force default allow outgoing
-    # Allow the SSH port we connected via.
     local_ssh_port="${SSH_PORT:-22}"
     sudo ufw allow "${local_ssh_port}/tcp" comment 'ssh for vm-docker-deploy'
-    # noVNC + CDP defence-in-depth (Docker loopback bind is primary).
     sudo ufw deny in proto tcp to any port 6080:6090 || true
     sudo ufw deny in proto tcp to any port 9222:9232 || true
     sudo ufw --force enable
     sudo ufw status numbered
-    # repo — bootstrap is SAFE for production: never mutate the user's
-    # primary $ECS_REPO_PATH checkout. Three cases:
-    #   1. PRIMARY has our docker subdir → use as-is, NO git ops (prod safe)
-    #   2. PRIMARY doesn't exist at all → clone fresh into PRIMARY
-    #   3. PRIMARY exists but missing our subdir → use FORK suffix path
-    #      (clone fresh OR pull --ff-only if already cloned) — FORK is
-    #      always git-mutated since it's not the prod repo.
-    FORK_PATH="${ECS_REPO_PATH}-vm-deploy"
-    if [ -d "$PRIMARY_DOCKER_DIR" ]; then
-      echo "Using PRIMARY $ECS_REPO_PATH (no git ops — prod repo state preserved)"
-      WORK_DIR="$ECS_REPO_PATH"
-      DOCKER_DIR="$PRIMARY_DOCKER_DIR"
-    elif [ ! -e "$ECS_REPO_PATH" ]; then
-      sudo mkdir -p "$(dirname "$ECS_REPO_PATH")"
-      sudo chown -R "$(whoami):$(whoami)" "$(dirname "$ECS_REPO_PATH")"
-      git clone https://github.com/jotamotk/trash_test.git "$ECS_REPO_PATH"
-      WORK_DIR="$ECS_REPO_PATH"
-      DOCKER_DIR="$PRIMARY_DOCKER_DIR"
-    else
-      # Path exists but missing docker subdir — use FORK suffix path.
-      # FORK is always pulled fresh / cloned fresh: it's not the prod repo,
-      # so re-bootstrap should always bring in latest deploy.sh + Dockerfile.
-      echo "$ECS_REPO_PATH exists but missing experiments/vm_per_account/docker/"
-      if [ ! -d "$FORK_PATH/.git" ]; then
-        echo "Cloning fresh to $FORK_PATH (prod repo untouched)"
-        sudo mkdir -p "$(dirname "$FORK_PATH")"
-        sudo chown -R "$(whoami):$(whoami)" "$(dirname "$FORK_PATH")"
-        git clone https://github.com/jotamotk/trash_test.git "$FORK_PATH"
-      else
-        echo "Refreshing existing FORK $FORK_PATH (git pull --ff-only)"
-        cd "$FORK_PATH" && git fetch origin main && git checkout main && git pull --ff-only
-      fi
-      WORK_DIR="$FORK_PATH"
-      DOCKER_DIR="$FORK_PATH/experiments/vm_per_account/docker"
-      echo "NOTE: VM ops use $FORK_PATH ($ECS_REPO_PATH prod untouched)"
-    fi
-    # build images
+    # Verify scp'd files are present
     cd "$DOCKER_DIR"
+    for f in Dockerfile docker-compose.yml entrypoint.sh; do
+      if [ ! -f "$f" ]; then
+        echo "FATAL: $f missing in $DOCKER_DIR — workflow scp step incomplete?"
+        ls -la
+        exit 1
+      fi
+    done
+    # build image
     dc build
     echo "=== bootstrap complete ==="
     docker --version 2>/dev/null || sudo docker --version
     sudo ufw status
-    df -h "$WORK_DIR"
-    echo "VM ops path: $WORK_DIR"
+    df -h "$DOCKER_DIR"
     ;;
 
   up)
     set -euxo pipefail
     cd "$DOCKER_DIR"
-    # Write .env atomically (mode 0600). Secrets piped in via env from workflow.
+    # Write .env atomically (mode 0600).
     umask 0177
     {
       printf 'VNC_PASSWORD_01=%s\n' "${VNC_PASSWORD_01:?must set VNC_PASSWORD_01}"
@@ -181,11 +150,11 @@ case "$ACTION" in
     ;;
 
   pull)
-    set -euxo pipefail
-    cd "$ECS_REPO_PATH"
-    git fetch origin main
-    git checkout main
-    git pull
+    # Pull action no longer applies — files come from the workflow's scp on
+    # every run. Re-dispatch the workflow to get the latest code on ECS.
+    echo "NOTE: 'pull' is a no-op in scp-based flow. Re-dispatch the workflow"
+    echo "      (any action) to scp the latest experiments/vm_per_account/docker/"
+    echo "      files from the runner's actions/checkout snapshot."
     ;;
 
   status)
@@ -199,7 +168,7 @@ case "$ACTION" in
     echo "=== ufw status ==="
     sudo ufw status numbered || true
     echo "=== docker compose ps ==="
-    cd "$DOCKER_DIR" 2>/dev/null && dc ps || echo "(docker dir not present; bootstrap first)"
+    cd "$DOCKER_DIR" 2>/dev/null && dc ps || echo "($DOCKER_DIR not present; run bootstrap first)"
     ;;
 
   destroy)

@@ -61,12 +61,12 @@ jobs:
             -o BatchMode=yes -o ConnectTimeout=10 \
             "${SERVER_USER}@${SERVER_HOST}" 'echo ok; id; uname -a'
 
-      - name: SCP deploy.sh + run with ACTION
+      - name: SCP docker dir + run deploy.sh with ACTION
         env:
           SERVER_HOST: ${{ secrets.SERVER_HOST }}
           SERVER_USER: ${{ secrets.SERVER_USER }}
           SERVER_SSH_PORT: ${{ secrets.SERVER_SSH_PORT }}
-          ECS_REPO_PATH: ${{ secrets.ECS_REPO_PATH }}
+          VM_DEPLOY_PATH: ${{ secrets.ECS_REPO_PATH != '' && format('{0}-vm-deploy', secrets.ECS_REPO_PATH) || '/opt/vm-per-account-deploy' }}
           VNC_PASSWORD_01: ${{ secrets.VNC_PASSWORD_01 }}
           VNC_PASSWORD_02: ${{ secrets.VNC_PASSWORD_02 }}
           ACTION: ${{ inputs.action }}
@@ -76,17 +76,22 @@ jobs:
           set -euxo pipefail
           PORT="${SERVER_SSH_PORT:-22}"
           REMOTE="${SERVER_USER}@${SERVER_HOST}"
-          # 1. scp deploy.sh to /tmp on ECS
-          scp -i ~/.ssh/id_ssh -P "$PORT" \
-            experiments/vm_per_account/docker/scripts/deploy.sh \
-            "${REMOTE}:/tmp/vm-deploy.sh"
-          # 2. run it with env piped through
+          # 1. Ensure VM_DEPLOY_PATH exists on ECS (needs sudo for /opt/...)
+          ssh -i ~/.ssh/id_ssh -p "$PORT" "$REMOTE" \
+            "sudo mkdir -p '$VM_DEPLOY_PATH' && sudo chown -R \$(whoami):\$(whoami) '$VM_DEPLOY_PATH'"
+          # 2. SCP the entire experiments/vm_per_account/docker/ contents
+          #    (Dockerfile, docker-compose.yml, entrypoint.sh, .env.example,
+          #    scripts/deploy.sh) — NO git clone needed on ECS.
+          scp -i ~/.ssh/id_ssh -P "$PORT" -r \
+            experiments/vm_per_account/docker/. \
+            "${REMOTE}:${VM_DEPLOY_PATH}/"
+          # 3. Run the deploy script with env piped through
           ssh -i ~/.ssh/id_ssh -p "$PORT" "$REMOTE" \
             "ACTION='$ACTION' CONTAINER='$CONTAINER' TAIL_LINES='$TAIL_LINES' \
-             ECS_REPO_PATH='$ECS_REPO_PATH' \
+             VM_DEPLOY_PATH='$VM_DEPLOY_PATH' \
              VNC_PASSWORD_01='$VNC_PASSWORD_01' VNC_PASSWORD_02='$VNC_PASSWORD_02' \
              SSH_PORT='$PORT' \
-             bash /tmp/vm-deploy.sh"
+             bash '${VM_DEPLOY_PATH}/scripts/deploy.sh'"
 
       - name: Print operator next-step (SSH tunnel for noVNC)
         if: ${{ inputs.action == 'up' || inputs.action == 'bootstrap' }}

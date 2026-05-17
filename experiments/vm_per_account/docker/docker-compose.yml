@@ -17,6 +17,14 @@
 # detection. Test in PoC before scaling beyond 2-3 accounts. Mitigation if
 # needed: add `--proxy-server=http://qg_ip:port` to each container's Chrome
 # args (one residential IP per container).
+
+# Pin Compose project name so resources (containers, networks, volumes)
+# stay namespaced regardless of which host directory the compose file
+# lives in. Without this, moving the compose file between paths (e.g.
+# ECS_REPO_PATH → VM_DEPLOY_PATH) would create a new project + conflict
+# with the existing fixed container_names.
+name: vm-per-account
+
 services:
   doubao-01:
     build:
