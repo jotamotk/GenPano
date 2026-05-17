@@ -583,6 +583,24 @@ class GuestQueryExecutor:
         # so the bad IP is dropped from the pool.
         self.qg_proxy_client = QGProxyClient.from_env()
         self._active_qg_lease = None
+        # Refs #963 Q-185620 (account 47, 2026-05-17 08:50Z, comment
+        # 4470015151): a Doubao query failed with
+        # ``doubao_browser_timeout:prompt_fill`` because the input
+        # selector chain never matched within the load_wait budget — the
+        # browser was opened but the SPA never rendered the input. This
+        # boolean gates the ONE-SHOT ``page.goto(cfg["url"])`` recovery
+        # in ``_browser_query``'s prompt_fill stage so a single transient
+        # render failure can recover instead of immediately burning a
+        # query budget. Per-executor-instance, per-query: reset at the
+        # top of ``execute()`` so each new query starts with a fresh
+        # recovery budget. Bounded to ONE attempt to eliminate
+        # infinite-loop risk if recovery itself is what is broken.
+        # Shared-spirit with PR #1107 (submit-confirm recovery uses the
+        # same page.goto+wait_for_selector machinery); see also parallel
+        # optimization #2
+        # (``claude/issue-963-auth-check-recovery-extension``) which may
+        # add its own recovery using the same flag — coordinate at merge.
+        self._doubao_recovery_attempted = False
 
     def _set_execution_stage(self, stage: str) -> None:
         self.execution_stage = stage
@@ -609,6 +627,11 @@ class GuestQueryExecutor:
         """
         self.last_error_reason = None
         self._set_execution_stage("start")
+        # Refs #963 Q-185620: per-query one-shot recovery budget reset.
+        # The ``_doubao_recovery_attempted`` flag gates the prompt_fill
+        # ``page.goto`` recovery; reset here so each new query starts
+        # with a fresh budget while still preventing in-query loops.
+        self._doubao_recovery_attempted = False
         llm = query.target_llm
         config = GUEST_LLM_CONFIG.get(llm)
         if not config:
@@ -2550,7 +2573,83 @@ class GuestQueryExecutor:
         debug_query_id = _debug_query_id(query_id)
         self._set_execution_stage("prompt_fill")
         if input_el is None:
-            input_el = await page.wait_for_selector(cfg["input_selector"].split(",")[0], timeout=10000)
+            # Refs #963 Q-185620 (account 47, 2026-05-17 08:50Z, comment
+            # 4470015151): a Doubao query failed with
+            # ``doubao_browser_timeout:prompt_fill`` because the input
+            # selector chain never matched within the load_wait budget —
+            # the browser was opened but the SPA never rendered the
+            # input element, so the executor never even got to fill the
+            # prompt. Production evidence: retry_reason=
+            # ``doubao_browser_timeout:prompt_fill``, resp_count=0,
+            # raw_text=NULL. Before bailing (which surfaces upward as
+            # the same reason via the ``except Exception`` block in
+            # ``_execute_once``), attempt ONE in-place recovery: reload
+            # the chat URL with ``page.goto`` + brief settle + re-probe
+            # for the input element. This mirrors PR #1107's submit-
+            # confirm recovery — same primitive, different trigger.
+            # ONE-SHOT only: ``_doubao_recovery_attempted`` (per-query)
+            # ensures we cannot infinite-loop a permanently broken page.
+            # Non-Doubao engines are unaffected — they fall through to
+            # the original raise behavior.
+            try:
+                input_el = await page.wait_for_selector(
+                    cfg["input_selector"].split(",")[0], timeout=10000
+                )
+            except Exception as wait_err:
+                if (
+                    llm_name == "doubao"
+                    and not self._doubao_recovery_attempted
+                    and cfg.get("url")
+                ):
+                    self._doubao_recovery_attempted = True
+                    logger.info(
+                        f"[{llm_name}] prompt_fill timeout — attempting "
+                        f"page.goto recovery (cfg url={cfg['url']})"
+                    )
+                    try:
+                        await page.goto(
+                            cfg["url"],
+                            wait_until="domcontentloaded",
+                            timeout=15000,
+                        )
+                        await page.wait_for_timeout(1500)
+                        input_el = await page.wait_for_selector(
+                            cfg["input_selector"].split(",")[0],
+                            timeout=8000,
+                        )
+                        if input_el:
+                            logger.info(
+                                f"[{llm_name}] prompt_fill timeout — "
+                                f"recovery succeeded, re-acquired input"
+                            )
+                        else:
+                            # wait_for_selector returned None instead of
+                            # raising — re-raise the original timeout so
+                            # the caller's exception handler classifies
+                            # this as
+                            # ``doubao_browser_timeout:prompt_fill``,
+                            # matching today's behavior pre-recovery.
+                            logger.warning(
+                                f"[{llm_name}] prompt_fill timeout — "
+                                f"recovery returned no input element"
+                            )
+                            raise wait_err
+                    except Exception as recover_err:
+                        logger.warning(
+                            f"[{llm_name}] prompt_fill timeout — "
+                            f"recovery failed: "
+                            f"{_redact_sensitive_text(str(recover_err))[:200]}"
+                        )
+                        # Re-raise the ORIGINAL wait error so the outer
+                        # except in ``_execute_once`` classifies as
+                        # ``doubao_browser_timeout:prompt_fill`` (same
+                        # reason as today) rather than masking the root
+                        # cause with the recovery exception.
+                        raise wait_err
+                else:
+                    # Non-Doubao engines, no cfg url, or already
+                    # attempted recovery — preserve original behavior.
+                    raise
 
         # 模拟人类行为：随机延迟 + 鼠标移动到输入框
         # Refs #963 follow-up to PR #1009 live evidence (run 25926214958):
