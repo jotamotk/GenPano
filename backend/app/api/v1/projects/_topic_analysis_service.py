@@ -234,23 +234,138 @@ def _empty_monitoring(
 
 
 async def _count_brand_topics_total(session: AsyncSession, brand_id: int) -> int:
-    """Raw topic count for a brand (admin-surface contract).
+    """Active topic count for a brand (user-facing analytics scope).
 
-    Mirrors `backend/app/admin/brand_management/db.py:632` exactly — no status
-    filter — so the app-surface "Total topics" subline equals the number
-    operators see in the admin Brand Management page (#985 D4.A, Refs #983).
+    Scope mirrors `topic_analysis/queries.py:_fact_rows` line 226 — same
+    `COALESCE(t.status, 'active') <> 'archived'` predicate — so the count,
+    the merged listing, and downstream evidence rows reference the same
+    population. Archived topics never produce fact rows, so including them
+    would cause ghost zero-everything rows in the user-facing list (#1029).
     """
     try:
-        result = await session.execute(
-            text("SELECT COUNT(*) AS topic_count FROM topics WHERE brand_id = :brand_id"),
-            {"brand_id": brand_id},
-        )
+        cols = await legacy_table_columns(session, "topics")
+    except Exception:
+        return 0
+    if not cols or "id" not in cols or "brand_id" not in cols:
+        return 0
+    where_clauses = ["brand_id = :brand_id"]
+    if "status" in cols:
+        where_clauses.append("COALESCE(status, 'active') <> 'archived'")
+    sql = text(f"SELECT COUNT(*) AS topic_count FROM topics WHERE {' AND '.join(where_clauses)}")
+    try:
+        result = await session.execute(sql, {"brand_id": int(brand_id)})
         row = result.mappings().first()
     except Exception:
         return 0
     if row is None:
         return 0
     return int(row.get("topic_count") or 0)
+
+
+async def _fetch_brand_topics_listing(session: AsyncSession, brand_id: int) -> list[dict[str, Any]]:
+    """Active topic rows for a brand (id, text, category, status).
+
+    Scope mirrors `topic_analysis/queries.py:_fact_rows` line 226
+    (`COALESCE(t.status, 'active') <> 'archived'`) so the listing aligns with
+    the population that `_fact_rows` evaluates. Used by
+    `_merge_missing_brand_topics` to surface active-but-evidence-less topics
+    in the user-facing list (#1029, re-implementation of reverted #1034).
+    Returns ``[]`` when the legacy ``topics`` table is missing or the query
+    fails — caller must handle that gracefully.
+    """
+    try:
+        cols = await legacy_table_columns(session, "topics")
+    except Exception:
+        return []
+    if not cols or "id" not in cols or "brand_id" not in cols:
+        return []
+    text_expr = _topic_name_expr(cols)
+    category_expr = "t.category" if "category" in cols else "NULL"
+    status_expr = "t.status" if "status" in cols else "NULL"
+    created_expr = "t.created_at" if "created_at" in cols else "NULL"
+    order_clause = (
+        "ORDER BY t.created_at DESC NULLS LAST, t.id DESC"
+        if "created_at" in cols
+        else "ORDER BY t.id DESC"
+    )
+    where_clauses = ["t.brand_id = :brand_id"]
+    if "status" in cols:
+        where_clauses.append("COALESCE(t.status, 'active') <> 'archived'")
+    sql = text(
+        f"""
+        SELECT
+            t.id AS topic_id,
+            {text_expr} AS topic_name,
+            {category_expr} AS topic_dimension,
+            {status_expr} AS topic_status,
+            {created_expr} AS topic_created_at
+        FROM topics t
+        WHERE {" AND ".join(where_clauses)}
+        {order_clause}
+        """
+    )
+    try:
+        rows = (await session.execute(sql, {"brand_id": int(brand_id)})).mappings().all()
+    except Exception:
+        return []
+    return [dict(r) for r in rows]
+
+
+def _merge_missing_brand_topics(
+    topics: list[TopicMonitoringRow],
+    listing: list[dict[str, Any]],
+    *,
+    associated_brand: str | None,
+) -> list[TopicMonitoringRow]:
+    """Append active brand topics that have no fact rows yet, with zero/null
+    metrics, so the user-facing list matches the population of active topics
+    (#1029, re-implementation of reverted #1034).
+
+    Topics already present (with evidence) keep their position and metrics;
+    missing topics appear after them with all metric fields at the renderer-
+    safe default values (frontend `TopicsPage.tsx` renders ``null`` rates and
+    zero counts as ``--`` / ``-`` so no extra null-handling work is needed).
+
+    Caller MUST invoke this AFTER ``build_contract_context`` has been run on
+    the with-evidence ``topics`` list. ``build_contract_context`` reads
+    ``has_data = bool(summary.response_count or topics)``; if the merge runs
+    earlier, evidence-less topics would flip ``has_data`` to ``True`` and
+    cascade into ``metric_formula_evidence`` evaluation, producing the
+    "Limited proof" regression that reverted PR #1052 caused.
+    """
+    if not listing:
+        return topics
+    present = {item.topic_id for item in topics}
+    merged: list[TopicMonitoringRow] = list(topics)
+    for row in listing:
+        tid = _as_int(row.get("topic_id"))
+        if tid is None or tid in present:
+            continue
+        present.add(tid)
+        merged.append(
+            TopicMonitoringRow(
+                topic_id=tid,
+                topic_name=row.get("topic_name") or f"topic-{tid}",
+                dimension=row.get("topic_dimension"),
+                associated_brand=associated_brand,
+                status=row.get("topic_status"),
+                prompt_count=0,
+                query_count=0,
+                response_count=0,
+                success_rate=None,
+                engine_coverage=[],
+                mention_rate=None,
+                visibility_rate=None,
+                sov=None,
+                avg_rank=None,
+                avg_geo_score=None,
+                sentiment_distribution={"positive": 0, "neutral": 0, "negative": 0},
+                citation_count=0,
+                citation_rate=None,
+                last_collected=None,
+            )
+        )
+    return merged
 
 
 def _topic_aggregates(
@@ -542,6 +657,33 @@ async def get_topic_monitoring(
     ):
         update["formula_status"] = FORMULA_OK_STATUS
         update["formula_diagnostics"] = formula_diagnostics_for(FORMULA_OK_STATUS)
+    # #1029: merge active-but-evidence-less topics into the list so the
+    # user-facing /topics view matches the brand's actual active topic
+    # population, not just the subset that already has llm_response rows.
+    #
+    # ORDER MATTERS — this merge MUST run AFTER `build_contract_context`
+    # (above) has consumed `has_data = bool(summary.response_count or topics)`.
+    # If the merge ran earlier, the additional zero-metric topics would flip
+    # `has_data` to True for evidence-empty brands and cascade into
+    # `metric_formula_evidence` evaluation, producing the "Limited proof"
+    # regression that triggered the revert of PR #1052.
+    #
+    # The gate is NOT `filters.explicit` (that tripped on the default
+    # frontend state of date + engine preselect, which caused PR #1041 to
+    # silently never merge). Instead we gate only on filters that narrow the
+    # *topic set itself*: dimensions, intents, prompt_scope. Date / engine /
+    # segment / profile filters are query-scope and a topic with no
+    # responses in the window is still a valid "no evidence yet" entry.
+    filters_narrow_topic_set = bool(filters.dimensions or filters.intents or filters.prompt_scope)
+    if not filters_narrow_topic_set:
+        listing = await _fetch_brand_topics_listing(session, brand_id)
+        merged_topics = _merge_missing_brand_topics(
+            out.topics,
+            listing,
+            associated_brand=brand_names.get(brand_id),
+        )
+        if len(merged_topics) != len(out.topics):
+            update["topics"] = merged_topics
     return out.model_copy(update=update)
 
 
