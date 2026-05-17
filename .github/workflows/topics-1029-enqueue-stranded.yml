@@ -1,0 +1,286 @@
+name: Topics #1029 Enqueue Stranded Queries
+
+# WRITABLE one-shot ops follow-up for issue #1029.
+#
+# Why this exists: PR #1082's workflow called
+# `app.admin.scheduler.manual_dispatch.run_manual_dispatch` directly,
+# bypassing the FastAPI router at
+# `backend/app/api/admin/scheduler/router.py:567-572`. The router is
+# what calls `app.admin.queries.celery_dispatch.dispatch_many(...)` to
+# enqueue the queries it just inserted. Because the workflow skipped
+# that wrapping call, 72 queries for the 9 stuck BestCoffer topics
+# (162..170, brand_id=24) ended up with `status='pending'`,
+# `queued_at` populated, but were NEVER actually enqueued onto the
+# `llm_doubao` / `llm_chatgpt` / `llm_deepseek` Redis queues. The
+# Celery workers have nothing to consume — the worker-stall diagnostic
+# in PR #1077 comment 4467134568 confirms
+# `celery inspect active = {"celery@...": [], "celery@...": []}` for
+# both workers.
+#
+# v3: matches PR #1082's working SSH heredoc structure, plus
+# `< /dev/null` on every docker compose exec -T that does not
+# already redirect stdin. Without that, the docker exec consumes
+# bytes from the SSH heredoc's stdin (intended for the outer remote
+# bash), which on v1/v2 caused the remote bash to hit EOF before
+# entering the APPLY branch.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type APPLY to enqueue. Anything else dry-runs the SQL only."
+        required: true
+        default: "DRYRUN"
+  push:
+    branches:
+      - claude/fix-issue-1029-enqueue-stranded-Ny8TZ
+    paths:
+      - '.github/workflows/topics-1029-enqueue-stranded.yml'
+
+concurrency:
+  group: topics-1029-enqueue-stranded
+  cancel-in-progress: false
+
+jobs:
+  enqueue-stranded:
+    name: Enqueue stranded queries for #1029
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    env:
+      CONFIRM: ${{ github.event.inputs.confirm || 'APPLY' }}
+      SERVER_HOST: ${{ secrets.SERVER_HOST }}
+      SERVER_USER: ${{ secrets.SERVER_USER }}
+      SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+
+    steps:
+      - name: Validate confirm input
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${CONFIRM}" in
+            APPLY|DRYRUN) ;;
+            *) echo "confirm must be APPLY or DRYRUN, got '${CONFIRM}'"; exit 1 ;;
+          esac
+          echo "confirm=${CONFIRM}"
+
+      - name: Set up SSH
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "${SERVER_SSH_KEY}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H "${SERVER_HOST}" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Run enqueue + verify queries
+        shell: bash
+        run: |
+          set -euo pipefail
+          ssh \
+            -i ~/.ssh/id_rsa \
+            -o StrictHostKeyChecking=accept-new \
+            "${SERVER_USER}@${SERVER_HOST}" \
+            "CONFIRM='${CONFIRM}' bash -s" <<'REMOTE' | tee /tmp/topics_1029_enqueue.txt
+          set -euo pipefail
+          cd /opt/genpano
+
+          echo "=== Captured at ==="
+          date -u +"%Y-%m-%dT%H:%M:%SZ"
+          echo "=== Enqueue mode: ${CONFIRM} ==="
+
+          echo "=== Docker compose status ==="
+          docker compose ps
+
+          echo ""
+          echo "=== Pre-enqueue SQL state (topics 162..170) ==="
+          docker compose exec -T postgres psql -U genpano -d genpano -v ON_ERROR_STOP=1 -X <<'SQL'
+          \set ON_ERROR_STOP on
+          BEGIN TRANSACTION READ ONLY;
+
+          \echo '--- pre-enqueue: pending+stranded queries (no llm_response yet) ---'
+          SELECT COUNT(*) AS pre_stranded
+          FROM queries q
+          LEFT JOIN llm_responses r ON r.query_id = q.id
+          JOIN prompts p ON p.id = q.prompt_id
+          WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170)
+            AND q.status = 'pending'
+            AND r.id IS NULL;
+
+          \echo '--- pre-enqueue: status breakdown for the 9 stuck topics ---'
+          SELECT q.status, q.target_llm, COUNT(*) AS n
+          FROM queries q
+          JOIN prompts p ON p.id = q.prompt_id
+          WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170)
+          GROUP BY q.status, q.target_llm
+          ORDER BY q.status, q.target_llm;
+
+          ROLLBACK;
+          SQL
+
+          echo ""
+          echo "=== Pre-enqueue Redis LLEN ==="
+          for q in llm_doubao llm_chatgpt llm_deepseek celery; do
+            depth=$(docker compose exec -T redis redis-cli LLEN "$q" 2>&1 < /dev/null)
+            echo "PRE LLEN $q = $depth"
+          done
+
+          if [ "${CONFIRM}" = "APPLY" ]; then
+            echo ""
+            echo "=== APPLY: invoking dispatch_many on still-stranded queries ==="
+
+            cat > /tmp/enqueue_stranded.py <<'PYTHON'
+          import asyncio
+          import json
+          from sqlalchemy import text
+          from app.admin.queries.celery_dispatch import dispatch_many
+          from app.db.session import AsyncSessionLocal
+
+
+          async def _main() -> None:
+              async with AsyncSessionLocal() as session:
+                  rows = await session.execute(
+                      text(
+                          """
+                          SELECT q.id, q.target_llm
+                          FROM queries q
+                          LEFT JOIN llm_responses r ON r.query_id = q.id
+                          JOIN prompts p ON p.id = q.prompt_id
+                          WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170)
+                            AND q.status = 'pending'
+                            AND r.id IS NULL
+                          ORDER BY q.id
+                          """
+                      )
+                  )
+                  dispatch_items = [
+                      {"id": int(row[0]), "target_llm": row[1]}
+                      for row in rows.fetchall()
+                  ]
+
+              print(f"=== stranded query count: {len(dispatch_items)} ===")
+              sample = dispatch_items[:6]
+              print(f"sample: {json.dumps(sample, default=str)}")
+              by_target = {}
+              for item in dispatch_items:
+                  key = str(item.get("target_llm") or "<null>")
+                  by_target[key] = by_target.get(key, 0) + 1
+              print(f"by target_llm: {json.dumps(by_target)}")
+
+              if not dispatch_items:
+                  print("=== nothing to enqueue (no still-stranded queries) ===")
+                  return
+
+              # dispatch_many is sync; do not await.
+              dispatched, failed = dispatch_many(dispatch_items)
+              print(f"=== dispatch_many result: dispatched={dispatched} failed={failed} ===")
+
+
+          asyncio.run(_main())
+          PYTHON
+
+            backend_cid="$(docker compose ps -q backend | head -n 1 || true)"
+            if [ -n "$backend_cid" ] && [ "$(docker inspect -f '{{.State.Running}}' "$backend_cid" 2>/dev/null || echo false)" = "true" ]; then
+              echo "[i] backend service is running; using docker compose exec"
+              docker compose exec -T backend python < /tmp/enqueue_stranded.py
+            else
+              echo "[i] backend service is NOT running; falling back to docker compose run --rm -T"
+              docker compose cp /tmp/enqueue_stranded.py backend:/tmp/enqueue_stranded.py 2>/dev/null \
+                || { echo "[!] docker compose cp failed; trying tar pipe"; tar -cC /tmp enqueue_stranded.py | docker compose run --rm -T --entrypoint sh backend -c 'mkdir -p /tmp && tar -xC /tmp && python /tmp/enqueue_stranded.py'; }
+              if [ -n "$backend_cid" ]; then
+                docker compose run --rm -T backend python /tmp/enqueue_stranded.py
+              else
+                docker compose run --rm -T --entrypoint python backend /tmp/enqueue_stranded.py
+              fi
+            fi
+          else
+            echo ""
+            echo "=== DRYRUN: would have called dispatch_many on the pending+stranded rows ==="
+          fi
+
+          echo ""
+          echo "=== Post-enqueue Redis LLEN ==="
+          for q in llm_doubao llm_chatgpt llm_deepseek celery; do
+            depth=$(docker compose exec -T redis redis-cli LLEN "$q" 2>&1 < /dev/null)
+            echo "POST LLEN $q = $depth"
+          done
+
+          echo ""
+          echo "=== Post-enqueue celery inspect reserved+active ==="
+          docker compose exec -T worker celery -A geo_tracker.tasks.celery_tasks inspect reserved --timeout=10 --json 2>&1 < /dev/null || true
+          echo "---"
+          docker compose exec -T worker celery -A geo_tracker.tasks.celery_tasks inspect active --timeout=10 --json 2>&1 < /dev/null || true
+
+          echo ""
+          echo "=== Post-enqueue SQL verification ==="
+          docker compose exec -T postgres psql -U genpano -d genpano -v ON_ERROR_STOP=1 -X <<'SQL'
+          \set ON_ERROR_STOP on
+          BEGIN TRANSACTION READ ONLY;
+
+          \echo '--- post-enqueue: aggregated status counts ---'
+          SELECT
+            (SELECT COUNT(*) FROM queries q JOIN prompts p ON p.id = q.prompt_id
+             WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170)
+               AND q.status = 'pending') AS still_pending,
+            (SELECT COUNT(*) FROM queries q JOIN prompts p ON p.id = q.prompt_id
+             WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170)
+               AND q.status IN ('queued', 'running', 'done')) AS now_in_flight_or_done,
+            (SELECT COUNT(*) FROM queries q JOIN prompts p ON p.id = q.prompt_id
+             WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170)
+               AND q.status = 'failed') AS failed;
+
+          \echo '--- post-enqueue: llm_responses landed for these topics ---'
+          SELECT COUNT(*) AS responses_landed
+          FROM llm_responses r
+          JOIN queries q ON q.id = r.query_id
+          JOIN prompts p ON p.id = q.prompt_id
+          WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170);
+
+          ROLLBACK;
+          SQL
+
+          echo ""
+          echo "=== Enqueue complete (mode=${CONFIRM}) ==="
+          REMOTE
+
+      - name: Upload enqueue log as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: topics-1029-enqueue-stranded
+          path: /tmp/topics_1029_enqueue.txt
+          if-no-files-found: warn
+
+      - name: Post enqueue result to PR as comment
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -s /tmp/topics_1029_enqueue.txt ]; then
+            echo "enqueue log missing or empty; skipping PR comment"
+            exit 0
+          fi
+          PR_NUMBER="$(gh pr list --repo "$REPO" --head "$BRANCH" --state open --json number --jq '.[0].number // ""')"
+          if [ -z "$PR_NUMBER" ]; then
+            echo "No open PR found for branch ${BRANCH}; skipping PR comment."
+            exit 0
+          fi
+          {
+            echo "## Enqueue stranded queries result (issue #1029)"
+            echo ""
+            echo "**Run**: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo "**Mode**: ${CONFIRM}"
+            echo ""
+            echo '```'
+            sed 's/\x1b\[[0-9;]*m//g' /tmp/topics_1029_enqueue.txt | head -c 55000
+            echo ''
+            echo '```'
+          } > /tmp/enqueue-comment.md
+          gh pr comment "$PR_NUMBER" --repo "$REPO" --body-file /tmp/enqueue-comment.md
