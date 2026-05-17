@@ -77,6 +77,15 @@ jobs:
           PORT="${SERVER_SSH_PORT:-22}"
           ssh-keyscan -p "$PORT" -H "$SERVER_HOST" >> ~/.ssh/known_hosts 2>/dev/null
 
+          # Pre-flight: ask ECS to curl Chrome's CDP locally. If this fails
+          # the problem is Chrome / docker port mapping, not the tunnel.
+          echo "=== Pre-flight: curl CDP from ECS itself ==="
+          ssh -i ~/.ssh/id_ssh -p "$PORT" \
+            -o BatchMode=yes \
+            "${SERVER_USER}@${SERVER_HOST}" \
+            "curl -sS --max-time 5 http://127.0.0.1:${CDP_PORT}/json/version || echo \"ECS-LOCAL-CURL-FAILED rc=\$?\"; echo; echo '--- docker ps ---'; docker ps --format '{{.Names}}\t{{.Status}}\t{{.Ports}}' | grep doubao || true; echo '--- listening on ${CDP_PORT} ---'; ss -tlnp 2>/dev/null | grep ':${CDP_PORT} ' || echo NONE"
+          echo "=== End pre-flight ==="
+
           # Open SSH tunnel in background. Forward runner localhost CDP_PORT
           # to ECS 127.0.0.1:CDP_PORT (where doubao-NN container is bound).
           nohup ssh -i ~/.ssh/id_ssh -p "$PORT" \
