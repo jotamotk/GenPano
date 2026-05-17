@@ -858,6 +858,7 @@ async def _mark_query_failed_after_task_abort_async(
                     db,
                     AccountPool(db),
                     reason=effective_reason,
+                    query_id=query_id,
                 )
             await db.commit()
     finally:
@@ -1136,6 +1137,7 @@ def execute_query(self, query_id: int) -> dict:
                             db,
                             pool,
                             reason=auth_failure_reason,
+                            query_id=query_id,
                         )
                         await _handle_doubao_account_failure_handoff(
                             db=db,
@@ -1175,6 +1177,7 @@ def execute_query(self, query_id: int) -> dict:
                             db,
                             pool,
                             reason=invalid_reason,
+                            query_id=query_id,
                         )
                         await _handle_doubao_account_failure_handoff(
                             db=db,
@@ -1259,6 +1262,7 @@ def execute_query(self, query_id: int) -> dict:
                         db,
                         pool,
                         reason=original_failure_reason,
+                        query_id=query_id,
                     )
                     await _handle_doubao_account_failure_handoff(
                         db=db,
@@ -1319,6 +1323,7 @@ def execute_query(self, query_id: int) -> dict:
                     db,
                     pool,
                     reason=failure_reason,
+                    query_id=query_id,
                 )
                 await db.commit()
                 return {
@@ -1360,6 +1365,7 @@ def execute_query(self, query_id: int) -> dict:
                             db,
                             pool,
                             reason="exception",
+                            query_id=query_id,
                         )
                     except Exception as pool_err:
                         logger.error(

@@ -40,6 +40,7 @@ class AccountQuotaSettlement:
         pool: AccountPool | None,
         *,
         reason: str | None,
+        query_id: int | None = None,
     ) -> bool:
         if not self.reserved_account_id or self.settled:
             return False
@@ -48,9 +49,17 @@ class AccountQuotaSettlement:
 
         if _should_report_account_failure(reason):
             if pool is not None:
+                # Refs #963 (PR ``claude/issue-963-3strike-respect-real-response``):
+                # forward ``query_id`` so :meth:`AccountPool.report_failure`
+                # can skip the ``expired_transition_count`` strike when the
+                # query already has a real captured ``llm_responses`` row
+                # (defense-in-depth against the Mode-C validator
+                # false-positive — see ``STRIKE_SKIP_MIN_RAW_TEXT_CHARS`` in
+                # ``geo_tracker.pool.account_pool``).
                 await pool.report_failure(
                     self.reserved_account_id,
                     reason=reason or "unknown",
+                    query_id=query_id,
                 )
             return False
 

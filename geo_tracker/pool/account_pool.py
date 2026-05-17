@@ -16,7 +16,12 @@ from sqlalchemy import and_, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from geo_tracker.agent.sms_redaction import mask_phone
-from geo_tracker.db.models import AccountRotationLog, AccountStatus, LLMAccount
+from geo_tracker.db.models import (
+    AccountRotationLog,
+    AccountStatus,
+    LLMAccount,
+    LLMResponse,
+)
 from geo_tracker.tasks.query_failure import _should_report_account_failure
 
 logger = logging.getLogger(__name__)
@@ -40,6 +45,70 @@ DAILY_RESET_HOUR      = 0      # UTC 00:00 重置每日计数
 # operators can lower / disable in production without code change.
 MAX_EXPIRED_TRANSITIONS_DEFAULT = 3
 EXPIRED_RICOCHET_BAN_ENGINES = frozenset({"doubao"})
+
+# Refs #963 verify-readonly evidence (issue #963 comment 4469641196 at
+# 2026-05-17T06:47:58Z, Q-184971 / Q-184988): defense-in-depth against the
+# Mode-C validator false-positive that wrongly tags real Doubao answers as
+# ``doubao_homepage_content`` / ``no_response``. When ``report_failure`` is
+# called with ``reason in EXPIRED_ACCOUNT_REASONS`` AND the triggering query
+# has at least one ``llm_responses`` row whose ``raw_text`` is >= this many
+# characters of real captured content, we treat the failure as a validator
+# false-positive: status still flips to ``expired`` (the page chrome was
+# genuinely odd; cookies may still need refresh), but the
+# ``expired_transition_count`` strike is SKIPPED so an account that captured
+# a real answer is not punished toward the 3-strike permanent ban.
+#
+# Threshold justification: Q-184971 had a 1255-char real Doubao answer
+# ("是的，bestCoffer 企业级 AI 数据脱敏工具非常适合金融行业的多业务场景使
+# 用…") with retry_reason that was nonetheless classified as a failure;
+# Q-184988 had 1191 chars. Any threshold strictly less than ~1100 catches
+# both real cases. We pick 100 chars to match the analogous whitelist gate
+# in ``response_validation.doubao_persistence_auth_reason`` (the
+# ``.flow-markdown-body >= 100`` answer override), so the two layers agree
+# on what "real captured answer" means and a future tweak to one will not
+# desynchronize from the other. Login-redirect pages typically render
+# 10–30 chars of UI chrome; 100 chars is comfortably above that ceiling.
+STRIKE_SKIP_MIN_RAW_TEXT_CHARS = 100
+
+
+async def _query_has_real_captured_response(
+    db: AsyncSession,
+    query_id: int | None,
+    *,
+    min_chars: int = STRIKE_SKIP_MIN_RAW_TEXT_CHARS,
+) -> bool:
+    """Return True iff ``query_id`` has at least one ``llm_responses`` row whose
+    ``raw_text`` length is >= ``min_chars``.
+
+    Used by :meth:`AccountPool.report_failure` to suppress the
+    ``expired_transition_count`` strike when the validator flagged a Doubao
+    response as auth-broken but the response row in fact holds a real captured
+    answer (the Mode-C false-positive class). Read-only; never mutates state.
+    A ``query_id`` of None returns False so callers without a query context
+    (cookie keep-alive probe, manual cooldown writes) keep the legacy strike
+    semantics.
+    """
+    if not query_id:
+        return False
+    try:
+        row = (
+            await db.execute(
+                select(func.length(LLMResponse.raw_text))
+                .where(LLMResponse.query_id == int(query_id))
+                .where(LLMResponse.raw_text.isnot(None))
+                .order_by(func.length(LLMResponse.raw_text).desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+    except Exception as exc:
+        logger.warning(
+            "report_failure: could not check llm_responses for query_id=%s: %s "
+            "(falling back to legacy strike behavior)",
+            query_id,
+            exc,
+        )
+        return False
+    return bool(row and int(row) >= int(min_chars))
 
 
 def _max_expired_transitions() -> int:
@@ -494,11 +563,24 @@ class AccountPool:
         provider: str = "none",
         price_bucket: str = "none",
         run_id: str = "none",
+        query_id: int | None = None,
     ) -> None:
         """
         记录失败，达到阈值自动封禁
         reason: rate_limit | ban | captcha_fail | login_fail | cookies_expired | response_too_short | exception
         cookies_expired 不计入 consecutive_fails（只是 cookies 过期，不是账号问题）
+
+        ``query_id`` (Refs #963 / PR ``claude/issue-963-3strike-respect-real-response``):
+        when provided AND ``reason`` is in :data:`EXPIRED_ACCOUNT_REASONS`,
+        :func:`_query_has_real_captured_response` is consulted. If the query
+        already has a captured ``llm_responses`` row whose ``raw_text`` is
+        >= :data:`STRIKE_SKIP_MIN_RAW_TEXT_CHARS`, the
+        ``expired_transition_count`` strike is SKIPPED — the account captured
+        a real answer, so this is a validator false-positive, not real
+        account exhaustion. Status still flips to ``expired`` (the next
+        request should still wait for a fresh cookie cycle), but the strike
+        counter does not climb. Without ``query_id`` (e.g. cookie keep-alive
+        probe), the legacy strike behavior is preserved.
         """
         account = await self.db.get(LLMAccount, account_id)
         if not account:
@@ -516,6 +598,58 @@ class AccountPool:
             # other engines keep the legacy expired-then-wait-for-re-login
             # semantics because their dominant failure modes are not
             # ``doubao_not_logged_in`` style cookie-acceptance lies.
+            #
+            # Refs #963 verify-readonly comment 4469641196 (2026-05-17):
+            # before bumping the strike, check if the triggering query has
+            # a real captured response (raw_text >= 100 chars). If so, the
+            # current failure is a validator false-positive — the account
+            # actually served a real answer, so we must NOT punish it
+            # toward the 3-strike permanent ban. Defense-in-depth against
+            # Mode-C-style flagging even after the orthogonal validator
+            # fix on ``claude/issue-963-validator-false-positive`` ships:
+            # if a future regression slips through the validator, the
+            # strike layer is still safe. Status still flips to expired
+            # (cookies may genuinely need refresh), but the strike is
+            # skipped so genuine re-login can recover the account.
+            real_response_captured = (
+                await _query_has_real_captured_response(self.db, query_id)
+            )
+            if real_response_captured:
+                logger.warning(
+                    "report_failure: skipping strike for account_id=%s "
+                    "engine=%s reason=%s query_id=%s — real captured "
+                    "response found (raw_text >= %s chars). Status still "
+                    "transitions to expired; strike count stays at %s.",
+                    account.id,
+                    account.llm_name,
+                    reason,
+                    query_id,
+                    STRIKE_SKIP_MIN_RAW_TEXT_CHARS,
+                    int(account.expired_transition_count or 0),
+                )
+                account.status = AccountStatus.EXPIRED.value
+                account.cooldown_until = None
+                account.consecutive_fails = 0
+                _log_account_state_transition(
+                    account,
+                    previous_status=previous_status,
+                    new_status=AccountStatus.EXPIRED.value,
+                    reason=reason,
+                    evidence=(
+                        evidence
+                        or "strike_skipped:real_captured_response "
+                        f"query_id={query_id}"
+                    ),
+                    provider=provider,
+                    price_bucket=price_bucket,
+                    run_id=run_id,
+                )
+                # Persist & log; bail out before the strike-increment branch.
+                log = AccountRotationLog(account_id=account_id, reason=reason)
+                self.db.add(log)
+                await self.db.commit()
+                return
+
             next_expired_transitions = int(account.expired_transition_count or 0) + 1
             account.expired_transition_count = next_expired_transitions
             max_transitions = _max_expired_transitions()
