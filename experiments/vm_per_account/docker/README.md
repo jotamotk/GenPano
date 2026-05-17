@@ -22,37 +22,26 @@
 
 不在 ECS 上手动跑命令。在 GitHub Actions UI 点按钮, workflow SSH 进 ECS 替你操作。
 
-### 一次性: 配 6-7 个 GitHub Secret
+### 一次性: 配 GitHub Secret
 
-进 https://github.com/jotamotk/trash_test/settings/secrets/actions, 添加:
+进 https://github.com/jotamotk/trash_test/settings/secrets/actions, 检查 + 添加:
+
+**已有 (其它 workflow 已经在用, 复用即可)**:
 
 | Secret | 值 |
 |---|---|
-| `ECS_SSH_PRIVATE_KEY` | SSH 私钥 PEM 格式 |
-| `ECS_SSH_HOST` | ECS 公网 IP (e.g. `116.62.36.xxx`) |
-| `ECS_SSH_USER` | SSH 用户名 (e.g. `root` 或 `ubuntu`) |
-| `ECS_SSH_PORT` | 22 (可选, 默认 22) |
-| `ECS_REPO_PATH` | ECS 上 repo 路径 (e.g. `/opt/trash_test`) |
-| `VNC_PASSWORD_01` | doubao-01 noVNC 密码 (e.g. `openssl rand -hex 4`) |
+| `SERVER_HOST` | ECS 公网 IP (e.g. `116.62.36.xxx`) |
+| `SERVER_USER` | SSH 用户名 (e.g. `root` 或 `ubuntu`) |
+| `SERVER_SSH_KEY` | SSH 私钥 PEM 格式 |
+| `SERVER_SSH_PORT` | 22 (可选, 默认 22) |
+
+**本 workflow 新加**:
+
+| Secret | 值 |
+|---|---|
+| `ECS_REPO_PATH` | ECS 上 repo 绝对路径 (e.g. `/opt/trash_test` 或 `/root/trash_test`) |
+| `VNC_PASSWORD_01` | doubao-01 noVNC 密码 (e.g. 跑 `openssl rand -hex 4` 生成) |
 | `VNC_PASSWORD_02` | doubao-02 noVNC 密码 |
-
-#### 怎么准备 SSH key
-
-本地 (你 Windows PowerShell 或 Linux/Mac):
-
-```bash
-ssh-keygen -t ed25519 -f vm-deploy-key -N ""
-# 产物: vm-deploy-key (私钥) + vm-deploy-key.pub (公钥)
-```
-
-把**公钥**追加到 ECS 的 `~/.ssh/authorized_keys`:
-```bash
-# 在 ECS 上
-echo "ssh-ed25519 AAAA... your_comment" >> ~/.ssh/authorized_keys
-chmod 0600 ~/.ssh/authorized_keys
-```
-
-把**私钥**全文 (含 `-----BEGIN OPENSSH PRIVATE KEY-----` 和 `-----END ...-----`) 粘到 GitHub Secret `ECS_SSH_PRIVATE_KEY`。
 
 ### 第一次部署: 跑 `action=bootstrap`
 
