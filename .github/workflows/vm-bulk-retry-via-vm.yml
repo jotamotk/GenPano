@@ -1,17 +1,21 @@
 name: VM Bulk Retry via VM (BestCoffer Doubao)
 
 # One-off workflow to trigger retry-via-VM on N failed BestCoffer Doubao
-# queries, half to doubao-01 and half to doubao-02. Calls the
-# /admin/api/queries/<id>/retry_via_vm endpoint via curl from inside the
-# ECS host (so the backend's docker network is reachable as
-# http://127.0.0.1:18080 — the existing backend port mapping).
+# queries, half to doubao-01 and half to doubao-02. SCPs the bulk script
+# to ECS and runs it inside the backend container, which has DB access
+# and the geo_tracker module on its sys.path.
 #
 # Requires:
-#   - PR #1145 merged + deployed (the new endpoint live in prod).
+#   - PR #1145 merged + deployed (the run_quick_retry helper live in prod).
 #   - doubao-01 + doubao-02 both logged in (manually via noVNC, see
 #     experiments/vm_per_account/docker/scripts/open-vnc-tunnel.ps1).
-#   - The script uses ADMIN_BOOTSTRAP_TOKEN if set in secrets, OR a
-#     direct DB write path if the operator hasn't wired token auth.
+#
+# Exit codes (from scripts/vm_bulk_retry.py):
+#   0 all selected retries succeeded
+#   2 DATABASE_URL not set
+#   3 no candidates matched the filter
+#   4 run_quick_retry cannot be imported
+#   5 one or more retries failed (success < total)
 
 on:
   workflow_dispatch:
@@ -22,7 +26,7 @@ on:
         default: '20'
         type: string
       query_text_filter:
-        description: 'SQL LIKE pattern for queries.query_text'
+        description: 'SQL ILIKE pattern for queries.query_text'
         required: true
         default: '%bestCoffer%'
         type: string
@@ -65,7 +69,7 @@ jobs:
             -o BatchMode=yes -o ConnectTimeout=10 \
             "${SERVER_USER}@${SERVER_HOST}" 'echo ssh-ok'
 
-      - name: Run bulk retry via docker exec on the backend container
+      - name: SCP bulk script to ECS + docker exec inside backend container
         env:
           SERVER_HOST: ${{ secrets.SERVER_HOST }}
           SERVER_USER: ${{ secrets.SERVER_USER }}
@@ -79,123 +83,30 @@ jobs:
           PORT="${SERVER_SSH_PORT:-22}"
           REMOTE="${SERVER_USER}@${SERVER_HOST}"
 
-          # Inline Python that runs INSIDE the backend container. It:
-          #   1. Queries N failed queries matching the filter
-          #   2. Splits half/half between doubao-01 (CDP 9222) and
-          #      doubao-02 (CDP 9223)
-          #   3. Calls run_quick_retry directly (no HTTP auth needed —
-          #      we're already inside the backend's Python process
-          #      with DB access)
-          #   4. Reports a JSON summary line per query
-          PY_SCRIPT=$(cat <<'PYEOF'
-import asyncio
-import json
-import os
-import sys
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy import text as sa_text
-from sqlalchemy.orm import sessionmaker
+          # 1. SCP the script onto ECS host /tmp.
+          scp -i ~/.ssh/id_ssh -P "$PORT" \
+            scripts/vm_bulk_retry.py \
+            "${REMOTE}:/tmp/vm_bulk_retry.py"
 
-sys.path.insert(0, "/app")
-sys.path.insert(0, "/repo")
+          # 2. Identify backend container name on ECS.
+          CN=$(ssh -i ~/.ssh/id_ssh -p "$PORT" "$REMOTE" \
+            "sudo docker ps --format '{{.Names}}' | grep -E '^genpano-backend|backend' | head -1")
+          if [ -z "$CN" ]; then
+            echo "FATAL: no backend container running on ECS" >&2
+            ssh -i ~/.ssh/id_ssh -p "$PORT" "$REMOTE" "sudo docker ps" >&2 || true
+            exit 5
+          fi
+          echo "running bulk-retry inside container: $CN"
 
-count = int(os.environ.get("BULK_COUNT", "20"))
-filter_pat = os.environ.get("BULK_FILTER", "%bestCoffer%")
-target_llm = os.environ.get("BULK_LLM", "doubao")
-dry_run = os.environ.get("BULK_DRY_RUN", "false").lower() == "true"
-db_url = os.environ.get("DATABASE_URL") or os.environ.get("DB_URL")
-if not db_url:
-    print(json.dumps({"fatal": "DATABASE_URL not set in container"}))
-    sys.exit(2)
-# alembic-style postgresql URL → asyncpg
-if db_url.startswith("postgresql://"):
-    db_url = db_url.replace("postgresql://", "postgresql+asyncpg://", 1)
-
-async def main():
-    eng = create_async_engine(db_url, future=True)
-    AsyncSessionLocal = sessionmaker(bind=eng, class_=AsyncSession, expire_on_commit=False)
-    # Find candidate query ids: target_llm matches, query_text matches
-    # filter, and status looks failed-ish.
-    async with AsyncSessionLocal() as session:
-        rows = (await session.execute(sa_text(
-            "SELECT id, query_text FROM queries "
-            "WHERE target_llm = :llm "
-            "  AND query_text ILIKE :pat "
-            "  AND status IN ('failed', 'expired', 'pending', 'no_response') "
-            "ORDER BY id DESC "
-            "LIMIT :n"
-        ), {"llm": target_llm, "pat": filter_pat, "n": count})).fetchall()
-    ids = [int(r[0]) for r in rows]
-    print(json.dumps({"selected_count": len(ids), "ids": ids}))
-    if dry_run:
-        return
-    if not ids:
-        print(json.dumps({"fatal": "no matching queries found"}))
-        sys.exit(3)
-
-    try:
-        from geo_tracker.agent.vm_quick_retry import run_quick_retry
-    except Exception as e:
-        print(json.dumps({"fatal": f"cannot import run_quick_retry: {e!r}"}))
-        sys.exit(4)
-
-    # Split half-half between doubao-01 and doubao-02
-    half = len(ids) // 2
-    plan = [(qid, "doubao-01", "http://127.0.0.1:9222") for qid in ids[:half]] + \
-           [(qid, "doubao-02", "http://127.0.0.1:9223") for qid in ids[half:]]
-
-    results = []
-    for qid, vm_id, cdp in plan:
-        async with AsyncSessionLocal() as session:
-            try:
-                # Fetch query_text for this id
-                row = (await session.execute(sa_text(
-                    "SELECT query_text FROM queries WHERE id = :id"
-                ), {"id": qid})).first()
-                if not row:
-                    results.append({"id": qid, "vm_id": vm_id, "error": "missing_after_select"})
-                    continue
-                r = await run_quick_retry(
-                    query_id=qid,
-                    query_text=row[0],
-                    target_llm=target_llm,
-                    session=session,
-                    cdp_endpoint=cdp,
-                    vm_id=vm_id,
-                )
-                results.append({"id": qid, "vm_id": vm_id, "rawText_chars": r.get("raw_text_chars"), "attempt_n": r.get("attempt_n")})
-                print(json.dumps(results[-1]))
-            except Exception as e:
-                results.append({"id": qid, "vm_id": vm_id, "error": repr(e)})
-                print(json.dumps(results[-1]))
-
-    print(json.dumps({"summary": {"total": len(results), "success": sum(1 for r in results if not r.get("error"))}}))
-
-asyncio.run(main())
-PYEOF
-)
-
-          # Send the python script via SSH, run it inside the backend container,
-          # capture output to a local file.
+          # 3. Copy script into the container then exec it. Propagate
+          #    the script's exit code as the workflow step's exit code,
+          #    so a partial-failure run is reported red on the job page.
           ssh -i ~/.ssh/id_ssh -p "$PORT" "$REMOTE" \
-            "BULK_COUNT='$COUNT' BULK_FILTER='$QUERY_FILTER' BULK_LLM='$TARGET_LLM' BULK_DRY_RUN='$DRY_RUN' bash -s" \
-            <<SHEOF
-set -euo pipefail
-# Determine backend container name (deploy.yml uses 'genpano-backend' convention).
-CN=\$(sudo docker ps --format '{{.Names}}' | grep -E '^genpano-backend|backend' | head -1)
-if [ -z "\$CN" ]; then
-  echo "FATAL: no backend container running on ECS" >&2
-  sudo docker ps
-  exit 5
-fi
-echo "running bulk-retry inside container: \$CN"
-sudo docker exec \\
-  -e BULK_COUNT="\$BULK_COUNT" \\
-  -e BULK_FILTER="\$BULK_FILTER" \\
-  -e BULK_LLM="\$BULK_LLM" \\
-  -e BULK_DRY_RUN="\$BULK_DRY_RUN" \\
-  "\$CN" python -u -c "$(cat <<'PYINNER'
-$PY_SCRIPT
-PYINNER
-)"
-SHEOF
+            "sudo docker cp /tmp/vm_bulk_retry.py '${CN}:/tmp/vm_bulk_retry.py'"
+          ssh -i ~/.ssh/id_ssh -p "$PORT" "$REMOTE" \
+            "sudo docker exec \
+                -e BULK_COUNT='${COUNT}' \
+                -e BULK_FILTER='${QUERY_FILTER}' \
+                -e BULK_LLM='${TARGET_LLM}' \
+                -e BULK_DRY_RUN='${DRY_RUN}' \
+                '${CN}' python -u /tmp/vm_bulk_retry.py"
