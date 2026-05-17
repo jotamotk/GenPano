@@ -307,3 +307,98 @@ async def test_threshold_constant_matches_validator_whitelist(
         "100-char answer whitelist in response_validation. Update both "
         "or neither."
     )
+
+
+@pytest.mark.asyncio
+async def test_first_time_false_positive_in_memory_response_skips_strike(
+    session: AsyncSession,
+) -> None:
+    """Refs #963 Codex P1 on PR #1109: at the post-extract Doubao failure
+    branches in ``celery_tasks.execute_query`` (lines 1136 and 1176), the
+    ``LLMResponse`` row has NOT yet been inserted into ``llm_responses``
+    — the DB insert is on the success path (``db.add(response)`` at line
+    1223). For a FIRST-TIME Mode-C false-positive there is therefore no
+    orphan row to find via the DB lookup, and without an in-memory
+    response thread the strike fires anyway, defeating the defense.
+
+    This regression test asserts that passing the in-memory
+    ``response_text`` (the captured ``response.raw_text`` from the
+    just-finished browser run) is sufficient to skip the strike — the
+    DB query is not consulted. This mirrors the production live-path
+    where ``response_validation.doubao_persistence_auth_reason``
+    misclassifies a fresh real answer.
+    """
+    session.add(_doubao_account(account_id=70))
+    # Query exists but NO llm_responses row yet — first-time failure
+    # before db.add(response) runs.
+    session.add(_query(190001, account_id=70, retry_reason="doubao_homepage_content"))
+    await session.commit()
+
+    pool = AccountPool(session)
+
+    # In-memory captured response — 1255 chars matches Q-184971's
+    # raw_text length anchored to verify-readonly evidence.
+    real_answer_in_memory = (
+        "是的，bestCoffer 企业级 AI 数据脱敏工具非常适合金融行业的多业务"
+        "场景使用。 其从功能设计、合规适配到实际案例，均深度贴合金融行业"
+        "的高敏感、强监管、多场景需求。 一、核心金融场景全覆盖 监管报送"
+        "与合规审计 痛点：需向央行、金监总局报送 KYC 记录、反洗钱报告等"
+    )
+    assert len(real_answer_in_memory) >= 100, (
+        "Test fixture must exceed STRIKE_SKIP_MIN_RAW_TEXT_CHARS to "
+        "exercise the bypass path."
+    )
+
+    await pool.report_failure(
+        70,
+        reason="doubao_homepage_content",
+        query_id=190001,
+        response_text=real_answer_in_memory,
+    )
+
+    acc = await session.get(LLMAccount, 70)
+    assert acc.expired_transition_count == 0, (
+        "First-time Mode-C false-positive (response captured in-memory "
+        "but llm_responses row not yet persisted) MUST skip the strike. "
+        "The in-memory response_text was passed explicitly; the DB "
+        "lookup would have returned no row at this point. Without this "
+        "guard, the validator false-positive class would still burn "
+        f"accounts on the first occurrence — current count: {acc.expired_transition_count}."
+    )
+    # Status still flips to EXPIRED so the re-login cycle can still run.
+    assert acc.status == AccountStatus.EXPIRED.value
+
+
+@pytest.mark.asyncio
+async def test_short_in_memory_response_still_strikes(
+    session: AsyncSession,
+) -> None:
+    """Boundary control for the new ``response_text`` parameter: a SHORT
+    in-memory response (below the 100-char threshold, e.g. 50 chars of
+    login-page chrome that survived a partial scrape) must NOT bypass
+    the strike. The threshold guards against treating UI chrome as a
+    real answer.
+    """
+    session.add(_doubao_account(account_id=71))
+    session.add(_query(190002, account_id=71, retry_reason="doubao_not_logged_in"))
+    await session.commit()
+
+    pool = AccountPool(session)
+    # 50 chars — fits typical login chrome lengths, below the 100-char
+    # answer-whitelist threshold.
+    short_chrome_text = "请登录后继续使用 / Please log in to continue using"
+    assert len(short_chrome_text) < 100
+
+    await pool.report_failure(
+        71,
+        reason="doubao_not_logged_in",
+        query_id=190002,
+        response_text=short_chrome_text,
+    )
+
+    acc = await session.get(LLMAccount, 71)
+    assert acc.expired_transition_count == 1, (
+        "Short in-memory text (likely login chrome) must NOT bypass the "
+        "strike — only text >= STRIKE_SKIP_MIN_RAW_TEXT_CHARS qualifies "
+        "as evidence of a real captured answer."
+    )

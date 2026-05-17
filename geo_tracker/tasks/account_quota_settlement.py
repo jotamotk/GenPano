@@ -41,6 +41,7 @@ class AccountQuotaSettlement:
         *,
         reason: str | None,
         query_id: int | None = None,
+        response_text: str | None = None,
     ) -> bool:
         if not self.reserved_account_id or self.settled:
             return False
@@ -49,17 +50,20 @@ class AccountQuotaSettlement:
 
         if _should_report_account_failure(reason):
             if pool is not None:
-                # Refs #963 (PR ``claude/issue-963-3strike-respect-real-response``):
-                # forward ``query_id`` so :meth:`AccountPool.report_failure`
-                # can skip the ``expired_transition_count`` strike when the
-                # query already has a real captured ``llm_responses`` row
-                # (defense-in-depth against the Mode-C validator
-                # false-positive — see ``STRIKE_SKIP_MIN_RAW_TEXT_CHARS`` in
-                # ``geo_tracker.pool.account_pool``).
+                # Refs #963 Codex P1 on PR #1109: the strike-skip guard
+                # in :meth:`AccountPool.report_failure` is consulted at
+                # the failure decision moment — BEFORE ``db.add(response)``
+                # has inserted the ``LLMResponse`` row. Forward
+                # ``response_text`` (the in-memory captured answer) so
+                # the helper can detect a first-time Mode-C false-
+                # positive even when no orphan row exists yet. The DB
+                # lookup remains as a fallback for orphan-row cases
+                # (e.g. Q-184971's row 668 from a prior successful attempt).
                 await pool.report_failure(
                     self.reserved_account_id,
                     reason=reason or "unknown",
                     query_id=query_id,
+                    response_text=response_text,
                 )
             return False
 

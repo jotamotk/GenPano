@@ -76,18 +76,26 @@ async def _query_has_real_captured_response(
     query_id: int | None,
     *,
     min_chars: int = STRIKE_SKIP_MIN_RAW_TEXT_CHARS,
+    response_text: str | None = None,
 ) -> bool:
-    """Return True iff ``query_id`` has at least one ``llm_responses`` row whose
-    ``raw_text`` length is >= ``min_chars``.
+    """Return True iff the failing query has an in-memory or persisted real
+    response (``raw_text`` length >= ``min_chars``).
 
-    Used by :meth:`AccountPool.report_failure` to suppress the
-    ``expired_transition_count`` strike when the validator flagged a Doubao
-    response as auth-broken but the response row in fact holds a real captured
-    answer (the Mode-C false-positive class). Read-only; never mutates state.
-    A ``query_id`` of None returns False so callers without a query context
-    (cookie keep-alive probe, manual cooldown writes) keep the legacy strike
-    semantics.
+    Refs #963 Codex P1 on PR #1109: at the post-extract Doubao failure paths
+    (celery_tasks.py:1136 / 1176), the ``LLMResponse`` row is NOT yet inserted
+    into ``llm_responses`` — that only happens on the success path
+    (``db.add(response)`` at line 1223). For a first-time Mode-C false-
+    positive the DB lookup therefore misses and the legacy strike fires,
+    defeating the whole point of the defense-in-depth guard. Accept the
+    caller-provided in-memory ``response_text`` so the check succeeds at the
+    moment the failure branch runs (before the row would have been inserted).
+    DB lookup remains as a fallback for callers that pass only ``query_id``
+    (orphan-row case from a prior successful attempt — Q-184971's row 668 from
+    2026-05-16 16:57 is exactly this shape) and for legacy callers that have
+    no in-memory response (e.g. cookie keep-alive probe).
     """
+    if response_text is not None and len(response_text) >= int(min_chars):
+        return True
     if not query_id:
         return False
     try:
@@ -564,6 +572,7 @@ class AccountPool:
         price_bucket: str = "none",
         run_id: str = "none",
         query_id: int | None = None,
+        response_text: str | None = None,
     ) -> None:
         """
         记录失败，达到阈值自动封禁
@@ -612,7 +621,11 @@ class AccountPool:
             # (cookies may genuinely need refresh), but the strike is
             # skipped so genuine re-login can recover the account.
             real_response_captured = (
-                await _query_has_real_captured_response(self.db, query_id)
+                await _query_has_real_captured_response(
+                    self.db,
+                    query_id,
+                    response_text=response_text,
+                )
             )
             if real_response_captured:
                 logger.warning(

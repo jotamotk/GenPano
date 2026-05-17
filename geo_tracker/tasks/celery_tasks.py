@@ -1133,11 +1133,19 @@ def execute_query(self, query_id: int) -> dict:
                             started_at=started_at,
                             reason=failure_reason,
                         )
+                        # Refs #963 Codex P1 on PR #1109: pass in-memory
+                        # ``response.raw_text`` so the strike-skip guard
+                        # in ``AccountPool.report_failure`` recognises a
+                        # first-time Mode-C false-positive even though
+                        # the ``LLMResponse`` row hasn't been persisted
+                        # at this point (the DB insert is on the success
+                        # path below; failure paths short-circuit before it).
                         await quota_settlement.settle_failure(
                             db,
                             pool,
                             reason=auth_failure_reason,
                             query_id=query_id,
+                            response_text=getattr(response, "raw_text", None),
                         )
                         await _handle_doubao_account_failure_handoff(
                             db=db,
@@ -1173,11 +1181,18 @@ def execute_query(self, query_id: int) -> dict:
                             started_at=started_at,
                             reason=failure_reason,
                         )
+                        # Refs #963 Codex P1 on PR #1109: same as the
+                        # auth-rejection path above — pass in-memory
+                        # ``response.raw_text`` so a first-time Mode-C
+                        # false-positive (validator wrongly classifies
+                        # a real 1255-char answer as homepage content)
+                        # does not strike the account.
                         await quota_settlement.settle_failure(
                             db,
                             pool,
                             reason=invalid_reason,
                             query_id=query_id,
+                            response_text=getattr(response, "raw_text", None),
                         )
                         await _handle_doubao_account_failure_handoff(
                             db=db,
