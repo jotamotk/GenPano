@@ -25,6 +25,37 @@ MAX_CONSECUTIVE_FAILS = 3      # 连续失败N次 → banned
 COOLDOWN_HOURS        = 12     # 超配额冷却时间
 DAILY_RESET_HOUR      = 0      # UTC 00:00 重置每日计数
 
+# Refs #963 audit pain point #2 (3-strike ban on expired ricochet).
+# Doubao accounts whose primary failure mode IS ``doubao_not_logged_in`` (one
+# of EXPIRED_ACCOUNT_REASONS below) cycle ``expired → re-login → active →
+# expired`` indefinitely because ``report_failure`` resets ``consecutive_fails``
+# to 0 on every expired transition (the ban gate
+# ``consecutive_fails >= MAX_CONSECUTIVE_FAILS=3`` therefore never fires for
+# them). This separate counter is incremented per expired transition for the
+# SAME account and triggers a permanent ban once the account has been bounced
+# back to expired 3 times. ``save_cookies`` resets it to 0 when a re-login
+# actually produces fresh cookies. Scoped to Doubao because other engines'
+# dominant failure modes are not in EXPIRED_ACCOUNT_REASONS and the existing
+# ``consecutive_fails`` gate already handles them. Configurable via env so
+# operators can lower / disable in production without code change.
+MAX_EXPIRED_TRANSITIONS_DEFAULT = 3
+EXPIRED_RICOCHET_BAN_ENGINES = frozenset({"doubao"})
+
+
+def _max_expired_transitions() -> int:
+    raw = os.getenv("DOUBAO_MAX_EXPIRED_TRANSITIONS")
+    if raw is None:
+        return MAX_EXPIRED_TRANSITIONS_DEFAULT
+    try:
+        value = int(raw.strip())
+    except (TypeError, ValueError):
+        return MAX_EXPIRED_TRANSITIONS_DEFAULT
+    if value <= 0:
+        # Treat <=0 as "disable the gate" — preserves pre-#963 behavior so
+        # operators can quickly roll back if the ban gate misfires.
+        return 0
+    return value
+
 # Refs #958: doubao_page_unavailable 是平台瞬时错误，不是账号问题。
 # 用 12 小时 cooldown 把账号雪藏太重；改用一个短得多的窗口（默认 30 分钟），
 # 让账号在平台恢复后能尽快重新承接流量。可通过 env 调，0/负值回退到全局 COOLDOWN_HOURS。
@@ -148,6 +179,59 @@ async def snapshot_pool_health(
         with_cookies=with_cookies,
         captured_at=captured_at,
     )
+
+
+async def count_acquirable_accounts(
+    db: AsyncSession,
+    llm_name: str,
+    *,
+    now: datetime | None = None,
+) -> int:
+    """Return the count of ``llm_name`` accounts that :meth:`AccountPool.acquire`
+    would currently consider candidates — i.e. rows that satisfy ALL the same
+    predicates ``acquire()`` filters on, NOT just ``status='active'``.
+
+    Why this exists (Refs #963 Codex P2 review
+    https://github.com/jotamotk/trash_test/pull/1102#discussion_r3253924434):
+    ``snapshot_pool_health.active`` counts every row with ``status='active'``
+    regardless of whether the row has cookies, is in a per-row cooldown window,
+    or has already exhausted ``query_count_today >= daily_limit``. That over-
+    counts when the proactive pre-warm task uses ``active`` as the basis for
+    the deficit calculation: e.g. 3 Doubao rows with ``status='active'`` but
+    all of them with ``cookies_json=NULL`` (or quota-exhausted) produces
+    ``deficit=0`` from snapshot, but ``acquire()`` returns None — the pool
+    is effectively empty. This function mirrors the exact predicate set
+    in :meth:`AccountPool.acquire` (around line 356–370) so callers can
+    compute deficits against the *usable* count, not the *labeled* count.
+
+    Read-only; idempotent. Does NOT promote expired cooldowns (the caller
+    is expected to invoke :func:`promote_expired_cooldowns` first if they
+    want elapsed-cooldown rows to count as usable; otherwise those rows are
+    excluded because ``acquire()`` itself promotes them before filtering).
+    """
+    current = now or datetime.utcnow()
+    count_today = func.coalesce(LLMAccount.query_count_today, 0)
+    stmt = (
+        select(func.count(LLMAccount.id))
+        .where(
+            and_(
+                LLMAccount.llm_name == llm_name,
+                LLMAccount.status == AccountStatus.ACTIVE.value,
+                # 必须有 cookies (matches acquire() line ~363-364)
+                LLMAccount.cookies_json != None,
+                LLMAccount.cookies_json != "",
+                # 冷却已过期 或 从未冷却 (matches acquire() line ~366)
+                (LLMAccount.cooldown_until == None)
+                | (LLMAccount.cooldown_until <= current),
+                # 今日配额未满 (matches acquire() line ~368-369)
+                func.coalesce(LLMAccount.daily_limit, 0) > 0,
+                count_today < LLMAccount.daily_limit,
+            )
+        )
+    )
+    result = await db.execute(stmt)
+    scalar = result.scalar()
+    return int(scalar or 0)
 
 
 async def promote_expired_cooldowns(
@@ -425,19 +509,63 @@ class AccountPool:
         previous_status = str(account.status or "")
 
         if reason in EXPIRED_ACCOUNT_REASONS:
-            account.status = AccountStatus.EXPIRED.value
-            account.cooldown_until = None
-            account.consecutive_fails = 0
-            _log_account_state_transition(
-                account,
-                previous_status=previous_status,
-                new_status=AccountStatus.EXPIRED.value,
-                reason=reason,
-                evidence=evidence or "expired_login_material",
-                provider=provider,
-                price_bucket=price_bucket,
-                run_id=run_id,
+            # Refs #963 audit pain point #2: increment the per-account
+            # expired-transition counter BEFORE deciding final status. Doubao
+            # accounts that ricochet ``expired → re-login → active → expired``
+            # forever get permanently banned at the 3-strike threshold;
+            # other engines keep the legacy expired-then-wait-for-re-login
+            # semantics because their dominant failure modes are not
+            # ``doubao_not_logged_in`` style cookie-acceptance lies.
+            next_expired_transitions = int(account.expired_transition_count or 0) + 1
+            account.expired_transition_count = next_expired_transitions
+            max_transitions = _max_expired_transitions()
+            should_ban_for_ricochet = (
+                account.llm_name in EXPIRED_RICOCHET_BAN_ENGINES
+                and max_transitions > 0
+                and next_expired_transitions >= max_transitions
             )
+            if should_ban_for_ricochet:
+                account.status = AccountStatus.BANNED.value
+                account.cooldown_until = None
+                account.consecutive_fails = 0
+                _log_account_state_transition(
+                    account,
+                    previous_status=previous_status,
+                    new_status=AccountStatus.BANNED.value,
+                    reason=reason,
+                    evidence=(
+                        evidence
+                        or f"expired_ricochet_ban count={next_expired_transitions}"
+                    ),
+                    provider=provider,
+                    price_bucket=price_bucket,
+                    run_id=run_id,
+                )
+                logger.warning(
+                    "account_id=%s engine=%s "
+                    "banned_for_repeated_expired_ricochet count=%s reason=%s",
+                    account.id,
+                    account.llm_name,
+                    next_expired_transitions,
+                    reason,
+                )
+            else:
+                account.status = AccountStatus.EXPIRED.value
+                account.cooldown_until = None
+                account.consecutive_fails = 0
+                _log_account_state_transition(
+                    account,
+                    previous_status=previous_status,
+                    new_status=AccountStatus.EXPIRED.value,
+                    reason=reason,
+                    evidence=(
+                        evidence
+                        or f"expired_login_material count={next_expired_transitions}"
+                    ),
+                    provider=provider,
+                    price_bucket=price_bucket,
+                    run_id=run_id,
+                )
         elif reason == "response_too_short" or (
             account.llm_name == "doubao" and reason in DOUBAO_SESSION_COOLDOWN_REASONS
         ):
@@ -504,7 +632,14 @@ class AccountPool:
         logger.info(f"Reset daily query counts for {len(accounts)} accounts")
 
     async def save_cookies(self, account_id: int, cookies_json: str) -> None:
-        """Agent执行成功后持久化登录态"""
+        """Agent执行成功后持久化登录态.
+
+        Refs #963 audit pain point #2: reset ``expired_transition_count`` to 0
+        here so a genuinely successful re-login (fresh cookies persisted, status
+        flipped back to active) clears the ricochet counter and the account can
+        cycle through expired again before triggering the 3-strike permanent ban.
+        Without this reset the counter would only count down on ban.
+        """
         account = await self.db.get(LLMAccount, account_id)
         if account:
             previous_status = str(account.status or "")
@@ -513,6 +648,7 @@ class AccountPool:
             account.status = AccountStatus.ACTIVE.value
             account.cooldown_until = None
             account.consecutive_fails = 0
+            account.expired_transition_count = 0
             if previous_status != AccountStatus.ACTIVE.value:
                 _log_account_state_transition(
                     account,

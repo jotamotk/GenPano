@@ -259,6 +259,19 @@ class LLMAccount(Base):
     status              = Column(String(16), default=AccountStatus.ACTIVE.value)
     cooldown_until      = Column(DateTime, nullable=True)
     consecutive_fails   = Column(Integer, default=0)
+    # Refs #963 audit pain point #2: per-account counter of how many times the
+    # account has been bounced into ``status='expired'`` by an
+    # EXPIRED_ACCOUNT_REASONS failure (e.g. ``doubao_not_logged_in``). The
+    # legacy ``consecutive_fails`` counter is RESET to 0 every time the pool
+    # transitions an account to ``expired`` so the existing
+    # ``consecutive_fails >= MAX_CONSECUTIVE_FAILS=3`` ban gate never fires for
+    # Doubao, whose dominant failure mode IS ``doubao_not_logged_in``. This
+    # column lets ``report_failure`` ban accounts that ricochet
+    # ``expired → re-login → active → expired`` forever, burning SMS without
+    # ever producing a usable query result. Counter is incremented on every
+    # expired transition and reset to 0 by ``save_cookies`` (a successful
+    # re-login writes back fresh cookies and flips status to active).
+    expired_transition_count = Column(Integer, default=0)
     created_at          = Column(DateTime, server_default=func.now())
     cookies_updated_at  = Column(DateTime, nullable=True)  # cookies最后更新/验证时间
 
