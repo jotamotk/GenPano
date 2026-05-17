@@ -1696,6 +1696,139 @@ async def test_doubao_submit_retry_bails_with_specific_reason_when_no_auth_signa
 
 
 @pytest.mark.asyncio
+async def test_chatgpt_submit_retry_does_not_inherit_doubao_bail_reason(
+    monkeypatch,
+):
+    """Refs #963 Codex P2 review on PR #1106: the submit-confirm retry
+    block runs for all engines. The Doubao-specific bail (set
+    ``last_error_reason = doubao_input_lost_before_submit`` and return
+    early when both the input element and the JS submit-button handle
+    are gone) must NOT fire for chatgpt / deepseek, otherwise a
+    non-Doubao engine would inherit a Doubao reason in the operator
+    ledger. Confirm that for ``llm_name == "chatgpt"`` the retry path:
+      - does NOT short-circuit with ``("", "", [])`` before the
+        confirm poll;
+      - does NOT set ``last_error_reason`` to
+        ``doubao_input_lost_before_submit``;
+      - DOES press Enter (the pre-fix blind-Enter behavior is the
+        compat path for non-Doubao engines).
+    """
+    _install_fake_playwright(monkeypatch)
+
+    from geo_tracker.agent import guest_executor as _ge
+    from geo_tracker.agent.guest_executor import GuestQueryExecutor
+
+    async def _noop(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(_ge, "_save_html", _noop)
+    monkeypatch.setattr(_ge, "_save_screenshot", _noop)
+    monkeypatch.setattr(_ge, "_save_runtime_snapshot", _noop)
+
+    query_text = "anything"
+    enter_presses: list[int] = []
+
+    class FakeInput:
+        async def bounding_box(self):
+            return None
+
+        async def click(self, *_a, **_k):
+            return None
+
+        async def fill(self, *_a, **_k):
+            return None
+
+        async def evaluate(self, *_a, **_k):
+            return query_text
+
+    class FakeKeyboard:
+        async def press(self, key, *_a, **_k):
+            if key == "Enter":
+                enter_presses.append(1)
+
+        async def type(self, *_a, **_k):
+            return None
+
+    class FakeMouse:
+        async def move(self, *_a, **_k):
+            return None
+
+    class FakeSubmitHandle:
+        def as_element(self):
+            return None
+
+    class FakePage:
+        url = "https://chatgpt.com"
+
+        def __init__(self):
+            self.keyboard = FakeKeyboard()
+            self.mouse = FakeMouse()
+
+        async def wait_for_timeout(self, *_a, **_k):
+            return None
+
+        async def evaluate_handle(self, *_a, **_k):
+            return FakeSubmitHandle()
+
+        async def query_selector(self, *_a, **_k):
+            return None
+
+        async def query_selector_all(self, *_a, **_k):
+            return []
+
+        async def evaluate(self, script, *args):
+            script_text = str(script)
+            if "document.body?.innerText" in script_text:
+                return "Empty page"
+            if "queryText" in script_text:
+                return False
+            return ""
+
+        async def content(self):
+            return "<html><body></body></html>"
+
+    executor = GuestQueryExecutor()
+    fake_page = FakePage()
+
+    async def fake_fill_plain_text_input(*_a, **_k):
+        return True
+
+    monkeypatch.setattr(executor, "_fill_plain_text_input", fake_fill_plain_text_input)
+
+    await executor._browser_query(
+        fake_page,
+        {
+            "input_selector": "textarea",
+            "response_selector": ".markdown",
+            "submit_button": "button[data-testid='send-button']",
+            "submit_key": "Enter",
+            "wait_after_submit": 100,
+            "load_wait": 100,
+            "login_redirect_domains": [],
+            "url": "https://chatgpt.com",
+        },
+        query_text,
+        "chatgpt",
+        input_el=FakeInput(),
+        query_id=999999,
+        runtime_events=[],
+    )
+
+    # The Doubao-only bail reason must not bleed into chatgpt.
+    assert executor.last_error_reason != "doubao_input_lost_before_submit", (
+        f"chatgpt must not inherit Doubao bail reason; "
+        f"got {executor.last_error_reason!r}"
+    )
+    # And Enter is pressed on the retry path (blind-Enter compat for
+    # non-Doubao engines preserved). Initial submit fires Enter once
+    # (submit_key) and the retry fires Enter again → at least 2.
+    assert len(enter_presses) >= 2, (
+        f"expected Enter to fire on retry for chatgpt; "
+        f"got {len(enter_presses)} press(es)"
+    )
+
+
+@pytest.mark.asyncio
 async def test_doubao_auth_state_overrides_generic_browser_timeout(monkeypatch):
     _install_fake_playwright(monkeypatch)
 
