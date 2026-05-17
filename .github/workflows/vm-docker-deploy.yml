@@ -1,14 +1,21 @@
-name: VM Docker Deploy (SSH to ECS)
+name: VM Docker Deploy (ACR build + SSH to ECS)
 
-# CI/CD-driven deployment of the VM-per-account Docker containers on the
-# user's existing ECS. SCPs experiments/vm_per_account/docker/scripts/deploy.sh
-# to the host and runs it with the requested ACTION env var.
+# Pipeline:
+#   1. GH Actions runner: build image, push to user's Aliyun Container
+#      Registry (ACR_REGISTRY / ACR_USERNAME / ACR_PASSWORD secrets).
+#      This happens for bootstrap + up + restart (so latest code rolls out).
+#   2. SSH to ECS: docker login ACR → docker pull → docker compose up -d.
+#      ECS never builds locally — pulls from ACR (intra-Aliyun network,
+#      fast), so Chrome image install time on ECS is sub-30s.
+#
+# Action 'bootstrap' = install docker + ufw on ECS + first image pull.
+# Action 'up'        = pull latest image + docker compose up -d.
 
 on:
   workflow_dispatch:
     inputs:
       action:
-        description: 'Action: status / inspect / up / down / restart / logs / pull / bootstrap / destroy'
+        description: 'Action: status / inspect / up / down / restart / logs / bootstrap / destroy'
         required: true
         type: choice
         options:
@@ -18,7 +25,6 @@ on:
           - down
           - restart
           - logs
-          - pull
           - bootstrap
           - destroy
         default: 'status'
@@ -33,15 +39,44 @@ on:
         default: '200'
         type: string
 
+env:
+  IMAGE_REPO: vm-per-account/doubao-chrome
+  IMAGE_TAG: latest
+
 jobs:
   ssh-deploy:
     runs-on: ubuntu-22.04
-    timeout-minutes: 15
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
-      - name: Checkout repo (to scp deploy.sh)
+      - name: Checkout repo
         uses: actions/checkout@v4
+
+      - name: Build + push image (only for bootstrap/up/restart)
+        # Build on GH Actions runner (海外网, fast) + push to ACR
+        # (Aliyun China region). ECS will pull from ACR — much faster
+        # than building from scratch on a 中国 ECS that has to fetch
+        # google chrome over the wall.
+        if: ${{ inputs.action == 'bootstrap' || inputs.action == 'up' || inputs.action == 'restart' }}
+        env:
+          ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
+          ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
+          ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
+        run: |
+          set -euxo pipefail
+          # docker login to ACR
+          echo "$ACR_PASSWORD" | docker login "$ACR_REGISTRY" \
+            -u "$ACR_USERNAME" --password-stdin
+          # build
+          docker build \
+            -t "${ACR_REGISTRY}/${IMAGE_REPO}:${IMAGE_TAG}" \
+            -t "${ACR_REGISTRY}/${IMAGE_REPO}:${{ github.sha }}" \
+            -f experiments/vm_per_account/docker/Dockerfile \
+            experiments/vm_per_account/docker
+          # push both tags
+          docker push "${ACR_REGISTRY}/${IMAGE_REPO}:${IMAGE_TAG}"
+          docker push "${ACR_REGISTRY}/${IMAGE_REPO}:${{ github.sha }}"
 
       - name: Setup SSH key + known_hosts + test reachability
         env:
@@ -61,7 +96,7 @@ jobs:
             -o BatchMode=yes -o ConnectTimeout=10 \
             "${SERVER_USER}@${SERVER_HOST}" 'echo ok; id; uname -a'
 
-      - name: SCP docker dir + run deploy.sh with ACTION
+      - name: Send compose files + run deploy.sh on ECS
         env:
           SERVER_HOST: ${{ secrets.SERVER_HOST }}
           SERVER_USER: ${{ secrets.SERVER_USER }}
@@ -69,6 +104,9 @@ jobs:
           VM_DEPLOY_PATH: ${{ secrets.ECS_REPO_PATH != '' && format('{0}-vm-deploy', secrets.ECS_REPO_PATH) || '/opt/vm-per-account-deploy' }}
           VNC_PASSWORD_01: ${{ secrets.VNC_PASSWORD_01 }}
           VNC_PASSWORD_02: ${{ secrets.VNC_PASSWORD_02 }}
+          ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
+          ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
+          ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
           ACTION: ${{ inputs.action }}
           CONTAINER: ${{ inputs.container }}
           TAIL_LINES: ${{ inputs.tail_lines }}
@@ -76,15 +114,13 @@ jobs:
           set -euxo pipefail
           PORT="${SERVER_SSH_PORT:-22}"
           REMOTE="${SERVER_USER}@${SERVER_HOST}"
-          # 1. Ensure VM_DEPLOY_PATH exists on ECS (needs sudo for /opt/...)
+          VM_IMAGE="${ACR_REGISTRY}/${IMAGE_REPO}:${IMAGE_TAG}"
+          # 1. Ensure VM_DEPLOY_PATH exists on ECS
           ssh -i ~/.ssh/id_ssh -p "$PORT" "$REMOTE" \
             "sudo mkdir -p '$VM_DEPLOY_PATH' && sudo chown -R \$(whoami):\$(whoami) '$VM_DEPLOY_PATH'"
-          # 2. Transfer the entire experiments/vm_per_account/docker/ tree
-          #    to $VM_DEPLOY_PATH on ECS. Uses tar over ssh (NOT scp) — the
-          #    OpenSSH 9.x scp client used by ubuntu-22.04 runners rejects
-          #    the legacy `scp -r dir/. dest/` pattern with
-          #    `scp: error: unexpected filename: .`. tar pipe works on every
-          #    Linux with no edge cases.
+          # 2. Transfer compose files via tar (Dockerfile no longer needed
+          #    on ECS since image is pulled, but docker-compose.yml +
+          #    deploy.sh + entrypoint are still needed)
           tar czf - -C experiments/vm_per_account/docker . \
             | ssh -i ~/.ssh/id_ssh -p "$PORT" "$REMOTE" \
                 "tar xzf - -C '$VM_DEPLOY_PATH'"
@@ -93,6 +129,10 @@ jobs:
             "ACTION='$ACTION' CONTAINER='$CONTAINER' TAIL_LINES='$TAIL_LINES' \
              VM_DEPLOY_PATH='$VM_DEPLOY_PATH' \
              VNC_PASSWORD_01='$VNC_PASSWORD_01' VNC_PASSWORD_02='$VNC_PASSWORD_02' \
+             VM_IMAGE='$VM_IMAGE' \
+             ACR_REGISTRY='$ACR_REGISTRY' \
+             ACR_USERNAME='$ACR_USERNAME' \
+             ACR_PASSWORD='$ACR_PASSWORD' \
              SSH_PORT='$PORT' \
              bash '${VM_DEPLOY_PATH}/scripts/deploy.sh'"
 

@@ -92,25 +92,30 @@ case "$ACTION" in
     sudo ufw deny in proto tcp to any port 9222:9232 || true
     sudo ufw --force enable
     sudo ufw status numbered
-    # Verify scp'd files are present
+    # Verify scp'd files are present (Dockerfile no longer needed since
+    # image is pulled from ACR, but compose + entrypoint are)
     cd "$DOCKER_DIR"
-    for f in Dockerfile docker-compose.yml entrypoint.sh; do
+    for f in docker-compose.yml entrypoint.sh; do
       if [ ! -f "$f" ]; then
         echo "FATAL: $f missing in $DOCKER_DIR — workflow scp step incomplete?"
         ls -la
         exit 1
       fi
     done
-    # docker compose build parses the full compose file (including
-    # environment: VAR:?required) so .env must exist BEFORE we build, not
-    # just before 'up'. Write it from secrets here too.
+    # docker compose parses ${VAR:?required} interpolation when reading
+    # the compose file (for any operation, not just build). Write .env
+    # from secrets so compose can interpolate VNC_PASSWORD_01/02.
     umask 0177
     {
       printf 'VNC_PASSWORD_01=%s\n' "${VNC_PASSWORD_01:?must set VNC_PASSWORD_01}"
       printf 'VNC_PASSWORD_02=%s\n' "${VNC_PASSWORD_02:?must set VNC_PASSWORD_02}"
+      printf 'VM_IMAGE=%s\n' "${VM_IMAGE:?must set VM_IMAGE (ACR image ref)}"
     } > .env.tmp && mv .env.tmp .env
-    # build image
-    dc build
+    # Login to ACR + pull image (no local build — image already built and
+    # pushed by the GH Actions runner before this step ran).
+    echo "$ACR_PASSWORD" | sudo docker login "$ACR_REGISTRY" \
+      -u "$ACR_USERNAME" --password-stdin
+    dc pull
     echo "=== bootstrap complete ==="
     docker --version 2>/dev/null || sudo docker --version
     sudo ufw status
@@ -120,12 +125,19 @@ case "$ACTION" in
   up)
     set -euxo pipefail
     cd "$DOCKER_DIR"
-    # Write .env atomically (mode 0600).
+    # Write/update .env atomically (mode 0600).
     umask 0177
     {
       printf 'VNC_PASSWORD_01=%s\n' "${VNC_PASSWORD_01:?must set VNC_PASSWORD_01}"
       printf 'VNC_PASSWORD_02=%s\n' "${VNC_PASSWORD_02:?must set VNC_PASSWORD_02}"
+      printf 'VM_IMAGE=%s\n' "${VM_IMAGE:?must set VM_IMAGE (ACR image ref)}"
     } > .env.tmp && mv .env.tmp .env
+    # Login to ACR (in case credentials need refresh) + pull latest
+    if [ -n "${ACR_PASSWORD:-}" ] && [ -n "${ACR_REGISTRY:-}" ]; then
+      echo "$ACR_PASSWORD" | sudo docker login "$ACR_REGISTRY" \
+        -u "$ACR_USERNAME" --password-stdin
+    fi
+    dc pull
     dc up -d
     sleep 3
     dc ps

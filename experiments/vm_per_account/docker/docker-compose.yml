@@ -27,10 +27,7 @@ name: vm-per-account
 
 services:
   doubao-01:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: vm-per-account/doubao-chrome:latest
+    image: ${VM_IMAGE:-vm-per-account/doubao-chrome:latest}
     container_name: doubao-01
     restart: unless-stopped
     environment:
@@ -56,10 +53,7 @@ services:
           cpus: "1.0"
 
   doubao-02:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: vm-per-account/doubao-chrome:latest
+    image: ${VM_IMAGE:-vm-per-account/doubao-chrome:latest}
     container_name: doubao-02
     restart: unless-stopped
     environment:
