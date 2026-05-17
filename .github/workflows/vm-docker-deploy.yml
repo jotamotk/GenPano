@@ -79,12 +79,15 @@ jobs:
           # 1. Ensure VM_DEPLOY_PATH exists on ECS (needs sudo for /opt/...)
           ssh -i ~/.ssh/id_ssh -p "$PORT" "$REMOTE" \
             "sudo mkdir -p '$VM_DEPLOY_PATH' && sudo chown -R \$(whoami):\$(whoami) '$VM_DEPLOY_PATH'"
-          # 2. SCP the entire experiments/vm_per_account/docker/ contents
-          #    (Dockerfile, docker-compose.yml, entrypoint.sh, .env.example,
-          #    scripts/deploy.sh) — NO git clone needed on ECS.
-          scp -i ~/.ssh/id_ssh -P "$PORT" -r \
-            experiments/vm_per_account/docker/. \
-            "${REMOTE}:${VM_DEPLOY_PATH}/"
+          # 2. Transfer the entire experiments/vm_per_account/docker/ tree
+          #    to $VM_DEPLOY_PATH on ECS. Uses tar over ssh (NOT scp) — the
+          #    OpenSSH 9.x scp client used by ubuntu-22.04 runners rejects
+          #    the legacy `scp -r dir/. dest/` pattern with
+          #    `scp: error: unexpected filename: .`. tar pipe works on every
+          #    Linux with no edge cases.
+          tar czf - -C experiments/vm_per_account/docker . \
+            | ssh -i ~/.ssh/id_ssh -p "$PORT" "$REMOTE" \
+                "tar xzf - -C '$VM_DEPLOY_PATH'"
           # 3. Run the deploy script with env piped through
           ssh -i ~/.ssh/id_ssh -p "$PORT" "$REMOTE" \
             "ACTION='$ACTION' CONTAINER='$CONTAINER' TAIL_LINES='$TAIL_LINES' \
