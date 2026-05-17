@@ -14,7 +14,21 @@ set -uo pipefail
 ECS_REPO_PATH="${ECS_REPO_PATH:-/opt/trash_test}"
 CONTAINER="${CONTAINER:-}"
 TAIL_LINES="${TAIL_LINES:-200}"
-DOCKER_DIR="$ECS_REPO_PATH/experiments/vm_per_account/docker"
+
+# DOCKER_DIR resolution: prefer the existing $ECS_REPO_PATH if it has the
+# docker subdir (user's existing repo, no mutation needed). Otherwise fall
+# back to the suffix path that bootstrap clones fresh into.
+PRIMARY_DOCKER_DIR="$ECS_REPO_PATH/experiments/vm_per_account/docker"
+FORK_DOCKER_DIR="${ECS_REPO_PATH}-vm-deploy/experiments/vm_per_account/docker"
+if [ -d "$PRIMARY_DOCKER_DIR" ]; then
+  DOCKER_DIR="$PRIMARY_DOCKER_DIR"
+elif [ -d "$FORK_DOCKER_DIR" ]; then
+  DOCKER_DIR="$FORK_DOCKER_DIR"
+else
+  # Neither exists yet — bootstrap will create one. Use primary as default
+  # for error messages.
+  DOCKER_DIR="$PRIMARY_DOCKER_DIR"
+fi
 
 # Helper: run docker compose, fallback to sudo if user not in docker group
 dc() {
@@ -80,20 +94,43 @@ case "$ACTION" in
     sudo ufw deny in proto tcp to any port 9222:9232 || true
     sudo ufw --force enable
     sudo ufw status numbered
-    # repo
-    if [ ! -d "$ECS_REPO_PATH/.git" ]; then
+    # repo — bootstrap is SAFE for production: never mutate an existing
+    # checkout's branch. If $ECS_REPO_PATH already contains our docker
+    # subdir, use it as-is. Otherwise clone fresh to a NEW path
+    # ($ECS_REPO_PATH-vm-deploy suffix) so the existing prod repo is
+    # untouched.
+    if [ -d "$DOCKER_DIR" ]; then
+      echo "Using existing $ECS_REPO_PATH (no git ops — prod repo state preserved)"
+      WORK_DIR="$ECS_REPO_PATH"
+    elif [ ! -e "$ECS_REPO_PATH" ]; then
       sudo mkdir -p "$(dirname "$ECS_REPO_PATH")"
       sudo chown -R "$(whoami):$(whoami)" "$(dirname "$ECS_REPO_PATH")"
       git clone https://github.com/jotamotk/trash_test.git "$ECS_REPO_PATH"
+      WORK_DIR="$ECS_REPO_PATH"
+    else
+      # Path exists but missing docker subdir — fork to suffix path
+      FORK_PATH="${ECS_REPO_PATH}-vm-deploy"
+      echo "$ECS_REPO_PATH exists but missing experiments/vm_per_account/docker/"
+      echo "Cloning fresh to $FORK_PATH to avoid mutating existing checkout"
+      if [ ! -d "$FORK_PATH/.git" ]; then
+        sudo mkdir -p "$(dirname "$FORK_PATH")"
+        sudo chown -R "$(whoami):$(whoami)" "$(dirname "$FORK_PATH")"
+        git clone https://github.com/jotamotk/trash_test.git "$FORK_PATH"
+      else
+        cd "$FORK_PATH" && git fetch origin main && git checkout main && git pull --ff-only
+      fi
+      WORK_DIR="$FORK_PATH"
+      DOCKER_DIR="$WORK_DIR/experiments/vm_per_account/docker"
+      echo "NOTE: ECS_REPO_PATH effectively redirected to $FORK_PATH for VM ops"
     fi
-    cd "$ECS_REPO_PATH" && git fetch origin main && git checkout main && git pull
     # build images
     cd "$DOCKER_DIR"
     dc build
     echo "=== bootstrap complete ==="
     docker --version 2>/dev/null || sudo docker --version
     sudo ufw status
-    df -h "$ECS_REPO_PATH"
+    df -h "$WORK_DIR"
+    echo "VM ops path: $WORK_DIR"
     ;;
 
   up)
