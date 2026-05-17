@@ -1296,6 +1296,330 @@ def test_doubao_persistence_gate_q184971_real_login_dialog_still_blocks():
     )
 
 
+# Refs #963 verify-readonly comment 4469617051
+# (https://github.com/jotamotk/trash_test/issues/963#issuecomment-4469617051).
+# Mode B "Doubao queries past 24h with failure-without-real-answer" table
+# rows (captured 2026-05-17 06:34 UTC after the latest worker SHA
+# ``d8a22482d007d400709bb1a34b00c5015243a008`` deploy):
+#
+#   query_id | status | retry_reason            | resp_count | raw_text_len
+#   --------+--------+-------------------------+------------+--------------
+#    184971 | failed | no_response             |          1 |         1255
+#    184988 | failed | doubao_homepage_content |          1 |         1191
+#
+# Both rows have ``llm_responses`` rows persisted with a long-form real
+# answer; the answer text starts with ``非常适合 ，bestCoffer 企业级 AI 数据
+# 脱敏工具…`` for Q-184971 (1255 chars) and ``非结构化数据 AI 脱敏准确率
+# 测评核心指标…`` for Q-184988 (1191 chars). The Mode B inspection of the
+# largest saved HTML for each query (``/data/screenshots/
+# query_184971_doubao_not_logged_in_1778948280.html`` and
+# ``/data/screenshots/query_184988_doubao_response_page_1778768408.html``)
+# confirmed ``flow-markdown-body matches in visible: 1`` with the answer
+# present in DOM. Yet the page chrome carried SOFT-bucket markers
+# (``login-btn-header`` className, ``7天免登录`` promo banner, the
+# ``登录以解锁更多功能`` overlay) that the previous gate let
+# ``_doubao_strong_persistence_auth_reason`` reject on.
+#
+# These regression tests assert the >=100-char persistence whitelist
+# overrides SOFT-bucket chrome + the ``doubao_auth_state_reason``
+# fallback. HARD markers (``会话过期``/``from_logout=1``/JS state) and
+# the absolute visible-login-dialog block stay in force — see the
+# negative-control tests below for the boundary.
+def test_doubao_persistence_gate_q184971_real_answer_overrides_soft_promo():
+    """Q-184971 verify-readonly: 1255-char real answer must NOT be flagged logout."""
+    from geo_tracker.agent.response_validation import (
+        doubao_persistence_auth_reason,
+        _doubao_has_persistence_whitelist_answer,
+    )
+
+    # The Q-184971 verify-readonly comment 4469617051 captured the
+    # llm_responses raw_text starting with this exact substring.
+    # Refs #963 verify-readonly comment 4469617051
+    q184971_answer_prefix = (
+        "非常适合 ，bestCoffer 企业级 AI 数据脱敏工具专为金融行业"
+        "高合规、高敏感、多场景需求设计，已在银行、券商、基金等"
+        "机构落地验证 bestCoffer。"
+    )
+    # Pad to roughly the 1255-char production length using the bullet
+    # the Mode B HTML capture also found at offset 365248:
+    # ``客户资料：身份证、手机号、银行卡号识别准确率99.7%``.
+    q184971_answer_body = (
+        q184971_answer_prefix
+        + "客户资料：身份证、手机号、银行卡号识别准确率99.7%，"
+        "支持 15/18 位身份证区分。" * 10
+    )
+    assert len(q184971_answer_body) > 100, "anchored to production raw_text_len=1255"
+
+    response_html = (
+        "<main><div class=\"flow-markdown-body\">"
+        + q184971_answer_body
+        + "</div></main>"
+        # SPA chrome that persists on the LOGGED-IN shell. Doubao
+        # carries ``login-btn-header`` through hydration; ``7天免登录``
+        # and ``登录以解锁更多功能`` are tier-up overlays the SPA
+        # renders alongside successful answers.
+        "<header><button id=\"login-btn-header\">登录</button></header>"
+        "<div class=\"promo-overlay\">7天免登录</div>"
+        "<div class=\"promo-overlay\">登录以解锁更多功能</div>"
+    )
+
+    assert _doubao_has_persistence_whitelist_answer(
+        q184971_answer_body, response_html
+    ) is True, (
+        "Q-184971's 1255-char real answer in .flow-markdown-body must "
+        "trip the >=100-char persistence whitelist"
+    )
+    assert (
+        doubao_persistence_auth_reason("doubao", q184971_answer_body, response_html)
+        is None
+    ), (
+        "Q-184971 verify-readonly comment 4469617051: the real 1255-char "
+        "answer must NOT be rejected as doubao_not_logged_in just because "
+        "the SPA also carries SOFT chrome (login-btn-header + promo)"
+    )
+
+
+def test_doubao_persistence_gate_q184988_real_answer_overrides_soft_promo():
+    """Q-184988 verify-readonly: 1191-char real answer must NOT be flagged logout."""
+    from geo_tracker.agent.response_validation import (
+        doubao_persistence_auth_reason,
+        _doubao_has_persistence_whitelist_answer,
+    )
+
+    # The Q-184988 verify-readonly comment 4469617051 captured the
+    # llm_responses raw_text starting with this exact substring.
+    # Refs #963 verify-readonly comment 4469617051
+    q184988_answer_prefix = (
+        "非结构化数据 AI 脱敏准确率测评核心指标涵盖精确率、召回率、"
+        "F1-Score、准确率等基础识别指标，以及漏脱敏率、误脱敏率等"
+        "专项效果指标。"
+    )
+    q184988_answer_body = (
+        q184988_answer_prefix
+        + "其中漏脱敏率指应被脱敏却未被识别的敏感数据占比，"
+        "误脱敏率指非敏感数据被错误标记的占比，二者均需在多样本上验证。" * 8
+    )
+    assert len(q184988_answer_body) > 100, "anchored to production raw_text_len=1191"
+
+    response_html = (
+        "<main><div class=\"flow-markdown-body\">"
+        + q184988_answer_body
+        + "</div></main>"
+        # The doubao_homepage_content rejection that hit Q-184988
+        # ran in guest_executor when 2+ homepage indicators matched
+        # the JS body-fallback text. The persistence gate sees the
+        # full DOM which still has the real answer inside
+        # .flow-markdown-body alongside SOFT-bucket chrome.
+        "<header><button id=\"login-btn-header\">登录</button></header>"
+        "<div class=\"promo-overlay\">7天免登录</div>"
+    )
+
+    assert _doubao_has_persistence_whitelist_answer(
+        q184988_answer_body, response_html
+    ) is True, (
+        "Q-184988's 1191-char real answer in .flow-markdown-body must "
+        "trip the >=100-char persistence whitelist"
+    )
+    assert (
+        doubao_persistence_auth_reason("doubao", q184988_answer_body, response_html)
+        is None
+    ), (
+        "Q-184988 verify-readonly comment 4469617051: the real 1191-char "
+        "answer must NOT be rejected just because the SPA chrome carries "
+        "login-btn-header + 7天免登录 promo overlay"
+    )
+
+
+def test_doubao_persistence_gate_q184971_response_container_fallback():
+    """Whitelist must also match Doubao's secondary response selectors.
+
+    The Doubao scraper config defines ``response_selector`` as
+    ``.flow-markdown-body, [data-testid='receive_message'],
+    [class*='message-content']``. When the SPA reflows mid-stream
+    the inner ``.flow-markdown-body`` can detach while the parent
+    ``[data-testid='receive_message']`` retains the answer text;
+    the whitelist must still fire in that case.
+    """
+    from geo_tracker.agent.response_validation import (
+        doubao_persistence_auth_reason,
+        _doubao_has_persistence_whitelist_answer,
+    )
+
+    # Same answer prefix as Q-184971 — anchored to production raw_text.
+    # Refs #963 verify-readonly comment 4469617051
+    answer_body = (
+        "非常适合 ，bestCoffer 企业级 AI 数据脱敏工具专为金融行业高合规、"
+        "高敏感、多场景需求设计，已在银行、券商、基金等机构落地验证。"
+    ) * 4
+
+    response_html = (
+        # No .flow-markdown-body — parent container is the only match.
+        "<main><div data-testid=\"receive_message\">"
+        + answer_body
+        + "</div></main>"
+        "<header><button id=\"login-btn-header\">登录</button></header>"
+    )
+
+    assert _doubao_has_persistence_whitelist_answer(
+        answer_body, response_html
+    ) is True
+    assert (
+        doubao_persistence_auth_reason("doubao", answer_body, response_html)
+        is None
+    )
+
+
+def test_doubao_persistence_gate_short_answer_does_not_trip_whitelist():
+    """Negative control: <100-char body must NOT bypass STRONG markers.
+
+    The new whitelist is strictly tighter than the existing 20-char
+    HARD-bypass. A short hint that crosses 20 chars still gets HARD
+    bypassed (preserving the prior promo-banner test) but must not
+    bypass STRONG or the auth_state_reason fallback when no other
+    proof exists. Together with the negative-control tests below
+    this anchors the threshold semantics.
+    """
+    from geo_tracker.agent.response_validation import (
+        doubao_persistence_auth_reason,
+        _doubao_has_persistence_whitelist_answer,
+        _doubao_has_substantive_answer_html,
+    )
+
+    # 21 stripped chars (just above 20) — too short for the >=100
+    # whitelist but enough for the HARD-bypass.
+    short_body = "非结构化数据 AI 脱敏准确率测评核心指标"
+    assert 20 <= len(short_body) < 100
+
+    # When ONLY SOFT-bucket chrome appears alongside this short body,
+    # the prior HARD-bypass already returned None — the new whitelist
+    # does not change that behavior.
+    response_html_soft_only = (
+        "<main><div class=\"flow-markdown-body\">"
+        + short_body
+        + "</div></main>"
+        "<button id=\"login-btn-header\">登录</button>"
+    )
+
+    assert _doubao_has_substantive_answer_html(response_html_soft_only) is True
+    assert _doubao_has_persistence_whitelist_answer(
+        short_body, response_html_soft_only
+    ) is False, (
+        "21-char body must NOT trip the >=100-char whitelist"
+    )
+
+    # The existing >=20-char .flow-markdown-body bypass overrides
+    # HARD/STRONG already (see
+    # test_doubao_persistence_gate_keeps_answer_over_login_btn_header_chrome);
+    # the new whitelist is a stricter additional override, not a
+    # weaker one. Result: the short-body case still passes via the
+    # existing bypass.
+    assert (
+        doubao_persistence_auth_reason("doubao", short_body, response_html_soft_only)
+        is None
+    )
+
+
+def test_doubao_persistence_gate_whitelist_does_not_override_visible_dialog():
+    """Negative control: a visible login dialog still blocks even with a long answer.
+
+    Refs #963 follow-up: a visible login dialog is the only signal
+    that the session is being actively interrupted right now — at
+    that point any prior answer is stale and the user is logged
+    out for the purposes of any future call. The whitelist sits
+    below the visible-dialog block in the gate order, so it must
+    not weaken this absolute check.
+    """
+    from geo_tracker.agent.response_validation import (
+        doubao_persistence_auth_reason,
+    )
+
+    answer_body = (
+        "非常适合 ，bestCoffer 企业级 AI 数据脱敏工具专为金融行业高合规、"
+        "高敏感、多场景需求设计，已在银行、券商、基金等机构落地验证。"
+    ) * 4
+
+    response_html = (
+        "<main><div class=\"flow-markdown-body\">"
+        + answer_body
+        + "</div></main>"
+        # Real login dialog markup — the strict (chrome + action)
+        # pair the dialog probe matches.
+        "<div role=\"dialog\">"
+        "  <button class=\"login-button\">登录</button>"
+        "</div>"
+    )
+
+    # Even though the answer body is >100 chars, the visible
+    # dialog must still flip the gate. This preserves the
+    # absolute-block invariant.
+    assert (
+        doubao_persistence_auth_reason("doubao", answer_body, response_html)
+        == "doubao_not_logged_in"
+    )
+
+
+def test_doubao_invalid_response_reason_whitelist_bypasses_generic_markers():
+    """Refs #963 verify-readonly comment 4469617051: the Doubao whitelist also
+    overrides the generic ``your session has expired`` / ``please log in``
+    markers used by ``invalid_response_reason``.
+
+    The celery_tasks call passes ``response_html`` to
+    ``invalid_response_reason`` so a real >=100-char answer in a
+    Doubao response container cannot be falsely rejected because
+    an LLM answer happened to quote the English logout chrome.
+    """
+    from geo_tracker.agent.response_validation import invalid_response_reason
+
+    # Real answer in .flow-markdown-body; raw_text quotes the English
+    # logout chrome verbatim (e.g. an LLM answer comparing the UX
+    # phrasing of "your session has expired" between products).
+    answer_body = (
+        "非常适合 ，bestCoffer 企业级 AI 数据脱敏工具专为金融行业高合规、"
+        "高敏感、多场景需求设计，已在银行、券商、基金等机构落地验证。"
+    ) * 4
+
+    raw_text_quoting_chrome = (
+        answer_body
+        + "\n用户提示：『your session has expired』是常见的会话过期提示文案。"
+    )
+
+    response_html = (
+        "<main><div class=\"flow-markdown-body\">"
+        + answer_body
+        + "</div></main>"
+    )
+
+    # With the response_html available, the Doubao whitelist bypasses
+    # ``cookies_expired`` matching.
+    assert (
+        invalid_response_reason("doubao", raw_text_quoting_chrome, response_html)
+        is None
+    )
+
+    # Without a response container (just chrome / body fallback),
+    # generic markers still fire — this preserves the negative case.
+    assert (
+        invalid_response_reason(
+            "doubao",
+            "your session has expired, please log in again to continue using the app",
+            "<div>not a response container</div>",
+        )
+        == "cookies_expired"
+    )
+
+
+def test_doubao_invalid_response_reason_backwards_compatible_two_arg_signature():
+    """The new ``response_html`` kwarg is optional; existing 2-arg callers must still work."""
+    from geo_tracker.agent.response_validation import invalid_response_reason
+
+    # Existing call sites in bestcoffer_*.py / analyzer_v3_backfill.py /
+    # guest_executor.py / tests pass only (llm_name, text). The signature
+    # change must remain backwards-compatible.
+    assert invalid_response_reason("chatgpt", "your session has expired") == "cookies_expired"
+    assert invalid_response_reason("doubao", "non-logout chinese answer") is None
+    assert invalid_response_reason("doubao", "") is None
+
+
 @pytest.mark.asyncio
 async def test_doubao_no_response_login_dialog_sets_auth_failure_reason(monkeypatch):
     _install_fake_playwright(monkeypatch)

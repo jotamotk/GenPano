@@ -3708,7 +3708,15 @@ class GuestQueryExecutor:
                     resp_html = ""
 
             # Reject known app/login/error pages before saving a response.
-            invalid_reason = invalid_response_reason(llm_name, resp_text)
+            # Refs #963 Codex P2 on PR #1108: pass resp_html so the Doubao
+            # >=100-char ``.flow-markdown-body`` whitelist (added in this
+            # PR's response_validation.py change) takes effect at the
+            # extractor gate too, not just at the celery post-extract
+            # gate. Without this, a real Doubao answer that happens to
+            # match a ``_GENERIC_INVALID_MARKERS`` substring (e.g. quoting
+            # ``your session has expired`` UX copy) would be discarded
+            # here before the celery whitelist ever sees ``response_html``.
+            invalid_reason = invalid_response_reason(llm_name, resp_text, resp_html)
             if invalid_reason:
                 logger.warning(
                     "[%s] extracted invalid response content (%s), discarding",

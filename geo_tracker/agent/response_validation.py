@@ -97,6 +97,57 @@ _DOUBAO_FLOW_MARKDOWN_BODY_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
+# Refs #963 Q-184971 (raw_text=1255 chars `非常适合 ，bestCoffer 企业级 AI 数据
+# 脱敏工具…`) and Q-184988 (raw_text=1191 chars `非结构化数据 AI 脱敏准确率测评
+# 核心指标…`) verify-readonly evidence (issue #963 comment 4469617051,
+# 2026-05-17). Both queries landed in production as
+# ``queries.status=failed`` with ``retry_reason`` in
+# ``{no_response, doubao_homepage_content, doubao_auth_state_missing}``
+# while their ``llm_responses`` row carried a real, >100-char answer.
+# When the Doubao scraper extraction uses the JS body fallback (because
+# ``.flow-markdown-body`` partly hydrated then the SPA reflowed), the
+# captured ``raw_text`` is the real answer prefix concatenated with
+# the page chrome that persists in the logged-in shell — including
+# ``login-btn-header`` className, ``7天免登录`` promo text, and the
+# ``登录以解锁更多功能`` overlay. Those chrome strings sit in the SOFT
+# bucket because Doubao keeps them in DOM regardless of login state.
+# The existing 20-char ``.flow-markdown-body`` whitelist only bypasses
+# HARD markers; STRONG (SOFT+HARD) and the ``doubao_auth_state_reason``
+# fallback still fired and rejected real answers. Production
+# evidence: a 1255-char answer cannot coexist with an actual
+# logged-out session — the chat would have redirected to /login or
+# the page would have an actively-rendered login dialog (which is
+# still treated as an absolute block above). A long-form answer is
+# unforgeable evidence the SPA produced model output for the user.
+# Use a tighter 100-char threshold than the HARD-bypass whitelist
+# so this stronger override is robust: short hint strings that
+# coincidentally exceed 20 chars do not flip the gate, but real
+# answers that exceed 100 chars in any of the known Doubao response
+# selectors do.
+_DOUBAO_PERSISTENCE_RESPONSE_WHITELIST_MIN_LEN = 100
+
+_DOUBAO_RESPONSE_CONTAINER_RES = (
+    _DOUBAO_FLOW_MARKDOWN_BODY_RE,
+    # ``data-testid='receive_message'`` is the second Doubao response
+    # selector used by ``DOUBAO_SCRAPER_CONFIG['response_selector']``
+    # in ``guest_executor.py:487``. When the SPA re-renders mid-stream
+    # the .flow-markdown-body inner div can detach while the parent
+    # receive_message container keeps the answer text — match either.
+    re.compile(
+        r"<[^>]*data-testid\s*=\s*['\"]receive_message['\"][^>]*>"
+        r"(?P<body>.*?)</",
+        re.IGNORECASE | re.DOTALL,
+    ),
+    # ``[class*='message-content']`` / ``[class*='chat-message-content']``
+    # are the third/fourth selectors in the same config. Match elements
+    # whose class attribute contains the substring as a class token.
+    re.compile(
+        r"<[^>]*class\s*=\s*['\"][^'\"]*\b(?:chat-)?message-content\b[^'\"]*['\"][^>]*>"
+        r"(?P<body>.*?)</",
+        re.IGNORECASE | re.DOTALL,
+    ),
+)
+
 # Refs #963 production evidence (run 25951168887, query 184406 at
 # 2026-05-16 03:04:24): Doubao overlays a "登录以解锁更多功能" /
 # "7天免登录" promo on successful answers as a tier-up push -
@@ -305,6 +356,23 @@ def doubao_persistence_auth_reason(
     # populates that node when a real model answer has streamed in.
     if _doubao_has_substantive_answer_html(response_html):
         return None
+    # Refs #963 Q-184971 (raw_text=1255, `非常适合 ，bestCoffer 企业级 AI…`)
+    # and Q-184988 (raw_text=1191, `非结构化数据 AI 脱敏准确率测评核心指标`)
+    # verify-readonly evidence (issue #963 comment 4469617051): when the
+    # response contains >=100 chars of real answer text in any of
+    # Doubao's documented response selectors, even SOFT-bucket chrome
+    # (``login-btn-header`` className, ``7天免登录`` promo, ``登录以解锁
+    # 更多功能`` overlay) and the ``doubao_auth_state_reason`` fallback
+    # must NOT veto persistence — the SPA would not produce a 100+
+    # char answer for a session that is actually logged out. This
+    # whitelist sits below the absolute visible-login-dialog block
+    # (which still wins, because an interrupting dialog actively
+    # ends the session) and below the HARD-bypass at 20 chars; it
+    # exists to additionally bypass STRONG (SOFT+HARD) and the
+    # auth_state fallback when the answer is long enough to be
+    # unmistakably real.
+    if _doubao_has_persistence_whitelist_answer(raw_text, response_html):
+        return None
     hard_auth_reason = _doubao_hard_persistence_auth_reason(
         raw_text, response_html
     )
@@ -365,6 +433,52 @@ def _doubao_has_substantive_answer_html(html: str | None) -> bool:
         body = re.sub(r"<[^>]+>", " ", match.group("body"))
         if len(body.strip()) >= _DOUBAO_SUBSTANTIVE_ANSWER_MIN_LEN:
             return True
+    return False
+
+
+def _doubao_max_response_container_text_len(html: str | None) -> int:
+    """Return the longest stripped text length found in any Doubao response container.
+
+    Inspects the union of Doubao's response selectors
+    (``.flow-markdown-body``, ``[data-testid='receive_message']``,
+    ``[class*='message-content']``) so the whitelist still fires
+    when the SPA re-renders the inner ``.flow-markdown-body`` away
+    but keeps the answer text in the parent ``receive_message``
+    container.
+    """
+    visible_html = _strip_hidden_doubao_auth_chrome(html)
+    longest = 0
+    for container_re in _DOUBAO_RESPONSE_CONTAINER_RES:
+        for match in container_re.finditer(visible_html):
+            body = re.sub(r"<[^>]+>", " ", match.group("body"))
+            stripped_len = len(body.strip())
+            if stripped_len > longest:
+                longest = stripped_len
+    return longest
+
+
+def _doubao_has_persistence_whitelist_answer(
+    raw_text: str | None,
+    html: str | None,
+) -> bool:
+    """Return True when the response carries >=100 chars of real answer text.
+
+    Refs #963 Q-184971 / Q-184988 (issue #963 comment 4469617051):
+    a long-form answer in any of the documented Doubao response
+    containers is unforgeable evidence that the SPA produced
+    model output for the user; SOFT chrome (``login-btn-header`` /
+    ``7天免登录`` / ``登录以解锁更多功能``) coexists with such
+    answers on the logged-in shell, so it must NOT veto persistence.
+    The threshold is intentionally higher than the 20-char HARD-
+    bypass whitelist so a brief hint that crosses 20 chars does not
+    flip the gate. Visible login dialog chrome is still allowed to
+    override above this gate because an interrupting dialog is the
+    only signal that the user cannot continue interacting with the
+    page.
+    """
+    container_len = _doubao_max_response_container_text_len(html)
+    if container_len >= _DOUBAO_PERSISTENCE_RESPONSE_WHITELIST_MIN_LEN:
+        return True
     return False
 
 
@@ -497,8 +611,19 @@ def _doubao_has_visible_login_dialog(combined: str) -> bool:
     )
 
 
-def invalid_response_reason(llm_name: str, text: str | None) -> str | None:
-    """Return a reason when extracted page text is not an LLM answer."""
+def invalid_response_reason(
+    llm_name: str,
+    text: str | None,
+    response_html: str | None = None,
+) -> str | None:
+    """Return a reason when extracted page text is not an LLM answer.
+
+    ``response_html`` is optional and only consulted for Doubao: when the
+    response carries >=100 chars in a known Doubao response selector,
+    the generic English logout markers must NOT veto persistence —
+    Refs #963 Q-184971/Q-184988 verify-readonly evidence (issue #963
+    comment 4469617051).
+    """
     if not text:
         return None
 
@@ -508,6 +633,11 @@ def invalid_response_reason(llm_name: str, text: str | None) -> str | None:
         auth_reason = chatgpt_auth_state_reason(text)
         if auth_reason:
             return auth_reason
+
+    if llm == "doubao" and _doubao_has_persistence_whitelist_answer(
+        text, response_html
+    ):
+        return None
 
     for marker, reason in _GENERIC_INVALID_MARKERS.items():
         if marker in lower:

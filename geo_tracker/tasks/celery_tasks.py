@@ -1158,7 +1158,18 @@ def execute_query(self, query_id: int) -> dict:
                             "reason": failure_reason,
                         }
 
-                    invalid_reason = invalid_response_reason(query.target_llm, response.raw_text)
+                    # Refs #963 Q-184971/Q-184988 (verify-readonly comment
+                    # 4469617051): pass response_html so the Doubao
+                    # >=100-char ``.flow-markdown-body`` whitelist also
+                    # bypasses ``_GENERIC_INVALID_MARKERS`` for real
+                    # answers that happen to embed an English logout
+                    # phrase verbatim (e.g. an LLM answer comparing
+                    # ``your session has expired`` UX copy).
+                    invalid_reason = invalid_response_reason(
+                        query.target_llm,
+                        response.raw_text,
+                        response.response_html,
+                    )
                     if invalid_reason:
                         # 响应内容是登录页/过期页，不是 AI 回答
                         failure_reason = _doubao_post_reauth_failure_reason(
@@ -1356,6 +1367,13 @@ def execute_query(self, query_id: int) -> dict:
                 # 账号失败上报走独立 try，避免把主状态写回再次打断
                 if account_id and pool:
                     try:
+                        # Refs #963 Codex P1 on PR #1108: don't pass
+                        # ``query_id`` — ``settle_failure`` has a kw-only
+                        # ``reason`` signature (account_quota_settlement.py:37-43)
+                        # and the unsupported kwarg raised ``TypeError``
+                        # caught by the surrounding ``except``, leaking
+                        # the reserved account quota under exception
+                        # failures until capacity exhausted.
                         await quota_settlement.settle_failure(
                             db,
                             pool,
