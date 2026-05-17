@@ -192,6 +192,62 @@ jobs:
           fi
           echo "Tier-0 smoke OK: structured failure reported, no 500 / no traceback"
 
+      - name: Cross-component smoke — poc_runner.py drives the same Chromium via CDP
+        run: |
+          # This step validates the CROSS-COMPONENT path that the user flagged
+          # as untested: poc_runner.py (operator-facing PoC driver) → Playwright
+          # connect_over_cdp → the SAME headless Chromium that vm_side.runner
+          # uses for /run. Without this step, vm_side and poc_runner.py would
+          # be tested in isolation and the wiring between them (CDP attach,
+          # browser.contexts[0] reuse, failure-signal pipeline) would only be
+          # validated by the operator on a real VM — too late.
+          #
+          # Like the vm_side /run smoke above, this is a Tier-0 structural
+          # check: about:blank can't fulfil a Doubao prompt, so we expect
+          # success=false with failure_signals[] populated and exit code 1
+          # from poc_runner. The acceptance is "no Python exception, valid
+          # result.json structure", not business success.
+          set +e
+          python experiments/vm_per_account/poc_runner.py \
+            --cdp-endpoint "http://127.0.0.1:${DOUBAO_CDP_PORT}" \
+            --engine doubao \
+            --prompt-text "hello" \
+            --prompt-id ci_cross_smoke \
+            --timeout-secs 30 \
+            --output-dir /tmp/poc_runner_runs
+          POC_EXIT=$?
+          set -e
+          echo "poc_runner exit code: $POC_EXIT"
+          ARTIFACT_DIR="/tmp/poc_runner_runs/doubao/ci_cross_smoke/1"
+          if [ ! -f "$ARTIFACT_DIR/result.json" ]; then
+            echo "EXPECTED result.json at $ARTIFACT_DIR/result.json" >&2
+            ls -la /tmp/poc_runner_runs/ >&2 || true
+            exit 1
+          fi
+          cat "$ARTIFACT_DIR/result.json" | tee /tmp/poc_cross.json
+          # Structural assertions (NOT business):
+          SUCCESS="$(jq -r '.success' "$ARTIFACT_DIR/result.json")"
+          SIGNALS="$(jq -r '.failure_signals | length' "$ARTIFACT_DIR/result.json")"
+          ENGINE="$(jq -r '.engine' "$ARTIFACT_DIR/result.json")"
+          if [ "$ENGINE" != "doubao" ]; then
+            echo "EXPECTED engine=doubao in result.json, got $ENGINE" >&2
+            exit 1
+          fi
+          if [ "$SUCCESS" != "false" ]; then
+            echo "EXPECTED success=false (about:blank can't fulfil prompt), got $SUCCESS" >&2
+            exit 1
+          fi
+          if [ "$SIGNALS" = "0" ]; then
+            echo "EXPECTED at least one failure_signal, got 0" >&2
+            exit 1
+          fi
+          # poc_runner exits 1 on any non-success — confirm exit aligned with result.
+          if [ "$POC_EXIT" != "1" ]; then
+            echo "EXPECTED poc_runner exit 1 on structured failure, got $POC_EXIT" >&2
+            exit 1
+          fi
+          echo "Cross-component smoke OK: poc_runner.py + vm_side share the same CDP target"
+
       - name: Smoke assertion — POST /run rejects unknown engine
         run: |
           STATUS="$(curl -s -o /tmp/bad.json -w '%{http_code}' \
