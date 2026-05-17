@@ -40,7 +40,7 @@ on:
         type: string
 
 env:
-  IMAGE_REPO: vm-per-account/doubao-chrome
+  IMAGE_REPO: genpano/vm-doubao-chrome
   IMAGE_TAG: latest
 
 jobs:
