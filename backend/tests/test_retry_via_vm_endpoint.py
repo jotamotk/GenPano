@@ -385,7 +385,13 @@ async def test_existing_retry_endpoint_still_works_no_regression(
     mirrors ``test_phase_9b_queries_writes.py::test_retry_audit_med``
     and re-runs the same path on the same client to prove they coexist.
     """
-    import app.api.queries.router as router_mod
+    # ``app.api.queries.router`` resolves to the APIRouter exported by
+    # ``app.api.queries.__init__`` because the package eagerly does
+    # ``from .router import router``. To reach the module's namespace we
+    # need ``importlib.import_module`` directly.
+    import importlib
+
+    router_mod = importlib.import_module("app.api.queries.router")
 
     monkeypatch.setattr(
         router_mod.queries_db,

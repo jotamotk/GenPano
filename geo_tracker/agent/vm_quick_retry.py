@@ -50,7 +50,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-from playwright.async_api import async_playwright
+# Playwright is only required when actually running the VM CDP path. Defer
+# the import so the backend (which has no playwright in its lock file) can
+# import this module to register the FastAPI route and mock-test its
+# error paths without needing playwright installed.
+try:
+    from playwright.async_api import async_playwright as _async_playwright
+except ImportError:  # pragma: no cover
+    _async_playwright = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -522,7 +529,14 @@ async def run_quick_retry(
             detail=f"vm_quick_retry: engine {target_llm!r} not supported (doubao only)",
         )
 
-    pw_factory = playwright_factory or async_playwright
+    if playwright_factory is None and _async_playwright is None:
+        # Playwright is not installed in this environment. Surface as
+        # cdp_unreachable so the FastAPI handler returns a structured 503.
+        raise QuickRetryError(
+            ERR_CDP_UNREACHABLE,
+            detail="vm_quick_retry: playwright package not installed",
+        )
+    pw_factory = playwright_factory or _async_playwright
     screenshot_dir = _quick_screenshot_dir()
     screenshot_path = str(screenshot_dir / f"q{query_id}_{int(time.time())}.png")
 
