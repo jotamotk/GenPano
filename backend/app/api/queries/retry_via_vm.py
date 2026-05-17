@@ -32,7 +32,7 @@ dispatch — it executes inline, then commits. Audit emit uses
 from __future__ import annotations
 
 import logging
-from typing import Annotated, Optional
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
@@ -129,7 +129,7 @@ async def retry_query_via_vm(
     except Exception:
         body = {}
     requested_vm = (body.get("vm_id") if isinstance(body, dict) else None) or None
-    cdp_override: Optional[str] = None  # type: ignore[name-defined]
+    cdp_override: str | None = None
     if requested_vm == "doubao-01":
         cdp_override = "http://127.0.0.1:9222"
     elif requested_vm == "doubao-02":
