@@ -57,6 +57,17 @@ on:
         description: "true (default): SELECT only, no writes. false: apply UPDATE + INSERT account_rotation_log + dispatch auto_login."
         required: true
         default: "true"
+  # Refs #963 operator-authorized auto-execute path: push to the
+  # one-shot branch ``claude/restore-doubao-execute`` to run the
+  # restore immediately without a manual workflow_dispatch click.
+  # The branch name is intentionally specific so a stray push to
+  # any other branch cannot trigger production DB writes. ENV
+  # defaults below pin account_ids=45,46,47,48 and dry_run=false
+  # for the push path so the workflow always restores exactly the
+  # four burnt accounts agreed with the operator.
+  push:
+    branches:
+      - 'claude/restore-doubao-execute'
 
 permissions:
   contents: read
@@ -74,8 +85,13 @@ jobs:
           SERVER_HOST: ${{ secrets.SERVER_HOST }}
           SERVER_USER: ${{ secrets.SERVER_USER }}
           SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
-          ACCOUNT_IDS: ${{ inputs.account_ids }}
-          DRY_RUN: ${{ inputs.dry_run }}
+          # Refs #963 operator-authorized auto-execute: on the push
+          # trigger ``inputs`` is unset, so fall back to the hardcoded
+          # operator-approved restore set (accounts 45/46/47/48) and
+          # force the apply path (dry_run=false). On workflow_dispatch
+          # the ``inputs`` precedence preserves the safety-gated UI flow.
+          ACCOUNT_IDS: ${{ inputs.account_ids || '45,46,47,48' }}
+          DRY_RUN: ${{ inputs.dry_run || 'false' }}
           GH_RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
@@ -253,8 +269,8 @@ jobs:
         if: always()
         uses: actions/github-script@v7
         env:
-          INPUT_ACCOUNT_IDS: ${{ inputs.account_ids }}
-          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+          INPUT_ACCOUNT_IDS: ${{ inputs.account_ids || '45,46,47,48' }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run || 'false' }}
         with:
           script: |
             const fs = require('fs');
