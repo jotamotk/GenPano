@@ -18,9 +18,9 @@ on:
   workflow_dispatch:
     inputs:
       keep_alive_minutes:
-        description: 'How long to keep VM alive (default 240 = 4h, max 350)'
+        description: 'How long to keep VM alive (default 30 = 一次性, max 350)'
         required: false
-        default: '240'
+        default: '30'
         type: string
 
 jobs:
@@ -79,27 +79,43 @@ jobs:
           tailscale ip --4 || true
           tailscale ip --6 || true
 
-      - name: Start Xvfb on :0
+      - name: Start desktop + Chrome + noVNC, print summary, keep alive
+        # CRITICAL: every long-running service (Xvfb, Xfce, Chrome, x11vnc,
+        # websockify) MUST run inside ONE shell with a tail `sleep` so it
+        # survives the whole job. Earlier split-step layout had each service
+        # backgrounded with `&` then the step shell exited — SIGHUP killed
+        # those children, so by the time the operator tried to connect, the
+        # 6080 → 5900 chain was dead (websockify alone happened to survive
+        # because it was started last, so noVNC returned 502 Bad Gateway).
+        # Single-shell + final sleep keeps all PIDs as live children.
         run: |
           set -euxo pipefail
-          Xvfb :0 -screen 0 1920x1080x24 -nolisten tcp &
-          sleep 2
-          # sanity: xdpyinfo if available
-          DISPLAY=:0 xdpyinfo | head -2 || true
 
-      - name: Start Xfce session
-        run: |
-          set -euxo pipefail
+          # ---- 1. VNC password ----
+          VNC_PW=$(openssl rand -hex 4)
+          printf '%s' "$VNC_PW" > /tmp/.vncpw.plain
+          chmod 0600 /tmp/.vncpw.plain
+          x11vnc -storepasswd "$VNC_PW" /tmp/.vncpasswd
+
+          # ---- 2. Xvfb on :0 ----
+          Xvfb :0 -screen 0 1920x1080x24 -nolisten tcp \
+            >/tmp/xvfb.log 2>&1 &
+          # Wait for display to be ready (xdpyinfo polls until socket up)
+          for i in {1..20}; do
+            if DISPLAY=:0 xdpyinfo >/dev/null 2>&1; then break; fi
+            sleep 0.5
+          done
+          DISPLAY=:0 xdpyinfo | head -2
+
+          # ---- 3. Xfce ----
           DISPLAY=:0 dbus-launch --exit-with-session startxfce4 \
             >/tmp/xfce.log 2>&1 &
           sleep 5
 
-      - name: Start Chrome (doubao profile)
-        run: |
-          set -euxo pipefail
-          mkdir -p $HOME/profile-doubao
+          # ---- 4. Chrome (doubao profile) ----
+          mkdir -p "$HOME/profile-doubao"
           DISPLAY=:0 google-chrome \
-            --user-data-dir=$HOME/profile-doubao \
+            --user-data-dir="$HOME/profile-doubao" \
             --remote-debugging-port=9222 \
             --remote-debugging-address=127.0.0.1 \
             --no-sandbox --no-first-run --no-default-browser-check \
@@ -108,57 +124,47 @@ jobs:
             --window-size=1920,1080 \
             'https://www.doubao.com/chat' \
             >/tmp/chrome-doubao.log 2>&1 &
-          sleep 5
-          # sanity: hit CDP
-          curl -sf http://127.0.0.1:9222/json/version | head -5 || true
+          # Wait until CDP listens on 9222
+          for i in {1..30}; do
+            if curl -sf http://127.0.0.1:9222/json/version >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          curl -sf http://127.0.0.1:9222/json/version | head -3 || echo "WARN: CDP not yet ready, but proceeding"
 
-      - name: Generate VNC password + start x11vnc + websockify (noVNC)
-        # Codex review fix: generating VNC pw + using it must live in ONE step.
-        # GitHub Actions docs: a value passed to `::add-mask::` cannot be set
-        # as a step output afterward, so the pw would arrive empty downstream.
-        # Stash to a runner-local file + write to $GITHUB_ENV so the summary
-        # step can read it; the runner is ephemeral (4h) and the file does not
-        # leak outside the job.
-        run: |
-          set -euxo pipefail
-          # Use openssl to avoid the classic `tr | head` SIGPIPE-under-pipefail
-          # trap: head closes the pipe after 8 bytes, tr exits 141 (SIGPIPE),
-          # and `set -o pipefail` propagates the failure. `openssl rand -hex 4`
-          # produces 8 hex chars with no pipeline.
-          VNC_PW=$(openssl rand -hex 4)
-          # NOT using ::add-mask:: — it would block summary step from echoing the value.
-          # The pw is one-shot for this runner and is rotated next dispatch.
-          printf '%s' "$VNC_PW" > /tmp/.vncpw.plain
-          chmod 0600 /tmp/.vncpw.plain
-          x11vnc -storepasswd "$VNC_PW" /tmp/.vncpasswd
-          # x11vnc bound to all interfaces (so Tailscale peers can reach it)
-          # Access control = Tailscale ACL + the rotated VNC pw.
+          # ---- 5. x11vnc ----
           x11vnc -display :0 -forever -shared -rfbauth /tmp/.vncpasswd \
             >/tmp/x11vnc.log 2>&1 &
-          sleep 2
-          # websockify on 6080 wrapping localhost:5900
+          # Wait until 5900 listens
+          for i in {1..20}; do
+            if ss -tln | grep -q ':5900 '; then break; fi
+            sleep 0.5
+          done
+          ss -tln | grep ':5900 ' || { echo "ERROR: x11vnc not listening on 5900"; cat /tmp/x11vnc.log; exit 1; }
+
+          # ---- 6. websockify (noVNC) ----
           websockify --web /usr/share/novnc 6080 localhost:5900 \
             >/tmp/websockify.log 2>&1 &
-          sleep 2
+          # Wait until 6080 listens
+          for i in {1..20}; do
+            if ss -tln | grep -q ':6080 '; then break; fi
+            sleep 0.5
+          done
+          ss -tln | grep ':6080 ' || { echo "ERROR: websockify not listening on 6080"; cat /tmp/websockify.log; exit 1; }
 
-      - name: Print connection info to job summary
-        run: |
-          set -euxo pipefail
-          VNC_PW=$(cat /tmp/.vncpw.plain)
+          # ---- 7. Print connection info ----
           TAILSCALE_IP=$(tailscale ip --4 | head -1)
           TAILSCALE_HOST="vm-doubao-poc-${{ github.run_id }}"
-          # Stash for ops to copy
           {
             echo "## 🚀 VM Test Environment Ready"
             echo ""
-            echo "### Connection (open from your phone with Tailscale running)"
+            echo "### Connection (open from your device with Tailscale running)"
             echo ""
-            echo "**Option A — by Tailscale hostname** (recommended, magic-DNS):"
+            echo "**Option A — by Tailscale hostname** (requires MagicDNS enabled):"
             echo "\`\`\`"
             echo "http://${TAILSCALE_HOST}:6080/vnc.html"
             echo "\`\`\`"
             echo ""
-            echo "**Option B — by Tailscale IP** (if magic-DNS not enabled):"
+            echo "**Option B — by Tailscale IP** (always works):"
             echo "\`\`\`"
             echo "http://${TAILSCALE_IP}:6080/vnc.html"
             echo "\`\`\`"
@@ -167,37 +173,29 @@ jobs:
             echo ""
             echo "\`${VNC_PW}\`"
             echo ""
-            echo "### What to do next (in noVNC browser session)"
-            echo "1. Click **Connect** in the noVNC page; enter the VNC password above"
-            echo "2. You should see the Xfce desktop with Chrome already on https://www.doubao.com/chat"
-            echo "3. Click **手机号登录** or **扫码登录** — use your phone's 豆包/抖音 APP to scan QR (recommended)"
-            echo "4. After login lands on chat UI, send a test prompt (e.g. \"推荐一个国产手机品牌\") to verify"
-            echo "5. If success: VM-per-account architecture is end-to-end validated — leave a comment on Epic #1110"
-            echo ""
             echo "### Auto-shutdown"
-            echo "This runner will exit in ${{ inputs.keep_alive_minutes }} minutes."
-            echo "If you finish earlier, just close the noVNC tab — the runner times out by itself."
+            echo "Runner exits in ${{ inputs.keep_alive_minutes }} minutes."
           } >> "$GITHUB_STEP_SUMMARY"
           echo ""
           echo "=================================================="
-          echo "noVNC: http://${TAILSCALE_HOST}:6080/vnc.html"
-          echo "       (or  http://${TAILSCALE_IP}:6080/vnc.html )"
+          echo "noVNC: http://${TAILSCALE_IP}:6080/vnc.html"
           echo "VNC password: $VNC_PW"
           echo "=================================================="
 
-      - name: Keep runner alive for operator session
-        run: |
-          set -euxo pipefail
+          # ---- 8. Keep alive (single shell, all bg processes are children) ----
           MINS="${{ inputs.keep_alive_minutes }}"
-          # Clamp to safety bound (GitHub runner max 360 min, leave 10 min headroom for cleanup)
           if [ "$MINS" -gt 350 ]; then MINS=350; fi
-          echo "Sleeping for $MINS minutes; runner will exit on timeout."
-          # Sleep in chunks so we can see "alive" heartbeat in logs
+          echo "Sleeping $MINS minutes; bg services are children of this shell."
           for ((i=1; i<=MINS; i++)); do
             sleep 60
             if [ $((i % 5)) -eq 0 ]; then
-              echo "[$i / $MINS min] alive; tailscale status:"
-              tailscale status --self=false | head -3 || true
+              # Heartbeat: confirm services still alive
+              alive=""
+              pgrep -f Xvfb >/dev/null 2>&1 && alive+="Xvfb "
+              pgrep -f x11vnc >/dev/null 2>&1 && alive+="x11vnc "
+              pgrep -f websockify >/dev/null 2>&1 && alive+="websockify "
+              pgrep -f google-chrome >/dev/null 2>&1 && alive+="chrome "
+              echo "[$i / $MINS min] alive: $alive"
             fi
           done
 
