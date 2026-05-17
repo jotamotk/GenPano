@@ -26,7 +26,7 @@ Schema change is purely additive:
     None check on read.
   - No CHECK constraint, no FK — minimal blast radius.
 
-Revision ID: 20260517_expired_transition_count
+Revision ID: 20260517_expired_trans_count
 Revises: 20260516_alert_snooze
 Create Date: 2026-05-17
 """
@@ -39,7 +39,7 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy import inspect
 
-revision: str = "20260517_expired_transition_count"
+revision: str = "20260517_expired_trans_count"
 down_revision: str | Sequence[str] | None = "20260516_alert_snooze"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
