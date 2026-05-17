@@ -180,6 +180,235 @@ jobs:
           done
 
           echo ""
+          echo "=== [MYSTERY-1] auth-check call-site predicate trace (Q-185617/Q-185620 path) ==="
+          # Refs #963 comment 4470294100 follow-up: PR #1128's auth-check call
+          # site lives at guest_executor.py:~1589-1614 (commit 4fc1e79). The
+          # predicate gate is
+          #   if self.last_error_reason in ("doubao_auth_state_missing",
+          #                                 "doubao_not_logged_in"):
+          # AFTER an explicit ``_prefer_doubao_auth_failure_reason`` write at
+          # line 1595. Mystery-1 hypotheses:
+          #   (a) predicate runs before last_error_reason is set (refuted by
+          #       reading: line 1595 sets it before line 1596 reads it)
+          #   (b) earlier return short-circuits the path
+          #   (c) helper called but ``_doubao_recovery_attempted`` latch is
+          #       already True
+          #   (d) helper called and page.goto raises silently → recovered=False
+          # Diagnostic per call-site marker:
+          #   - 'auth-check recovery succeeded'        : helper fired AND won
+          #     for the auth-check site (line 1607-1612 in 4fc1e79)
+          #   - 'prompt_fill recovery succeeded'       : helper fired AND won
+          #     for the prompt-fill site (line 3057-3060 in 4fc1e79)
+          #   - 'recovery already attempted for'       : helper latch tripped
+          #     (line 2113-2116 in 4fc1e79)
+          #   - 'page.goto 恢复异常'                   : helper page.goto
+          #     raised an exception inside helper (line 2252 in 4fc1e79)
+          #   - 'page.goto recovery'                   : older marker
+          #     surviving from PR #1107 — should NOT appear after deploy if
+          #     #1128's helper replaced the inline body, prints sanity check
+          # If ALL four are zero → helper never invoked at all → hypothesis
+          # (b) is the most likely cause; expect to find an earlier ``return
+          # None`` or unhandled exception that bypasses both call sites.
+          for marker in \
+            'auth-check recovery succeeded' \
+            'prompt_fill recovery succeeded' \
+            'recovery already attempted for' \
+            'page.goto 恢复异常' \
+            'page.goto recovery' \
+            '找不到输入框' \
+            '页面恢复后通过' \
+            '页面恢复后通过 JS' ; do
+            echo "--- mystery-1 marker: ${marker} ---"
+            hits=$(docker compose logs --tail 20000 worker 2>&1 | grep -E "${marker}" | tail -20)
+            n=$(printf '%s' "${hits}" | grep -c . || true)
+            echo "count=${n}"
+            if [ "${n}" -gt 0 ]; then
+              printf '%s\n' "${hits}"
+            fi
+            echo ""
+          done
+
+          echo ""
+          echo "=== [MYSTERY-1 SOURCE] confirm deployed worker image has PR #1128 helper ==="
+          # AGENTS.md Evidence-First step 3: the deployed image identity in
+          # the first SSH block ('Container build identity') only confirms a
+          # tag — not that the source file inside actually includes the
+          # helper. Read the deployed Python file directly and confirm the
+          # three load-bearing strings:
+          #   - DOUBAO_FIND_SUBMIT_BUTTON_JS              (module constant)
+          #   - _attempt_doubao_page_regression_recovery  (helper def)
+          #   - _doubao_recovery_attempted                (per-query latch)
+          # Also print the exact auth-check predicate block so we have it
+          # alongside the log evidence.
+          docker compose exec -T worker python3 - <<'PYEND'
+          import re, sys
+          path = "/app/geo_tracker/agent/guest_executor.py"
+          try:
+              with open(path, "r", encoding="utf-8") as f:
+                  text = f.read()
+          except Exception as e:
+              print(f"FAILED to open {path}: {e}")
+              raise SystemExit(0)
+          print(f"FILE: {path}  size={len(text)} bytes")
+          markers = [
+              "DOUBAO_FIND_SUBMIT_BUTTON_JS",
+              "_attempt_doubao_page_regression_recovery",
+              "_doubao_recovery_attempted",
+              "_recovery_already_submitted",
+              "auth-check recovery succeeded",
+              "prompt_fill recovery succeeded",
+          ]
+          for m in markers:
+              n = text.count(m)
+              print(f"  {m:55s} count={n}")
+          # Find the auth-check predicate block and print it.
+          predicate_re = re.compile(
+              r"if\s*\(\s*\n?\s*not\s+input_el\s*\n?\s*and\s+llm\s*==\s*[\"']doubao[\"']"
+              r"[\s\S]{0,1200}?doubao_auth_recovery_succeeded\s*=\s*True",
+              re.MULTILINE,
+          )
+          mm = predicate_re.search(text)
+          if mm:
+              print("--- auth-check predicate block (deployed) ---")
+              print(mm.group(0))
+          else:
+              print("--- auth-check predicate block: PATTERN NOT FOUND ---")
+              # Fallback: print 60 lines around the doubao_auth_state_missing
+              # literal so we can still inspect the call-site shape.
+              idx = text.find("doubao_auth_state_missing")
+              if idx >= 0:
+                  start = text.rfind("\n", 0, max(0, idx - 1500))
+                  end = text.find("\n", idx + 1500)
+                  print("--- 60-line context around doubao_auth_state_missing ---")
+                  print(text[max(0, start):max(0, end)])
+          PYEND
+
+          echo ""
+          echo "=== [MYSTERY-1 RECENT AUTH FAILURES] doubao queries past 1h that landed in the predicate's reason set ==="
+          # If recent auth-state failures persist with retry_reason in
+          # ('doubao_auth_state_missing','doubao_not_logged_in') AND the
+          # helper markers (above) all show count=0, the auth-check call site
+          # is unreachable — supporting hypothesis (b) from Mystery 1.
+          docker compose exec -T postgres psql -X -U genpano -d genpano -P pager=off -c "
+            SELECT id, account_id, status, retry_reason, retry_count,
+                   queued_at, finished_at,
+                   EXTRACT(EPOCH FROM (NOW() - queued_at))::int AS sec_since_queue
+            FROM queries
+            WHERE target_llm='doubao'
+              AND queued_at > NOW() - INTERVAL '1 hour'
+              AND retry_reason IN (
+                'doubao_auth_state_missing',
+                'doubao_not_logged_in',
+                'doubao_post_reauth_doubao_not_logged_in',
+                'doubao_post_reauth_doubao_auth_state_missing'
+              )
+            ORDER BY queued_at DESC
+            LIMIT 20;
+          " </dev/null 2>&1 || true
+
+          echo ""
+          echo "=== [MYSTERY-2 CELERY STATE] active + reserved + scheduled tasks (look for Q-185623 / Q-185626) ==="
+          # Hypothesis options for the >44min hang:
+          #   (i)   celery task ACTIVE and stuck inside the executor (likely
+          #         a Playwright wait that bypassed the outer 480s wait_for)
+          #   (ii)  celery task RESERVED on a worker channel waiting for slot
+          #   (iii) celery task SCHEDULED for retry with backoff countdown
+          #   (iv)  DB row stuck in status=running with no live celery task
+          # Each inspect call has its own short timeout so we don't add to
+          # the workflow's 5min budget.
+          echo "--- celery inspect active ---"
+          timeout 30 docker compose exec -T worker celery -A geo_tracker.tasks.celery_tasks inspect active 2>&1 | head -300 || true
+          echo ""
+          echo "--- celery inspect reserved ---"
+          timeout 30 docker compose exec -T worker celery -A geo_tracker.tasks.celery_tasks inspect reserved 2>&1 | head -200 || true
+          echo ""
+          echo "--- celery inspect scheduled ---"
+          timeout 30 docker compose exec -T worker celery -A geo_tracker.tasks.celery_tasks inspect scheduled 2>&1 | head -200 || true
+          echo ""
+          echo "--- celery inspect stats (worker side per-pool concurrency / inflight) ---"
+          timeout 30 docker compose exec -T worker celery -A geo_tracker.tasks.celery_tasks inspect stats 2>&1 | head -120 || true
+
+          echo ""
+          echo "=== [MYSTERY-2 LOG WIDE] worker log slice for Q-185623 + Q-185626 (--tail 20000, last 200 lines per id) ==="
+          # Pull a wider log window than the trigger-5 block — the stuck
+          # queries have been running long enough that the original tail
+          # 8000 may have rotated past their last live log line.
+          for qid in 185623 185626; do
+            echo "--- wide log slice for query_id=${qid} (tail 20000, last 200) ---"
+            docker compose logs --tail 20000 worker 2>&1 \
+              | grep -E "query_${qid}\b|\b${qid}\b|Q-${qid}\b" \
+              | tail -200 || true
+            echo ""
+            echo "--- last-seen UTC timestamp on any log line mentioning $qid ---"
+            docker compose logs --tail 20000 -t worker 2>&1 \
+              | grep -E "query_${qid}\b|\b${qid}\b" \
+              | tail -1 || true
+            echo ""
+          done
+
+          echo ""
+          echo "=== [MYSTERY-2 DB ROW STATE] queries.status + started_at age for the 2 stuck Q-IDs ==="
+          # If status='running' AND started_at is >480s old, the celery
+          # task either:
+          #   - is still executing past the bounded asyncio.wait_for
+          #     (480s for doubao) — which should not happen
+          #   - died without writing FAILED back (e.g., worker SIGKILL,
+          #     unrecovered exception)
+          #   - was succeeded by a sibling task that doesn't update this row
+          docker compose exec -T postgres psql -X -U genpano -d genpano -P pager=off -c "
+            SELECT id, status, retry_reason, retry_count, account_id,
+                   queued_at, started_at, finished_at,
+                   EXTRACT(EPOCH FROM (NOW() - started_at))::int AS sec_since_started,
+                   EXTRACT(EPOCH FROM (NOW() - queued_at))::int  AS sec_since_queued,
+                   (SELECT COUNT(*) FROM llm_responses r WHERE r.query_id = queries.id) AS resp_count
+            FROM queries
+            WHERE id IN (185623, 185626)
+            ORDER BY id;
+          " </dev/null 2>&1 || true
+
+          echo ""
+          echo "=== [MYSTERY-2 WORKER PROCESS] python + chromium process inventory inside worker container ==="
+          # If a Playwright/Camoufox subprocess is hung, we should see it in
+          # ps with a long elapsed time. Limit output so a large pool doesn't
+          # blow past the comment size budget.
+          docker compose exec -T worker sh -c 'ps -eo pid,etime,pcpu,pmem,comm,args 2>&1 | grep -E "celery|playwright|camoufox|firefox|chromium|node" | grep -v grep | head -40' </dev/null 2>&1 || true
+
+          echo ""
+          echo "=== [MYSTERY-2 PG LOCKS] any pg_stat_activity rows touching queries.id=185623/185626 ==="
+          # A long-held transaction holding the rows for these IDs would
+          # also serialize updates and could explain status=running stuck.
+          docker compose exec -T postgres psql -X -U genpano -d genpano -P pager=off -c "
+            SELECT pid, state, wait_event, wait_event_type, xact_start, query_start,
+                   EXTRACT(EPOCH FROM (NOW() - query_start))::int AS query_age_s,
+                   LEFT(query, 240) AS query_preview
+            FROM pg_stat_activity
+            WHERE datname='genpano'
+              AND state <> 'idle'
+              AND (query ILIKE '%185623%' OR query ILIKE '%185626%' OR query ILIKE '%queries%')
+            ORDER BY query_start NULLS LAST
+            LIMIT 20;
+          " </dev/null 2>&1 || true
+
+          echo ""
+          echo "=== [MYSTERY-2 HELPER HANG HOTSPOTS] worker log grep for helper-internal markers per stuck Q-ID ==="
+          # Helper bounds: page.goto(timeout=15s), wait_for_selector(timeout=5s)
+          # per selector. If any of these saw their timeout expire on Q-185623
+          # / Q-185626, the helper exited and returned False — that should
+          # NOT be the source of hangs. But: if the helper succeeded and
+          # control returned to _browser_query with _recovery_already_submitted
+          # =True, the next step is the submit_confirm poll + response_wait
+          # (240s wall-clock cap). Print the latest submit_confirm /
+          # response_wait markers for the two IDs to see how far they got.
+          for qid in 185623 185626; do
+            echo "--- helper-stage markers for query_id=${qid} ---"
+            docker compose logs --tail 20000 worker 2>&1 \
+              | grep -E "query_${qid}|\b${qid}\b" \
+              | grep -E "page\.goto|wait_for_selector|submit_confirm|response_wait|prompt_fill|prompt_submit|页面回退|页面恢复|recovery already|recovery succeeded|browser_timeout|exception" \
+              | tail -40 || true
+            echo ""
+          done
+
+          echo ""
           echo "=== [MODE-CLASS] most recent ~12 doubao failed queries in past 2 hours ==="
           # User reported "同时我还跑了几个query，全部失败" — classify each row
           # by mode (A=submit never confirmed, B=submit fired but no
