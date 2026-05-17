@@ -61,14 +61,35 @@ def upgrade() -> None:
         return
     if _column_exists("llm_accounts", "expired_transition_count"):
         return
+    # Fail fast (5s) instead of hanging forever when a long-lived
+    # worker/backend connection holds a conflicting lock on llm_accounts.
+    # On Postgres lock_timeout is scoped to the current transaction and
+    # auto-resets when the migration commits/rolls back, so we do not need
+    # a RESET. The original single ``op.add_column(nullable=False,
+    # server_default='0')`` triggered AccessExclusiveLock for the duration
+    # of the full-table rewrite and silently waited 14-28 minutes on the
+    # production deploys for PR #1102 (8bd1bed) and PR #1104 (e425f21).
+    op.execute("SET lock_timeout = '5s'")
+    # Step 1: add as nullable, no default — instant on PG 11+, lock held briefly.
     op.add_column(
         "llm_accounts",
-        sa.Column(
-            "expired_transition_count",
-            sa.Integer(),
-            nullable=False,
-            server_default="0",
-        ),
+        sa.Column("expired_transition_count", sa.Integer(), nullable=True),
+    )
+    # Step 2: backfill existing rows (~26 rows in prod verify dump
+    # 2026-05-16T15:09:58Z; safe to do in one UPDATE).
+    op.execute(
+        "UPDATE llm_accounts "
+        "SET expired_transition_count = 0 "
+        "WHERE expired_transition_count IS NULL"
+    )
+    # Step 3: enforce NOT NULL + default for future inserts. Still takes an
+    # AccessExclusiveLock but the table is small so it returns in <1s, well
+    # under the 5s lock_timeout.
+    op.alter_column(
+        "llm_accounts",
+        "expired_transition_count",
+        nullable=False,
+        server_default="0",
     )
 
 
@@ -76,4 +97,8 @@ def downgrade() -> None:
     if not _table_exists("llm_accounts"):
         return
     if _column_exists("llm_accounts", "expired_transition_count"):
+        # Mirror the upgrade lock_timeout so a stuck connection cannot hang
+        # the downgrade indefinitely either — column drop also acquires
+        # AccessExclusiveLock on llm_accounts.
+        op.execute("SET lock_timeout = '5s'")
         op.drop_column("llm_accounts", "expired_transition_count")
