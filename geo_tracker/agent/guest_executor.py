@@ -3000,6 +3000,37 @@ class GuestQueryExecutor:
                                                         or not await btn_after.is_visible()
                                                     ):
                                                         continue
+                                                    # Refs #963 Codex P2 on PR #1107:
+                                                    # mirror the initial-submit
+                                                    # ``is_disabled`` guard. The
+                                                    # configured submit_button list
+                                                    # includes a raw
+                                                    # ``button[id='flow-end-msg-send']``
+                                                    # fallback that matches even
+                                                    # when aria-disabled/data-disabled
+                                                    # is true; clicking that on a
+                                                    # freshly reloaded chat UI whose
+                                                    # send button hasn't enabled yet
+                                                    # is a no-op, but would still set
+                                                    # ``resubmitted = True`` and
+                                                    # bypass the page-regression bail
+                                                    # → confirm poll then bails as
+                                                    # generic ``no_response``.
+                                                    is_disabled_after = (
+                                                        await btn_after.evaluate(
+                                                            """
+                                                            b => b.disabled
+                                                              || b.getAttribute('aria-disabled') === 'true'
+                                                              || b.getAttribute('data-disabled') === 'true'
+                                                              || /send-msg-btn-disabled-bg/.test(b.className || '')
+                                                            """
+                                                        )
+                                                    )
+                                                    if is_disabled_after:
+                                                        logger.debug(
+                                                            f"[{llm_name}] 恢复后跳过禁用按钮: {btn_sel}"
+                                                        )
+                                                        continue
                                                     await btn_after.click()
                                                     resubmitted = True
                                                     logger.info(
