@@ -40,8 +40,15 @@ on:
         type: string
 
 env:
-  IMAGE_REPO: genpano/vm-doubao-chrome
-  IMAGE_TAG: latest
+  # ACR push target. Matches the existing deploy.yml convention: ACR_REGISTRY
+  # secret already bakes in the host + namespace (e.g.
+  # 'crpi-xxx.cn-shanghai.personal.cr.aliyuncs.com/lianwei_ai_lab'), so
+  # IMAGE_REPO is just the repo name 'genpano'. Different image kinds in
+  # that shared repo are namespaced by tag prefix — main app uses
+  # 'backend-...' / 'worker-...' / 'frontend-...' tags (see deploy.yml), we
+  # use 'vm-doubao-chrome-...' so we don't collide.
+  IMAGE_REPO: genpano
+  IMAGE_TAG: vm-doubao-chrome-latest
 
 jobs:
   ssh-deploy:
@@ -69,14 +76,18 @@ jobs:
           echo "$ACR_PASSWORD" | docker login "$ACR_REGISTRY" \
             -u "$ACR_USERNAME" --password-stdin
           # build
+          # Tag with both the floating 'latest'-style tag (IMAGE_TAG) and
+          # an immutable sha-pinned tag, both prefixed with vm-doubao-chrome-
+          # so they live alongside the main app's tags in the shared repo.
+          SHA_TAG="vm-doubao-chrome-${{ github.sha }}"
           docker build \
             -t "${ACR_REGISTRY}/${IMAGE_REPO}:${IMAGE_TAG}" \
-            -t "${ACR_REGISTRY}/${IMAGE_REPO}:${{ github.sha }}" \
+            -t "${ACR_REGISTRY}/${IMAGE_REPO}:${SHA_TAG}" \
             -f experiments/vm_per_account/docker/Dockerfile \
             experiments/vm_per_account/docker
           # push both tags
           docker push "${ACR_REGISTRY}/${IMAGE_REPO}:${IMAGE_TAG}"
-          docker push "${ACR_REGISTRY}/${IMAGE_REPO}:${{ github.sha }}"
+          docker push "${ACR_REGISTRY}/${IMAGE_REPO}:${SHA_TAG}"
 
       - name: Setup SSH key + known_hosts + test reachability
         env:
@@ -118,7 +129,7 @@ jobs:
           # overlapping dispatches can't race past each other. The :latest
           # tag is still pushed for human convenience but not used for
           # the actual deploy.
-          VM_IMAGE="${ACR_REGISTRY}/${IMAGE_REPO}:${{ github.sha }}"
+          VM_IMAGE="${ACR_REGISTRY}/${IMAGE_REPO}:vm-doubao-chrome-${{ github.sha }}"
           # 1. Ensure VM_DEPLOY_PATH exists on ECS
           ssh -i ~/.ssh/id_ssh -p "$PORT" "$REMOTE" \
             "sudo mkdir -p '$VM_DEPLOY_PATH' && sudo chown -R \$(whoami):\$(whoami) '$VM_DEPLOY_PATH'"

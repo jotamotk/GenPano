@@ -16,6 +16,13 @@ set -euo pipefail
 : "${DISPLAY:=:0}"
 export DISPLAY
 
+# Clean up stale X server lock + socket. Without this, Xvfb refuses to
+# start with "Server is already active for display 0" — these files can
+# be baked into the image by package post-install hooks (xfce4-session /
+# mesa) running a transient X server during apt-get, or be left over if
+# a previous container instance died mid-startup.
+rm -f /tmp/.X0-lock /tmp/.X11-unix/X0 2>/dev/null || true
+
 # Workaround: docker mounted /profile may be owned by root; chrome needs rw
 mkdir -p /profile
 chmod 0700 /profile
@@ -35,11 +42,15 @@ for i in $(seq 1 20); do
   if xdpyinfo -display "$DISPLAY" >/dev/null 2>&1; then break; fi
   sleep 0.5
 done
-xdpyinfo -display "$DISPLAY" | head -2 || {
+# Do NOT pipe xdpyinfo into `head` — `head` closes the pipe after a few
+# lines and the SIGPIPE return code propagates under `set -o pipefail`,
+# making this look like an Xvfb failure when it actually succeeded.
+if ! xdpyinfo -display "$DISPLAY" >/dev/null 2>&1; then
   echo "[entrypoint] FATAL: Xvfb never came up; xvfb.log:"
   cat /var/log/xvfb.log
   exit 1
-}
+fi
+echo "[entrypoint] Xvfb is up on $DISPLAY"
 
 # ---- 3. Xfce desktop ----
 echo "[entrypoint] starting Xfce ..."
