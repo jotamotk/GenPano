@@ -1,0 +1,165 @@
+name: Q185614 Mode Inspect (read-only)
+
+on:
+  push:
+    branches:
+      - 'claude/verify-doubao'
+    paths:
+      - '.github/workflows/q185614_inspect.yml'
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: SSH inspect
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s' "$SERVER_SSH_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H "$SERVER_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+          output=$(ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=accept-new \
+            -o ServerAliveInterval=30 -o ServerAliveCountMax=4 \
+            "$SERVER_USER@$SERVER_HOST" 'bash -s' <<'REMOTE'
+          set -uo pipefail
+          cd /opt/genpano
+
+          for qid in 185614 185623 185617 185620 185626; do
+            echo "=================================================="
+            echo "=== query_id=${qid}"
+            echo "=================================================="
+
+            echo ""
+            echo "--- worker log (last 4000 lines, all matches) ---"
+            docker compose logs --tail 4000 worker 2>&1 \
+              | grep -E "Query ${qid}\b|query_${qid}\b|doubao.*${qid}\b" \
+              | head -120 || true
+
+            echo ""
+            echo "--- screenshot files ---"
+            docker compose exec -T worker sh -c "ls -lat /data/screenshots/query_${qid}_doubao_* 2>/dev/null" </dev/null || true
+
+            echo ""
+            echo "--- runtime JSON snapshot ---"
+            docker compose exec -T -e QID="${qid}" worker python3 - <<'PY' </dev/null || true
+          import glob, json, os
+          qid = os.environ["QID"]
+          files = sorted(
+              glob.glob(f"/data/screenshots/query_{qid}_doubao_*.json"),
+              key=os.path.getmtime, reverse=True,
+          )
+          if not files:
+              print(f"(no JSON for query_{qid})")
+              raise SystemExit(0)
+          path = files[0]
+          print(f"FILE: {path}")
+          with open(path) as f:
+              d = json.load(f)
+          page = d.get("page", {}) or {}
+          fp = page.get("fingerprint", {}) or {}
+          print(f"suffix          : {d.get('suffix')}")
+          print(f"doubaoAuthReason: {d.get('doubaoAuthStateReason')}")
+          print(f"doubaoChallenge : {d.get('doubaoVisualChallenge')}")
+          print(f"url             : {page.get('url')}")
+          print(f"title           : {(page.get('title') or '')[:120]}")
+          print(f"onChatPage      : {fp.get('onChatPage')!r}")
+          print(f"userMessageBubbleCount : {fp.get('userMessageBubbleCount')!r}")
+          print(f"timezone        : {fp.get('timezone')!r}")
+          print("--- responseSelectors ---")
+          for sel in (page.get("responseSelectors") or [])[:8]:
+              print(json.dumps(
+                  {k: sel.get(k) for k in ("selector", "count", "visibleCount", "firstText", "error")},
+                  ensure_ascii=False,
+              )[:600])
+          print("--- inputSelectors ---")
+          for sel in (page.get("inputSelectors") or [])[:6]:
+              print(json.dumps(
+                  {k: sel.get(k) for k in ("selector", "count", "visibleCount", "firstText", "error")},
+                  ensure_ascii=False,
+              )[:300])
+          print("--- bodyText first 800 chars ---")
+          print((page.get("bodyText") or "")[:800])
+          PY
+
+            echo ""
+            echo "--- HTML container counts ---"
+            docker compose exec -T -e QID="${qid}" worker python3 - <<'PY' </dev/null || true
+          import glob, os, re
+          qid = os.environ["QID"]
+          files = sorted(
+              glob.glob(f"/data/screenshots/query_{qid}_doubao_*.html"),
+              key=os.path.getmtime, reverse=True,
+          )
+          if not files:
+              print(f"(no HTML for query_{qid})")
+              raise SystemExit(0)
+          path = files[0]
+          with open(path, "r", encoding="utf-8", errors="replace") as f:
+              html = f.read()
+          print(f"FILE: {path}")
+          print(f"size: {len(html)} bytes")
+          candidates = [
+              ("flow-markdown-body",  r"class=['\"][^'\"]*flow-markdown-body[^'\"]*['\"]"),
+              ("send-msg-bubble-bg",  r"class=['\"][^'\"]*send-msg-bubble-bg[^'\"]*['\"]"),
+              ("flow-end-msg-send",   r"id=['\"]flow-end-msg-send['\"]"),
+              ("message-bubble",      r"class=['\"][^'\"]*message-bubble[^'\"]*['\"]"),
+              ("send-btn",            r"class=['\"][^'\"]*send-btn[^'\"]*['\"]"),
+              ("homepage_cards_zh",   r"有什么我能帮你的"),
+              ("textarea_count",      r"<textarea\b"),
+              ("login_btn_header",    r"login-btn-header"),
+              ("7day_promo",          r"7天免登录|7\s*day"),
+          ]
+          for name, pat in candidates:
+              n = len(re.findall(pat, html))
+              print(f"  {name:<25s}= {n}")
+          PY
+          done
+          REMOTE
+          )
+          {
+            echo "$output"
+          } > /tmp/q185614-inspect.txt
+          {
+            echo "## Mode inspect Q-185614 et al."
+            echo ""
+            echo '```'
+            head -3000 /tmp/q185614-inspect.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Post result as issue comment
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let body = `## Q-185614 (and siblings) Mode inspect\n\n`;
+            try {
+              const out = fs.readFileSync('/tmp/q185614-inspect.txt', 'utf-8');
+              const max = 50000;
+              const trimmed = out.length > max ? out.slice(0, max) + '\n…[truncated]' : out;
+              body += '```\n' + trimmed + '\n```';
+            } catch (e) {
+              body += '⚠️ failed: ' + String(e);
+            }
+            try {
+              await github.rest.issues.createComment({
+                issue_number: 963,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body,
+              });
+              core.notice('Posted inspect to #963');
+            } catch (e) {
+              core.warning(String(e));
+            }
