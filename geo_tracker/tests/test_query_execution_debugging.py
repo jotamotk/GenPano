@@ -3316,6 +3316,9 @@ async def test_doubao_page_load_artifact_failure_preserves_promoted_reason(
         async def route(self, *args, **kwargs):
             return None
 
+        async def add_cookies(self, *args, **kwargs):
+            return None
+
         async def new_page(self):
             return FakePage()
 
@@ -3334,7 +3337,20 @@ async def test_doubao_page_load_artifact_failure_preserves_promoted_reason(
         async def start(self):
             return FakePlaywright()
 
-    monkeypatch.setattr(guest_executor, "async_playwright", FakePlaywrightFactory)
+    # Refs #1113: ``async_playwright`` (and ``cleanup_browser_resources``
+    # for the launch path) moved into ``executors.local`` along with the
+    # launch code. Patch them at the new location so the fake Playwright
+    # factory above is what the connector actually calls.
+    # ``HAS_CAMOUFOX = False`` forces the plain Chromium branch so the
+    # fake factory wins.
+    import geo_tracker.agent.executors.local as local_mod
+    monkeypatch.setattr(
+        local_mod, "async_playwright", lambda: FakePlaywrightFactory()
+    )
+    monkeypatch.setattr(local_mod, "HAS_CAMOUFOX", False)
+    monkeypatch.setattr(
+        local_mod, "cleanup_browser_resources", _cleanup_browser_resources
+    )
     monkeypatch.setattr(guest_executor, "_save_html", _save_html)
     monkeypatch.setattr(guest_executor, "_save_screenshot", _noop_artifact)
     monkeypatch.setattr(guest_executor, "_save_runtime_snapshot", _noop_artifact)
@@ -8226,17 +8242,25 @@ def test_camoufox_fingerprint_persistence_wired_into_auto_login_writeback():
 
 
 def test_camoufox_fingerprint_persistence_wired_into_executor_launch():
-    """guest_executor must read fingerprint from account_cookies."""
+    """guest_executor's launch path must read fingerprint from account_cookies.
+
+    Refs #1113: the launch path moved from inline in ``guest_executor.py``
+    to ``executors/local.py`` as part of the BrowserConnector
+    extraction. The source-text invariant is preserved at the new
+    location; this test reads the new file so the architectural guard
+    travels with the code.
+    """
     from pathlib import Path
 
     source_path = (
-        Path(__file__).resolve().parent.parent / "agent" / "guest_executor.py"
+        Path(__file__).resolve().parent.parent
+        / "agent" / "executors" / "local.py"
     )
     source = source_path.read_text(encoding="utf-8")
     assert "extract_fingerprint_from_account_cookies" in source, (
-        "guest_executor must import the fingerprint extractor and pass "
-        "the saved fingerprint to Camoufox so the per-account UA / screen "
-        "/ Canvas seed stays stable across queries."
+        "LocalLaunchConnector must import the fingerprint extractor and "
+        "pass the saved fingerprint to Camoufox so the per-account UA / "
+        "screen / Canvas seed stays stable across queries."
     )
     # The fingerprint must be passed via the Camoufox kwargs, not just
     # imported. Match the exact kwarg name to catch a typo.
@@ -8869,16 +8893,28 @@ def test_qg_proxy_wired_into_sms_login_launch():
 # Camoufox launch (preferred path) and the Playwright Chromium fallback
 # must close the WebRTC leak.
 def test_camoufox_launches_block_webrtc_to_prevent_stun_leak():
-    """Both Camoufox launches must set block_webrtc=True + disable_coop=True."""
+    """Both Camoufox launches must set block_webrtc=True + disable_coop=True.
+
+    Refs #1113: the query-path Camoufox launch moved from
+    ``guest_executor.py`` to ``executors/local.py`` as part of the
+    BrowserConnector extraction. ``sms_login/base.py`` still launches
+    Camoufox inline for the auto-login flow and remains in the check.
+    """
     from pathlib import Path
 
     for relpath in (
         ("agent", "sms_login", "base.py"),
-        ("agent", "guest_executor.py"),
+        ("agent", "executors", "local.py"),
     ):
         source_path = Path(__file__).resolve().parent.parent.joinpath(*relpath)
         source = source_path.read_text(encoding="utf-8")
-        camoufox_idx = source.index("camoufox_kwargs = {")
+        # ``executors/local.py`` annotates the dict literal as ``dict``;
+        # match either form so the test is robust to future small
+        # annotation additions.
+        try:
+            camoufox_idx = source.index("camoufox_kwargs = {")
+        except ValueError:
+            camoufox_idx = source.index("camoufox_kwargs: dict = {")
         # Capture the dict literal — generously sized so future additions
         # stay inside the slice.
         camoufox_block = source[camoufox_idx:camoufox_idx + 4000]
@@ -8895,12 +8931,16 @@ def test_camoufox_launches_block_webrtc_to_prevent_stun_leak():
 
 
 def test_playwright_fallback_forces_webrtc_through_proxy():
-    """Chromium fallback args must close the WebRTC leak symmetrically."""
+    """Chromium fallback args must close the WebRTC leak symmetrically.
+
+    Refs #1113: the query-path Chromium fallback moved from
+    ``guest_executor.py`` to ``executors/local.py``.
+    """
     from pathlib import Path
 
     for relpath in (
         ("agent", "sms_login", "base.py"),
-        ("agent", "guest_executor.py"),
+        ("agent", "executors", "local.py"),
     ):
         source_path = Path(__file__).resolve().parent.parent.joinpath(*relpath)
         source = source_path.read_text(encoding="utf-8")
@@ -8958,12 +8998,16 @@ def test_runtime_snapshot_captures_doubao_fingerprint_diagnostics():
 # must also install ``tzdata`` so Firefox can actually resolve named
 # timezones — without it the env TZ silently no-ops.
 def test_camoufox_doubao_launches_pin_china_timezone_and_geolocation():
-    """Both Doubao Camoufox launches must override timezone + geolocation."""
+    """Both Doubao Camoufox launches must override timezone + geolocation.
+
+    Refs #1113: the query-path Doubao Camoufox config moved to
+    ``executors/local.py``.
+    """
     from pathlib import Path
 
     for relpath in (
         ("agent", "sms_login", "base.py"),
-        ("agent", "guest_executor.py"),
+        ("agent", "executors", "local.py"),
     ):
         source_path = Path(__file__).resolve().parent.parent.joinpath(*relpath)
         source = source_path.read_text(encoding="utf-8")
