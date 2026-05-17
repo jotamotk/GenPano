@@ -36,6 +36,7 @@ on:
         type: choice
         options:
           - status        # docker compose ps + free -h + uptime + ufw
+          - inspect       # find genpano/trash_test repo path + disk usage (read-only)
           - up            # write .env from secrets, then docker compose up -d
           - down          # docker compose down (keeps profile volumes)
           - restart       # docker compose restart <container>
@@ -99,6 +100,37 @@ jobs:
           DOCKER_DIR="$ECS_REPO_PATH/experiments/vm_per_account/docker"
 
           case "$ACTION" in
+            inspect)
+              # Read-only path discovery. Find where the repo might live,
+              # check disk usage, list common dirs. NO mutation.
+              $SSH bash <<'EOF'
+              set -uo pipefail
+              echo "=== whoami + home ==="
+              whoami; echo "\$HOME=$HOME"
+              echo
+              echo "=== /opt content ==="
+              ls -la /opt 2>/dev/null | head -20 || echo "/opt does not exist"
+              echo
+              echo "=== /root content ==="
+              ls -la /root 2>/dev/null | head -20 || echo "(no perms or empty)"
+              echo
+              echo "=== /home content ==="
+              ls -la /home 2>/dev/null | head -20
+              echo
+              echo "=== find: any genpano / trash_test / geo_tracker dir ==="
+              sudo find / -maxdepth 5 -type d \( -name "genpano*" -o -name "trash_test*" -o -name "geo_tracker" -o -name "backend" \) 2>/dev/null | head -30
+              echo
+              echo "=== which git, docker, python ==="
+              which git docker python python3 || true
+              docker --version 2>/dev/null || echo "(docker not installed yet)"
+              echo
+              echo "=== disk usage ==="
+              df -h | head -10
+              echo
+              echo "=== existing systemd services (genpano backend etc.) ==="
+              systemctl list-units --type=service --no-pager 2>/dev/null | grep -iE "(genpano|fastapi|celery|backend|gunicorn|uvicorn)" | head -20 || true
+EOF
+              ;;
             bootstrap)
               # Idempotent: install docker, ufw rules, clone repo if absent.
               # All host changes run via `sudo` so non-root SSH users (ubuntu)
