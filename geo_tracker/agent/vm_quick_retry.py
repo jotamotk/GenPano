@@ -93,10 +93,15 @@ DOUBAO_SUBMIT_BUTTON = (
     "button[data-testid*='send']"
 )
 DOUBAO_RESPONSE_SELECTOR = (
+    # Stable: every assistant reply now renders with a `md-box-root` wrapper
+    # (verified 2026-05 via DOM dump from poc-query run 25998246934). Old
+    # .flow-markdown-body kept as fallback for older Doubao builds.
+    ".md-box-root, "
     ".flow-markdown-body, "
+    "[data-testid='receive_message'] .md-box-root, "
+    "[data-testid='receive_message'] .flow-markdown-body, "
     "[data-testid='receive_message'], "
     "[data-testid='receive_message'] [data-testid='message_text_content'], "
-    "[data-testid='receive_message'] .flow-markdown-body, "
     "[class*='message-content'], "
     "[class*='chat-message-content']"
 )
