@@ -18,9 +18,8 @@ on:
   workflow_dispatch:
     inputs:
       tailscale_auth_key:
-        description: 'Tailscale auth-key (tskey-auth-...). Defaults to the one provided in chat for PoC. Rotate after test.'
+        description: 'Tailscale auth-key (tskey-auth-...). Paste at dispatch time (NOT stored). Generate at https://login.tailscale.com/admin/settings/keys'
         required: true
-        default: 'tskey-auth-kw7G6PNxPQ11CNTRL-oC8cRQwqnHh9bk8p9WbrHhcDrk4fZYkK'
         type: string
       keep_alive_minutes:
         description: 'How long to keep VM alive (default 240 = 4h, max 350)'
@@ -36,15 +35,6 @@ jobs:
       contents: read
 
     steps:
-      - name: Generate VNC password
-        id: vnc
-        run: |
-          set -euo pipefail
-          VNC_PW=$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 8 || true)
-          # Mask so it doesn't leak into raw logs
-          echo "::add-mask::$VNC_PW"
-          echo "vnc_pw=$VNC_PW" >> "$GITHUB_OUTPUT"
-
       - name: Install Xfce + Chrome + VNC stack
         run: |
           set -euxo pipefail
@@ -114,15 +104,23 @@ jobs:
           # sanity: hit CDP
           curl -sf http://127.0.0.1:9222/json/version | head -5 || true
 
-      - name: Start x11vnc + websockify (noVNC)
-        env:
-          VNC_PW: ${{ steps.vnc.outputs.vnc_pw }}
+      - name: Generate VNC password + start x11vnc + websockify (noVNC)
+        # Codex review fix: generating VNC pw + using it must live in ONE step.
+        # GitHub Actions docs: a value passed to `::add-mask::` cannot be set
+        # as a step output afterward, so the pw would arrive empty downstream.
+        # Stash to a runner-local file + write to $GITHUB_ENV so the summary
+        # step can read it; the runner is ephemeral (4h) and the file does not
+        # leak outside the job.
         run: |
           set -euxo pipefail
-          echo -n "$VNC_PW" > /tmp/.vncpw.plain
+          VNC_PW=$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 8)
+          # NOT using ::add-mask:: — it would block summary step from echoing the value.
+          # The pw is one-shot for this runner and is rotated next dispatch.
+          printf '%s' "$VNC_PW" > /tmp/.vncpw.plain
+          chmod 0600 /tmp/.vncpw.plain
           x11vnc -storepasswd "$VNC_PW" /tmp/.vncpasswd
           # x11vnc bound to all interfaces (so Tailscale peers can reach it)
-          # Note: we rely on Tailscale ACL, not local firewall, for access control
+          # Access control = Tailscale ACL + the rotated VNC pw.
           x11vnc -display :0 -forever -shared -rfbauth /tmp/.vncpasswd \
             >/tmp/x11vnc.log 2>&1 &
           sleep 2
@@ -132,10 +130,9 @@ jobs:
           sleep 2
 
       - name: Print connection info to job summary
-        env:
-          VNC_PW: ${{ steps.vnc.outputs.vnc_pw }}
         run: |
           set -euxo pipefail
+          VNC_PW=$(cat /tmp/.vncpw.plain)
           TAILSCALE_IP=$(tailscale ip --4 | head -1)
           TAILSCALE_HOST="vm-doubao-poc-${{ github.run_id }}"
           # Stash for ops to copy
