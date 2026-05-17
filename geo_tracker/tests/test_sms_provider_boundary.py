@@ -1280,3 +1280,61 @@ async def test_sms_registration_exception_redacts_logs_and_returned_reason(
     assert FAKE_CN_PHONE not in reason
     assert FAKE_SMS_CODE not in reason
     assert FAKE_COOKIE_VALUE not in reason
+
+
+@pytest.mark.asyncio
+async def test_luban_get_keyword_sms_raises_with_length_and_sha8_when_no_digits(
+    monkeypatch,
+) -> None:
+    """Refs #963: when the SMS body has no extractable digits, the
+    RuntimeError raised by ``get_keyword_sms`` must include ``len=<N>``
+    and ``sha8=<8-hex-chars>`` so worker logs can distinguish failure
+    modes (empty body vs non-empty-no-digit vs a specific recurring
+    template) across iterations WITHOUT leaking the body itself. This is
+    diagnostic-only instrumentation — auto-fallback to the service_id
+    pool must remain off until anti-scraping + SMS-to-DB are proven."""
+    import hashlib
+    import re
+
+    monkeypatch.setenv("LUBANSMS_TOKEN", "unit-token")
+    from geo_tracker.agent.sms_login.luban_client import LubanSMSClient
+
+    fixture_body = "欢迎使用豆包，请激活账号"
+    expected_len = len(fixture_body)
+    expected_sha8 = hashlib.sha256(fixture_body.encode()).hexdigest()[:8]
+
+    class _FakeResponse:
+        def __init__(self, payload: dict) -> None:
+            self._payload = payload
+
+        def json(self) -> dict:
+            return self._payload
+
+    class _FakeHttpxClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def get(self, _url: str, params=None) -> _FakeResponse:
+            self.calls += 1
+            return _FakeResponse({"code": 0, "msg": fixture_body})
+
+        async def aclose(self) -> None:
+            return None
+
+    client = LubanSMSClient()
+    client.client = _FakeHttpxClient()
+
+    with pytest.raises(RuntimeError) as excinfo:
+        await client.get_keyword_sms("13800000000", "豆包", timeout=5)
+
+    message = str(excinfo.value)
+    assert "无法从短信中提取验证码" in message
+    assert "[sms-text-redacted" in message
+    assert f"len={expected_len}" in message
+    assert f"sha8={expected_sha8}" in message
+    # sha8 must be exactly 8 hex chars (not raw body, not the full digest).
+    sha8_match = re.search(r"sha8=([0-9a-f]+)", message)
+    assert sha8_match is not None
+    assert len(sha8_match.group(1)) == 8
+    # And the body itself must NOT leak into the error message.
+    assert fixture_body not in message

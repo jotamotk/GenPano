@@ -12,6 +12,7 @@ API 文档: https://lubansms.com/api_docs/
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
 import re
@@ -105,7 +106,18 @@ class LubanSMSClient:
                     code = match.group(1)
                     logger.info("提取验证码: [sms-code-redacted]")
                     return code
-                raise RuntimeError("无法从短信中提取验证码: [sms-text-redacted]")
+                # Refs #963: keep the SMS body redacted (PII), but emit
+                # length + 8-char sha256 prefix so worker logs can
+                # distinguish failure modes across iterations — empty
+                # body vs non-empty-no-digit vs a specific recurring
+                # template — without leaking the body itself. The next
+                # iteration uses this to decide whether to widen the
+                # regex or whitelist a service_id manually; we do NOT
+                # auto-fallback to service_id from here.
+                sha8 = hashlib.sha256(msg.encode()).hexdigest()[:8]
+                raise RuntimeError(
+                    f"无法从短信中提取验证码: [sms-text-redacted, len={len(msg)}, sha8={sha8}]"
+                )
 
             # code=400 + "不正确的apikey" 是真正的错误
             if data.get("code") == 400 and "apikey" in data.get("msg", "").lower():
