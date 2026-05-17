@@ -2830,12 +2830,26 @@ class GuestQueryExecutor:
         _retry_count: int = 0,
         query_id: int | None = None,
         runtime_events: list[dict] | None = None,
+        _recovery_already_submitted: bool = False,
     ) -> tuple:
         """在已打开的页面里输入 query，等待响应，抓取文本和引用
-        Returns: (response_text, response_html, citations_list)"""
+        Returns: (response_text, response_html, citations_list)
+
+        Refs #963 issue comment 4470015151:
+        ``_recovery_already_submitted=True`` is set by the auth-check and
+        prompt-fill bail call sites when
+        ``_attempt_doubao_page_regression_recovery`` has already driven
+        the goto+refill+submit sequence. In that case the prompt_fill +
+        prompt_submit blocks below are skipped via the
+        ``_recovery_already_submitted`` guards — otherwise we would
+        clear the textarea and resubmit, sending the query twice.
+        Recovery success leaves the page mid-flight (user message bubble
+        is rendering); the function proceeds straight to
+        submit_confirm + response_wait.
+        """
         debug_query_id = _debug_query_id(query_id)
         self._set_execution_stage("prompt_fill")
-        if input_el is None:
+        if input_el is None and not _recovery_already_submitted:
             input_el = await page.wait_for_selector(cfg["input_selector"].split(",")[0], timeout=10000)
 
         # 模拟人类行为：随机延迟 + 鼠标移动到输入框
