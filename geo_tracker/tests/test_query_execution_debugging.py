@@ -3316,6 +3316,9 @@ async def test_doubao_page_load_artifact_failure_preserves_promoted_reason(
         async def route(self, *args, **kwargs):
             return None
 
+        async def add_cookies(self, *args, **kwargs):
+            return None
+
         async def new_page(self):
             return FakePage()
 
@@ -3334,7 +3337,20 @@ async def test_doubao_page_load_artifact_failure_preserves_promoted_reason(
         async def start(self):
             return FakePlaywright()
 
-    monkeypatch.setattr(guest_executor, "async_playwright", FakePlaywrightFactory)
+    # Refs #1113: ``async_playwright`` (and ``cleanup_browser_resources``
+    # for the launch path) moved into ``executors.local`` along with the
+    # launch code. Patch them at the new location so the fake Playwright
+    # factory above is what the connector actually calls.
+    # ``HAS_CAMOUFOX = False`` forces the plain Chromium branch so the
+    # fake factory wins.
+    import geo_tracker.agent.executors.local as local_mod
+    monkeypatch.setattr(
+        local_mod, "async_playwright", lambda: FakePlaywrightFactory()
+    )
+    monkeypatch.setattr(local_mod, "HAS_CAMOUFOX", False)
+    monkeypatch.setattr(
+        local_mod, "cleanup_browser_resources", _cleanup_browser_resources
+    )
     monkeypatch.setattr(guest_executor, "_save_html", _save_html)
     monkeypatch.setattr(guest_executor, "_save_screenshot", _noop_artifact)
     monkeypatch.setattr(guest_executor, "_save_runtime_snapshot", _noop_artifact)
