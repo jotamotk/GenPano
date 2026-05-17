@@ -146,6 +146,93 @@ RESPONSE_WAIT_STAGE_BUDGET_S = 240
 POST_FAILURE_PAGE_READ_TIMEOUT_S = 5
 POST_FAILURE_SCREENSHOT_TIMEOUT_S = 10
 
+# Refs #963 issue comment 4470015151 (2026-05-17 08:49Z trigger-5 dump):
+# PR #1107 added a one-shot ``page.goto(cfg["url"])`` recovery in the
+# submit-confirm retry branch (``_browser_query`` ``elif llm_name ==
+# "doubao":``). That implementation called a CLOSURE local to
+# ``_browser_query`` (``_find_submit_button_js``) to locate the send
+# button via JS. To re-use the same finder from
+# ``_attempt_doubao_page_regression_recovery`` (which lives OUTSIDE
+# ``_browser_query`` so the auth-check + prompt-fill bail sites can
+# invoke it), promote the JS source to a module-level constant. Both
+# the original closure and the new helper now invoke
+# ``page.evaluate_handle(DOUBAO_FIND_SUBMIT_BUTTON_JS)`` — the JS body
+# is unchanged from PR #1107 so the production submit-button
+# discovery semantics are preserved bit-for-bit.
+DOUBAO_FIND_SUBMIT_BUTTON_JS = """
+() => {
+    const isEnabled = (b) => {
+        if (!b) return false;
+        if (b.disabled) return false;
+        if (b.getAttribute('data-disabled') === 'true') return false;
+        if (b.getAttribute('aria-disabled') === 'true') return false;
+        const cls = b.className || '';
+        if (typeof cls === 'string' && /send-msg-btn-disabled-bg/.test(cls)) return false;
+        return true;
+    };
+
+    // 最优先：稳定的 id（线上 DOM 验证）
+    const byId = document.getElementById('flow-end-msg-send');
+    if (byId && isEnabled(byId)) return byId;
+
+    const all = [...document.querySelectorAll('button, [role="button"]')];
+
+    // 其次：按 class 匹配（稳定的 Tailwind/业务类名）
+    const byClass = all.find(b => {
+        if (!isEnabled(b)) return false;
+        const cls = b.className || '';
+        if (typeof cls !== 'string') return false;
+        return /send-msg-btn/.test(cls);
+    });
+    if (byClass) return byClass;
+
+    // 然后：.send-btn-wrapper（不含 !hidden）内的 button
+    const wrappers = [...document.querySelectorAll('.send-btn-wrapper')];
+    for (const w of wrappers) {
+        const wcls = w.className || '';
+        if (typeof wcls === 'string' && /!hidden/.test(wcls)) continue;
+        const b = w.querySelector('button');
+        if (isEnabled(b)) return b;
+    }
+
+    // 然后：aria-label / title 含 send/发送
+    const byAria = all.find(b => {
+        if (!isEnabled(b)) return false;
+        const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+        const title = (b.getAttribute('title') || '').toLowerCase();
+        return /send|发送|提交/.test(aria) || /send|发送|提交/.test(title);
+    });
+    if (byAria) return byAria;
+
+    // 次选：input 附近、含 svg 图标、文本为空或极短、enabled 的按钮
+    const input = document.querySelector(
+        'textarea:not([aria-hidden="true"]), [contenteditable="true"]'
+    );
+    if (!input) return null;
+    const ir = input.getBoundingClientRect();
+    let best = null, bestScore = -Infinity;
+    for (const b of all) {
+        if (!isEnabled(b)) continue;
+        const cls = b.className || '';
+        if (typeof cls === 'string' && /toggle-button/.test(cls)) continue;
+        const r = b.getBoundingClientRect();
+        if (r.width === 0 || r.height === 0) continue;
+        const txt = (b.textContent || '').trim();
+        if (txt.length > 0) continue;  // avoid mode/search toggles
+        if (!b.querySelector('svg, img, i')) continue;  // 必须有图标
+        // 限制在 input 正下方/右侧附近 150px 以内
+        const dx = Math.max(0, r.left - ir.right, ir.left - r.right);
+        const dy = Math.max(0, r.top - ir.bottom, ir.top - r.bottom);
+        if (dx > 300 || dy > 200) continue;
+        if ((r.left + r.width / 2) < (ir.left + ir.width * 0.55)) continue;
+        const verticalPenalty = Math.abs((r.top + r.bottom) / 2 - (ir.top + ir.bottom) / 2);
+        const score = (r.left + r.width) - verticalPenalty - dx - dy;
+        if (score > bestScore) { bestScore = score; best = b; }
+    }
+    return best;
+}
+"""
+
 
 _SENSITIVE_TEXT_PATTERNS = [
     (
@@ -583,6 +670,15 @@ class GuestQueryExecutor:
         # so the bad IP is dropped from the pool.
         self.qg_proxy_client = QGProxyClient.from_env()
         self._active_qg_lease = None
+        # Refs #963 issue comment 4470015151 (2026-05-17 08:49Z trigger-5):
+        # PR #1107's page.goto recovery is now invoked from THREE call
+        # sites (auth-check no_input bail, prompt-fill fill-failed bail,
+        # and the submit-confirm retry). To enforce the "ONE recovery
+        # attempt per query, MAX" contract (looping is a regression risk
+        # — infinite reload), track whether the helper has already fired
+        # for the current query. Reset in ``_execute_once`` so a fresh
+        # query (or a proxy-rotation retry) gets its own attempt.
+        self._doubao_recovery_attempted: bool = False
 
     def _set_execution_stage(self, stage: str) -> None:
         self.execution_stage = stage
@@ -695,6 +791,12 @@ class GuestQueryExecutor:
         # N-1's stale reason and mask the real exception of attempt N. Scope
         # the preservation to within a single _execute_once invocation.
         self.last_error_reason = None
+        # Refs #963 issue comment 4470015151: same per-attempt reset for
+        # the page-regression recovery latch. A proxy-rotation retry of
+        # the same query gets a fresh ONE-shot recovery budget; the
+        # within-attempt latch still prevents the auth-check, prompt-fill,
+        # and submit-confirm sites from all firing it inside one attempt.
+        self._doubao_recovery_attempted = False
         self._set_execution_stage("browser_launch")
         llm = query.target_llm
         proxy_cfg = {"server": self.proxy_url} if use_proxy else None
@@ -1464,7 +1566,54 @@ class GuestQueryExecutor:
                     proxy_diagnostic=proxy_diagnostic,
                 )
 
-            if not input_el:
+            # Refs #963 issue comment 4470015151 (2026-05-17 08:49Z trigger-5):
+            # Q-185617/Q-185626 (account 46) hit ``doubao_auth_state_missing``
+            # and Q-185623 (account 45) hit ``doubao_not_logged_in`` AT this
+            # auth-check site — the no_input bail fires before
+            # ``_browser_query`` ever runs, so PR #1107's page.goto
+            # recovery (which lives inside the submit-confirm retry path)
+            # never fires for these failure modes. Before bailing,
+            # attempt the same ONE-shot recovery via
+            # ``_attempt_doubao_page_regression_recovery``. The trigger-5
+            # investigation (issue #963 2026-05-17T06:23Z) refuted "IP
+            # rotation forces re-login" (0 re-login events in 48h,
+            # sessions surviving 285+ min across rotations), so an
+            # auth-check false positive on a transiently bad SPA state is
+            # plausible. On success, the recovery flow has already driven
+            # fill+submit; call ``_browser_query`` with
+            # ``_recovery_already_submitted=True`` so it skips
+            # prompt_fill+prompt_submit and proceeds to submit_confirm +
+            # response_wait. The per-query latch
+            # ``_doubao_recovery_attempted`` (checked inside the helper)
+            # ensures this can only fire once per query.
+            doubao_auth_recovery_succeeded = False
+            if (
+                not input_el
+                and llm == "doubao"
+                and page_obj is not None
+            ):
+                await self._prefer_doubao_auth_failure_reason(llm, page_obj)
+                if self.last_error_reason in (
+                    "doubao_auth_state_missing",
+                    "doubao_not_logged_in",
+                ):
+                    if await self._attempt_doubao_page_regression_recovery(
+                        page_obj,
+                        config,
+                        llm,
+                        query.id,
+                        query.query_text,
+                    ):
+                        logger.info(
+                            f"[{llm}] auth-check recovery succeeded "
+                            f"(was {self.last_error_reason}); clearing "
+                            f"last_error_reason and proceeding to "
+                            f"response_wait via _browser_query"
+                        )
+                        self.last_error_reason = None
+                        doubao_auth_recovery_succeeded = True
+
+            if not input_el and not doubao_auth_recovery_succeeded:
                 logger.error(f"[{llm}] 找不到输入框")
                 if page_obj:
                     await self._prefer_chatgpt_auth_failure_reason(
@@ -1493,15 +1642,29 @@ class GuestQueryExecutor:
 
             # 执行查询
             self._set_execution_stage("browser_query")
-            resp_text, resp_html, citations = await self._browser_query(
-                page_obj,
-                config,
-                query.query_text,
-                llm,
-                input_el,
-                query_id=query.id,
-                runtime_events=runtime_events,
-            )
+            if doubao_auth_recovery_succeeded:
+                # Auth-check recovery drove fill+submit; jump _browser_query
+                # past prompt_fill + prompt_submit straight to submit_confirm.
+                resp_text, resp_html, citations = await self._browser_query(
+                    page_obj,
+                    config,
+                    query.query_text,
+                    llm,
+                    input_el=None,
+                    query_id=query.id,
+                    runtime_events=runtime_events,
+                    _recovery_already_submitted=True,
+                )
+            else:
+                resp_text, resp_html, citations = await self._browser_query(
+                    page_obj,
+                    config,
+                    query.query_text,
+                    llm,
+                    input_el,
+                    query_id=query.id,
+                    runtime_events=runtime_events,
+                )
 
             if resp_text:
                 self.last_error_reason = None
@@ -1907,6 +2070,190 @@ class GuestQueryExecutor:
                 exc,
             )
         return None
+
+    async def _attempt_doubao_page_regression_recovery(
+        self,
+        page: "Page",
+        cfg: dict,
+        llm_name: str,
+        debug_query_id: int | str | None,
+        query_text: str,
+    ) -> bool:
+        """ONE-shot ``page.goto(cfg["url"])`` recovery for Doubao SPA regressions.
+
+        Refs #963 PR #1107 (submit-confirm retry path) + issue comment
+        4470015151 (2026-05-17 08:49Z trigger-5 dump). PR #1107 added the
+        page.goto recovery only inside the submit-confirm retry's ``elif
+        llm_name == "doubao":`` branch, so Q-185617/Q-185626
+        (doubao_auth_state_missing), Q-185623 (doubao_not_logged_in), and
+        Q-185620 (doubao_browser_timeout:prompt_fill) all bailed BEFORE
+        recovery could fire. This helper extracts the original recovery
+        body unchanged so the auth-check and prompt-fill bail sites can
+        invoke the same primitive.
+
+        Sequence (preserved from the PR #1107 inline implementation):
+        1. ``page.goto(cfg["url"])`` (typically https://www.doubao.com/chat)
+           with ``wait_until="domcontentloaded"`` and 15s timeout.
+        2. Probe each ``cfg["input_selector"]`` with ``wait_for_selector``
+           (5s/selector, state="visible") until a usable input surfaces.
+        3. Re-fill via ``self._fill_plain_text_input(...)``.
+        4. Try the configured ``cfg["submit_button"]`` selectors (with
+           the initial-submit ``is_disabled`` guard mirrored from Codex
+           PR #1107 P2 review), then the JS fallback finder
+           (``DOUBAO_FIND_SUBMIT_BUTTON_JS``) on a successful click.
+
+        Returns True iff goto succeeded, an input surfaced, refill
+        completed, AND a non-disabled submit button was clicked. The
+        ONE-shot ``self._doubao_recovery_attempted`` latch (set on every
+        invocation, regardless of outcome) prevents the auth-check,
+        prompt-fill, and submit-confirm sites from all firing it in one
+        query — looping is a regression risk (infinite reload).
+        """
+        if self._doubao_recovery_attempted:
+            logger.debug(
+                f"[{llm_name}] page.goto recovery already attempted for "
+                f"this query (latch); skipping second invocation"
+            )
+            return False
+        self._doubao_recovery_attempted = True
+
+        recovered = False
+        try:
+            recovery_url = cfg.get("url") or page.url
+            logger.info(
+                f"[{llm_name}] 页面回退到首页，尝试一次 "
+                f"page.goto({recovery_url}) 恢复"
+            )
+            await page.goto(
+                recovery_url,
+                wait_until="domcontentloaded",
+                timeout=15000,
+            )
+            input_selectors = [
+                s.strip()
+                for s in cfg.get(
+                    "input_selector", ""
+                ).split(",")
+                if s.strip()
+            ]
+            input_after_goto = None
+            for sel in input_selectors:
+                try:
+                    candidate = (
+                        await page.wait_for_selector(
+                            sel,
+                            timeout=5000,
+                            state="visible",
+                        )
+                    )
+                except Exception:
+                    candidate = None
+                if candidate:
+                    input_after_goto = candidate
+                    break
+            if input_after_goto is not None:
+                refilled = await self._fill_plain_text_input(
+                    page,
+                    input_after_goto,
+                    query_text,
+                    llm_name,
+                )
+                if refilled:
+                    # Try the configured submit button(s)
+                    # first; the JS fallback runs after.
+                    resubmitted = False
+                    if cfg.get("submit_button"):
+                        for btn_sel in [
+                            s.strip()
+                            for s in cfg[
+                                "submit_button"
+                            ].split(",")
+                        ]:
+                            try:
+                                btn_after = (
+                                    await page.query_selector(
+                                        btn_sel
+                                    )
+                                )
+                                if (
+                                    not btn_after
+                                    or not await btn_after.is_visible()
+                                ):
+                                    continue
+                                # Refs #963 Codex P2 on PR #1107:
+                                # mirror the initial-submit
+                                # ``is_disabled`` guard. The
+                                # configured submit_button list
+                                # includes a raw
+                                # ``button[id='flow-end-msg-send']``
+                                # fallback that matches even
+                                # when aria-disabled/data-disabled
+                                # is true; clicking that on a
+                                # freshly reloaded chat UI whose
+                                # send button hasn't enabled yet
+                                # is a no-op, but would still set
+                                # ``resubmitted = True`` and
+                                # bypass the page-regression bail
+                                # → confirm poll then bails as
+                                # generic ``no_response``.
+                                is_disabled_after = (
+                                    await btn_after.evaluate(
+                                        """
+                                        b => b.disabled
+                                          || b.getAttribute('aria-disabled') === 'true'
+                                          || b.getAttribute('data-disabled') === 'true'
+                                          || /send-msg-btn-disabled-bg/.test(b.className || '')
+                                        """
+                                    )
+                                )
+                                if is_disabled_after:
+                                    logger.debug(
+                                        f"[{llm_name}] 恢复后跳过禁用按钮: {btn_sel}"
+                                    )
+                                    continue
+                                await btn_after.click()
+                                resubmitted = True
+                                logger.info(
+                                    f"[{llm_name}] 恢复后通过"
+                                    f"按钮提交: {btn_sel}"
+                                )
+                                break
+                            except Exception:
+                                continue
+                    if not resubmitted:
+                        try:
+                            rec_handle = await page.evaluate_handle(
+                                DOUBAO_FIND_SUBMIT_BUTTON_JS
+                            )
+                            rec_el = (
+                                rec_handle.as_element()
+                                if rec_handle
+                                else None
+                            )
+                            if rec_el:
+                                await rec_el.click()
+                                resubmitted = True
+                                logger.info(
+                                    f"[{llm_name}] 恢复后通过"
+                                    f" JS 兜底按钮提交"
+                                )
+                        except Exception as rec_js_err:
+                            logger.debug(
+                                f"[{llm_name}] 恢复后 JS 兜底"
+                                f"按钮失败: {rec_js_err}"
+                            )
+                    if resubmitted:
+                        recovered = True
+                        logger.info(
+                            f"[{llm_name}] 页面恢复后成功"
+                            f"重发，继续等待 submit_confirmed"
+                        )
+        except Exception as recover_err:
+            logger.warning(
+                f"[{llm_name}] page.goto 恢复异常: "
+                f"{recover_err}"
+            )
+        return recovered
 
     async def _prefer_doubao_visual_challenge_reason(
         self, llm_name: str, page: Page | None
@@ -2544,44 +2891,63 @@ class GuestQueryExecutor:
         _retry_count: int = 0,
         query_id: int | None = None,
         runtime_events: list[dict] | None = None,
+        _recovery_already_submitted: bool = False,
     ) -> tuple:
         """在已打开的页面里输入 query，等待响应，抓取文本和引用
-        Returns: (response_text, response_html, citations_list)"""
+        Returns: (response_text, response_html, citations_list)
+
+        Refs #963 issue comment 4470015151:
+        ``_recovery_already_submitted=True`` is set by the auth-check and
+        prompt-fill bail call sites when
+        ``_attempt_doubao_page_regression_recovery`` has already driven
+        the goto+refill+submit sequence. In that case the prompt_fill +
+        prompt_submit blocks below are skipped via the
+        ``_recovery_already_submitted`` guards — otherwise we would
+        clear the textarea and resubmit, sending the query twice.
+        Recovery success leaves the page mid-flight (user message bubble
+        is rendering); the function proceeds straight to
+        submit_confirm + response_wait.
+        """
         debug_query_id = _debug_query_id(query_id)
         self._set_execution_stage("prompt_fill")
-        if input_el is None:
+        if input_el is None and not _recovery_already_submitted:
             input_el = await page.wait_for_selector(cfg["input_selector"].split(",")[0], timeout=10000)
 
-        # 模拟人类行为：随机延迟 + 鼠标移动到输入框
-        # Refs #963 follow-up to PR #1009 live evidence (run 25926214958):
-        # ``bounding_box()`` and ``mouse.move(...)`` had no timeout and a
-        # degenerate page state could hang either of them for the full
-        # outer budget. Each is best-effort (caller's try/except already
-        # tolerates failure) so a tight 5s bound is fine; production
-        # values complete in <100ms when the browser is healthy.
-        await page.wait_for_timeout(random.randint(800, 2000))
-        try:
-            # 先模拟鼠标移动到输入框附近
-            box = await asyncio.wait_for(input_el.bounding_box(), timeout=5)
-            if box:
-                await asyncio.wait_for(
-                    page.mouse.move(
-                        box["x"] + box["width"] * random.uniform(0.2, 0.8),
-                        box["y"] + box["height"] * random.uniform(0.2, 0.8),
-                        steps=random.randint(5, 15),
-                    ),
-                    timeout=5,
-                )
-                await page.wait_for_timeout(random.randint(200, 500))
-        except Exception:
-            pass
+        # Refs #963 issue comment 4470015151: skip the human-behavior
+        # mouse/click setup when recovery has already driven fill+submit
+        # — input_el may be None and the page is mid-flight after the
+        # recovery's own click. Re-doing mouse/click here is unsafe.
+        if not _recovery_already_submitted:
+            # 模拟人类行为：随机延迟 + 鼠标移动到输入框
+            # Refs #963 follow-up to PR #1009 live evidence (run 25926214958):
+            # ``bounding_box()`` and ``mouse.move(...)`` had no timeout and a
+            # degenerate page state could hang either of them for the full
+            # outer budget. Each is best-effort (caller's try/except already
+            # tolerates failure) so a tight 5s bound is fine; production
+            # values complete in <100ms when the browser is healthy.
+            await page.wait_for_timeout(random.randint(800, 2000))
+            try:
+                # 先模拟鼠标移动到输入框附近
+                box = await asyncio.wait_for(input_el.bounding_box(), timeout=5)
+                if box:
+                    await asyncio.wait_for(
+                        page.mouse.move(
+                            box["x"] + box["width"] * random.uniform(0.2, 0.8),
+                            box["y"] + box["height"] * random.uniform(0.2, 0.8),
+                            steps=random.randint(5, 15),
+                        ),
+                        timeout=5,
+                    )
+                    await page.wait_for_timeout(random.randint(200, 500))
+            except Exception:
+                pass
 
-        # 点击输入框（force=True 绕开可见性检查）
-        try:
-            await input_el.click(force=True, timeout=5000)
-        except Exception:
-            pass
-        await page.wait_for_timeout(random.randint(300, 800))
+            # 点击输入框（force=True 绕开可见性检查）
+            try:
+                await input_el.click(force=True, timeout=5000)
+            except Exception:
+                pass
+            await page.wait_for_timeout(random.randint(300, 800))
 
         # 对于 contenteditable（如 Gemini 的 Quill 编辑器），键盘事件依赖真实 focus
         # 在 headless 下元素常常报告"不可见"，导致 keyboard.type() 打到 body 而非编辑器
@@ -2656,100 +3022,89 @@ class GuestQueryExecutor:
                 )
                 self.last_error_reason = "no_input"
                 return "", "", []
+        elif _recovery_already_submitted:
+            # Recovery already drove fill+submit; skip the re-fill that
+            # would otherwise clear the textarea and resubmit.
+            logger.info(
+                f"[{llm_name}] prompt_fill: skipping _fill_plain_text_input "
+                f"because recovery already submitted"
+            )
         else:
             filled = await self._fill_plain_text_input(page, input_el, query_text, llm_name)
             if not filled:
                 logger.warning(f"[{llm_name}] 输入框填充失败，放弃本次提交")
-                self.last_error_reason = "no_input"
-                await _save_html(page, debug_query_id, f"{llm_name}_input_fill_failed")
-                return "", "", []
+                # Refs #963 issue comment 4470015151 Q-185620 shape:
+                # ``doubao_browser_timeout:prompt_fill`` is the operator-
+                # visible reason when an exception bubbles out of this
+                # stage. The explicit fill-failure bail here lands as
+                # ``no_input`` today, but the same SPA-collapsed page
+                # state is the root cause. Try ONE-shot page.goto
+                # recovery before bailing — if it succeeds, recovery has
+                # already driven fill+submit, so continue down the
+                # function (the prompt_submit guards below + the
+                # submit_confirm loop pick up the recovered submit).
+                if (
+                    llm_name == "doubao"
+                    and not self._doubao_recovery_attempted
+                ):
+                    if await self._attempt_doubao_page_regression_recovery(
+                        page,
+                        cfg,
+                        llm_name,
+                        debug_query_id,
+                        query_text,
+                    ):
+                        logger.info(
+                            f"[{llm_name}] prompt_fill recovery succeeded; "
+                            f"continuing to submit_confirm"
+                        )
+                        self.last_error_reason = None
+                        _recovery_already_submitted = True
+                    else:
+                        self.last_error_reason = "no_input"
+                        await _save_html(page, debug_query_id, f"{llm_name}_input_fill_failed")
+                        return "", "", []
+                else:
+                    self.last_error_reason = "no_input"
+                    await _save_html(page, debug_query_id, f"{llm_name}_input_fill_failed")
+                    return "", "", []
 
         # 模拟人类"思考"后再提交
-        await page.wait_for_timeout(random.randint(500, 1500))
+        # Refs #963 issue comment 4470015151: skip the thinking wait when
+        # recovery already submitted; the page is mid-flight and we
+        # should not delay before checking submit_confirm.
+        if not _recovery_already_submitted:
+            await page.wait_for_timeout(random.randint(500, 1500))
 
         # 提交：优先点击 submit_button 里配的 selector，失败时 JS 找 input 附近的 enabled 按钮，
         # 再失败才 fallback 到 Enter
         async def _find_submit_button_js():
-            """豆包新 UI 无 testid，通过稳定 id / class + 位置 + 图标找 send 按钮。"""
-            return await page.evaluate_handle(
-                """
-                () => {
-                    const isEnabled = (b) => {
-                        if (!b) return false;
-                        if (b.disabled) return false;
-                        if (b.getAttribute('data-disabled') === 'true') return false;
-                        if (b.getAttribute('aria-disabled') === 'true') return false;
-                        const cls = b.className || '';
-                        if (typeof cls === 'string' && /send-msg-btn-disabled-bg/.test(cls)) return false;
-                        return true;
-                    };
+            """豆包新 UI 无 testid，通过稳定 id / class + 位置 + 图标找 send 按钮。
 
-                    // 最优先：稳定的 id（线上 DOM 验证）
-                    const byId = document.getElementById('flow-end-msg-send');
-                    if (byId && isEnabled(byId)) return byId;
-
-                    const all = [...document.querySelectorAll('button, [role="button"]')];
-
-                    // 其次：按 class 匹配（稳定的 Tailwind/业务类名）
-                    const byClass = all.find(b => {
-                        if (!isEnabled(b)) return false;
-                        const cls = b.className || '';
-                        if (typeof cls !== 'string') return false;
-                        return /send-msg-btn/.test(cls);
-                    });
-                    if (byClass) return byClass;
-
-                    // 然后：.send-btn-wrapper（不含 !hidden）内的 button
-                    const wrappers = [...document.querySelectorAll('.send-btn-wrapper')];
-                    for (const w of wrappers) {
-                        const wcls = w.className || '';
-                        if (typeof wcls === 'string' && /!hidden/.test(wcls)) continue;
-                        const b = w.querySelector('button');
-                        if (isEnabled(b)) return b;
-                    }
-
-                    // 然后：aria-label / title 含 send/发送
-                    const byAria = all.find(b => {
-                        if (!isEnabled(b)) return false;
-                        const aria = (b.getAttribute('aria-label') || '').toLowerCase();
-                        const title = (b.getAttribute('title') || '').toLowerCase();
-                        return /send|发送|提交/.test(aria) || /send|发送|提交/.test(title);
-                    });
-                    if (byAria) return byAria;
-
-                    // 次选：input 附近、含 svg 图标、文本为空或极短、enabled 的按钮
-                    const input = document.querySelector(
-                        'textarea:not([aria-hidden="true"]), [contenteditable="true"]'
-                    );
-                    if (!input) return null;
-                    const ir = input.getBoundingClientRect();
-                    let best = null, bestScore = -Infinity;
-                    for (const b of all) {
-                        if (!isEnabled(b)) continue;
-                        const cls = b.className || '';
-                        if (typeof cls === 'string' && /toggle-button/.test(cls)) continue;
-                        const r = b.getBoundingClientRect();
-                        if (r.width === 0 || r.height === 0) continue;
-                        const txt = (b.textContent || '').trim();
-                        if (txt.length > 0) continue;  // avoid mode/search toggles
-                        if (!b.querySelector('svg, img, i')) continue;  // 必须有图标
-                        // 限制在 input 正下方/右侧附近 150px 以内
-                        const dx = Math.max(0, r.left - ir.right, ir.left - r.right);
-                        const dy = Math.max(0, r.top - ir.bottom, ir.top - r.bottom);
-                        if (dx > 300 || dy > 200) continue;
-                        if ((r.left + r.width / 2) < (ir.left + ir.width * 0.55)) continue;
-                        const verticalPenalty = Math.abs((r.top + r.bottom) / 2 - (ir.top + ir.bottom) / 2);
-                        const score = (r.left + r.width) - verticalPenalty - dx - dy;
-                        if (score > bestScore) { bestScore = score; best = b; }
-                    }
-                    return best;
-                }
-                """
-            )
+            Refs #963 issue comment 4470015151: JS source moved to module-
+            level ``DOUBAO_FIND_SUBMIT_BUTTON_JS`` so the new
+            ``_attempt_doubao_page_regression_recovery`` helper (called
+            from the auth-check + prompt-fill bail sites that PR #1107
+            did not cover) can invoke the same finder from outside this
+            closure. JS body is bit-for-bit identical to the pre-extract
+            version.
+            """
+            return await page.evaluate_handle(DOUBAO_FIND_SUBMIT_BUTTON_JS)
 
         self._set_execution_stage("prompt_submit")
         submitted = False
-        if cfg.get("submit_button"):
+        # Refs #963 issue comment 4470015151: if recovery already drove
+        # the submit, treat this stage as a no-op so we don't fire a
+        # duplicate click/Enter into the page (the user message was
+        # already sent by the recovery flow). The submit_confirm loop
+        # below will detect the recovery's user-message bubble.
+        if _recovery_already_submitted:
+            submitted = True
+            logger.info(
+                f"[{llm_name}] prompt_submit: skipping; recovery already "
+                f"submitted"
+            )
+        if not submitted and cfg.get("submit_button"):
             for btn_sel in [s.strip() for s in cfg["submit_button"].split(",")]:
                 try:
                     btn = await page.query_selector(btn_sel)
@@ -2915,164 +3270,31 @@ class GuestQueryExecutor:
                             await page.keyboard.press("Enter")
                             logger.info(f"[{llm_name}] 重试 Enter 提交")
                         elif llm_name == "doubao":
-                            # Refs #963: Doubao SPA regressed to homepage
-                            # between the first failed submit and this
-                            # retry (Q-184971 evidence 2026-05-17 05:39-
-                            # 05:40 UTC: 0 send-btn / send-msg-btn /
-                            # flow-end-msg-send tags, only an aria-hidden
-                            # helper textarea, body text was the homepage
-                            # recommendation cards). The first stage of
-                            # PR #1106 bailed straight here so the ledger
-                            # would not show generic ``no_response``.
-                            # PR-follow-up: BEFORE bailing, try a ONE-SHOT
-                            # recovery via ``page.goto(cfg["url"])`` —
-                            # the parallel investigation posted on issue
-                            # #963 (2026-05-17T06:23Z) refuted "IP rotation
-                            # forces re-login" (0 re-login events in 48h,
-                            # sessions surviving 285+ min across rotations),
-                            # so the session is almost certainly still
-                            # valid and a fresh load of /chat should give
-                            # us the chat UI back. If recovery surfaces a
-                            # usable input + submit button, re-fill and
-                            # continue; otherwise fall through to PR #1106's
-                            # bail. Limited to ONE attempt so we cannot
-                            # infinite-loop a permanently regressed page.
-                            recovered = False
-                            try:
-                                recovery_url = cfg.get("url") or page.url
-                                logger.info(
-                                    f"[{llm_name}] 页面回退到首页，尝试一次 "
-                                    f"page.goto({recovery_url}) 恢复"
-                                )
-                                await page.goto(
-                                    recovery_url,
-                                    wait_until="domcontentloaded",
-                                    timeout=15000,
-                                )
-                                input_selectors = [
-                                    s.strip()
-                                    for s in cfg.get(
-                                        "input_selector", ""
-                                    ).split(",")
-                                    if s.strip()
-                                ]
-                                input_after_goto = None
-                                for sel in input_selectors:
-                                    try:
-                                        candidate = (
-                                            await page.wait_for_selector(
-                                                sel,
-                                                timeout=5000,
-                                                state="visible",
-                                            )
-                                        )
-                                    except Exception:
-                                        candidate = None
-                                    if candidate:
-                                        input_after_goto = candidate
-                                        break
-                                if input_after_goto is not None:
-                                    refilled = await self._fill_plain_text_input(
-                                        page,
-                                        input_after_goto,
-                                        query_text,
-                                        llm_name,
-                                    )
-                                    if refilled:
-                                        # Try the configured submit button(s)
-                                        # first; the JS fallback runs after.
-                                        resubmitted = False
-                                        if cfg.get("submit_button"):
-                                            for btn_sel in [
-                                                s.strip()
-                                                for s in cfg[
-                                                    "submit_button"
-                                                ].split(",")
-                                            ]:
-                                                try:
-                                                    btn_after = (
-                                                        await page.query_selector(
-                                                            btn_sel
-                                                        )
-                                                    )
-                                                    if (
-                                                        not btn_after
-                                                        or not await btn_after.is_visible()
-                                                    ):
-                                                        continue
-                                                    # Refs #963 Codex P2 on PR #1107:
-                                                    # mirror the initial-submit
-                                                    # ``is_disabled`` guard. The
-                                                    # configured submit_button list
-                                                    # includes a raw
-                                                    # ``button[id='flow-end-msg-send']``
-                                                    # fallback that matches even
-                                                    # when aria-disabled/data-disabled
-                                                    # is true; clicking that on a
-                                                    # freshly reloaded chat UI whose
-                                                    # send button hasn't enabled yet
-                                                    # is a no-op, but would still set
-                                                    # ``resubmitted = True`` and
-                                                    # bypass the page-regression bail
-                                                    # → confirm poll then bails as
-                                                    # generic ``no_response``.
-                                                    is_disabled_after = (
-                                                        await btn_after.evaluate(
-                                                            """
-                                                            b => b.disabled
-                                                              || b.getAttribute('aria-disabled') === 'true'
-                                                              || b.getAttribute('data-disabled') === 'true'
-                                                              || /send-msg-btn-disabled-bg/.test(b.className || '')
-                                                            """
-                                                        )
-                                                    )
-                                                    if is_disabled_after:
-                                                        logger.debug(
-                                                            f"[{llm_name}] 恢复后跳过禁用按钮: {btn_sel}"
-                                                        )
-                                                        continue
-                                                    await btn_after.click()
-                                                    resubmitted = True
-                                                    logger.info(
-                                                        f"[{llm_name}] 恢复后通过"
-                                                        f"按钮提交: {btn_sel}"
-                                                    )
-                                                    break
-                                                except Exception:
-                                                    continue
-                                        if not resubmitted:
-                                            try:
-                                                rec_handle = (
-                                                    await _find_submit_button_js()
-                                                )
-                                                rec_el = (
-                                                    rec_handle.as_element()
-                                                    if rec_handle
-                                                    else None
-                                                )
-                                                if rec_el:
-                                                    await rec_el.click()
-                                                    resubmitted = True
-                                                    logger.info(
-                                                        f"[{llm_name}] 恢复后通过"
-                                                        f" JS 兜底按钮提交"
-                                                    )
-                                            except Exception as rec_js_err:
-                                                logger.debug(
-                                                    f"[{llm_name}] 恢复后 JS 兜底"
-                                                    f"按钮失败: {rec_js_err}"
-                                                )
-                                        if resubmitted:
-                                            recovered = True
-                                            logger.info(
-                                                f"[{llm_name}] 页面恢复后成功"
-                                                f"重发，继续等待 submit_confirmed"
-                                            )
-                            except Exception as recover_err:
-                                logger.warning(
-                                    f"[{llm_name}] page.goto 恢复异常: "
-                                    f"{recover_err}"
-                                )
+                            # Refs #963 PR #1107 + issue comment 4470015151:
+                            # Doubao SPA regressed to homepage between the
+                            # first failed submit and this retry (Q-184971
+                            # evidence 2026-05-17 05:39-05:40 UTC: 0 send-btn
+                            # / send-msg-btn / flow-end-msg-send tags, only
+                            # an aria-hidden helper textarea, body text was
+                            # the homepage recommendation cards). PR #1106
+                            # added a bail with the specific reason
+                            # ``doubao_input_lost_before_submit``; PR #1107
+                            # then added a ONE-SHOT ``page.goto(cfg["url"])``
+                            # recovery BEFORE the bail. The recovery body
+                            # has now been extracted to
+                            # ``_attempt_doubao_page_regression_recovery``
+                            # so the auth-check + prompt-fill bail sites
+                            # (which were uncovered by PR #1107, see issue
+                            # #963 trigger-5 dump for Q-185617/Q-185620/
+                            # Q-185623 failure modes) can invoke the same
+                            # primitive. Behavior here is unchanged.
+                            recovered = await self._attempt_doubao_page_regression_recovery(
+                                page,
+                                cfg,
+                                llm_name,
+                                debug_query_id,
+                                query_text,
+                            )
                             if not recovered:
                                 # Recovery failed: fall through to the
                                 # PR #1106 bail. The page is still in a
