@@ -12,6 +12,7 @@ API 文档: https://lubansms.com/api_docs/
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
 import re
@@ -105,7 +106,38 @@ class LubanSMSClient:
                     code = match.group(1)
                     logger.info("提取验证码: [sms-code-redacted]")
                     return code
-                raise RuntimeError("无法从短信中提取验证码: [sms-text-redacted]")
+                # Refs #963: keep the SMS body redacted (PII), but emit
+                # length + 8-char sha256 prefix so worker logs can
+                # distinguish failure modes across iterations — empty
+                # body vs non-empty-no-digit vs a specific recurring
+                # template — without leaking the body itself. The next
+                # iteration uses this to decide whether to widen the
+                # regex or whitelist a service_id manually; we do NOT
+                # auto-fallback to service_id from here.
+                #
+                # Refs #963 follow-up to PR #1101 Codex P2 review
+                # (https://github.com/jotamotk/trash_test/pull/1101#discussion_r3253891280):
+                # downstream ``base.py`` wraps this RuntimeError through
+                # ``redact_sensitive_text`` (sms_redaction.py), whose
+                # ``SMS_CODE_RE = re.compile(r"(?<!\*)\b\d{4,8}\b")``
+                # would replace an all-digit 8-char sha8 with
+                # ``[sms-code-redacted]`` and silently drop ~10% of
+                # diagnostic samples (probability ``(10/16)^8 ≈ 10%``).
+                # Prefixing the hex with a non-digit letter ``h`` defeats
+                # ``\b\d{4,8}\b``: ``\b`` cannot match between the word
+                # chars ``h`` and the first digit, so the digit run is
+                # never standalone. PHONE_RE / E164_PHONE_RE do not
+                # match either — PHONE_RE expects 11 digits structured
+                # as ``(1\d{2})\d{4}(\d{4})`` and E164_PHONE_RE requires
+                # 10–15, so an 8-digit run is below the floor. 12-char
+                # hex was considered but rejected: a 12-digit run is
+                # matched by PHONE_RE ``(?<!\d)(?:\+?86)?(1\d{2})\d{4}(\d{4})``
+                # whenever the first digit is ``1`` and would be mangled
+                # to ``1xx****yyyy``.
+                sha8 = hashlib.sha256(msg.encode()).hexdigest()[:8]
+                raise RuntimeError(
+                    f"无法从短信中提取验证码: [sms-text-redacted, len={len(msg)}, sha8=h{sha8}]"
+                )
 
             # code=400 + "不正确的apikey" 是真正的错误
             if data.get("code") == 400 and "apikey" in data.get("msg", "").lower():
