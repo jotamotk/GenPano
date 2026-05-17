@@ -9032,3 +9032,428 @@ def test_doubao_homepage_content_path_saves_all_three_artifacts():
             "HTML it had before. Saving only one artifact left us unable "
             "to root-cause when the failure recurred."
         )
+
+
+# -----------------------------------------------------------------------------
+# Refs #963 Q-185620 (account 47, 2026-05-17 08:50Z, comment 4470015151):
+# ``doubao_browser_timeout:prompt_fill`` — input element never appeared
+# within the load_wait budget. One-shot ``page.goto`` recovery before bail.
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_doubao_prompt_fill_recovers_via_page_goto_when_input_appears(
+    monkeypatch,
+):
+    """Refs #963 Q-185620: when Doubao's input selector fails to match
+    within the prompt_fill stage's wait budget (production evidence:
+    ``retry_reason='doubao_browser_timeout:prompt_fill'``, resp_count=0,
+    raw_text=NULL), the executor previously bailed and burned the query
+    budget. This adds ONE-SHOT ``page.goto(cfg["url"])`` + re-acquire
+    recovery; if the post-goto wait_for_selector returns a usable input,
+    the executor proceeds with the new input element instead of bailing.
+
+    Happy path: FakePage's first ``wait_for_selector`` raises (selector
+    never matched within load_wait budget). After ``page.goto`` the page
+    flips into a recovered state where ``wait_for_selector`` returns a
+    usable input fake. Recovery succeeds and the executor proceeds.
+    """
+    _install_fake_playwright(monkeypatch)
+
+    from geo_tracker.agent import guest_executor as _ge
+    from geo_tracker.agent.guest_executor import GuestQueryExecutor
+
+    async def _noop(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(_ge, "_save_html", _noop)
+    monkeypatch.setattr(_ge, "_save_screenshot", _noop)
+    monkeypatch.setattr(_ge, "_save_runtime_snapshot", _noop)
+
+    query_text = "Q-185620 best coffer travel advantages?"
+
+    class FakeInput:
+        async def bounding_box(self):
+            return None
+
+        async def click(self, *_a, **_k):
+            return None
+
+        async def fill(self, *_a, **_k):
+            return None
+
+        async def evaluate(self, *_a, **_k):
+            return query_text
+
+    class FakeKeyboard:
+        async def press(self, *_a, **_k):
+            return None
+
+        async def type(self, *_a, **_k):
+            return None
+
+    class FakeMouse:
+        async def move(self, *_a, **_k):
+            return None
+
+    class FakeButton:
+        async def is_visible(self):
+            return True
+
+        async def click(self, *_a, **_k):
+            return None
+
+        async def evaluate(self, *_a, **_k):
+            # Disabled-state probe — return False so click is allowed.
+            return False
+
+    class FakeSubmitHandle:
+        def as_element(self):
+            return FakeButton()
+
+    class FakePage:
+        """Page where the initial input wait fails (selector never
+        matches within load_wait), but after ``page.goto`` the selector
+        resolves to a usable input. Matches Q-185620 production shape.
+        """
+
+        url = "https://www.doubao.com/chat"
+
+        def __init__(self):
+            self.keyboard = FakeKeyboard()
+            self.mouse = FakeMouse()
+            self.recovered = False
+            self.goto_calls: list[str] = []
+            self.wait_for_selector_calls: list[tuple[str, int]] = []
+
+        async def wait_for_timeout(self, *_a, **_k):
+            return None
+
+        async def goto(self, url, *_a, **_k):
+            self.goto_calls.append(url)
+            self.recovered = True
+
+        async def wait_for_selector(self, selector, *_a, **_k):
+            timeout = _k.get("timeout", 0)
+            self.wait_for_selector_calls.append((selector, timeout))
+            if not self.recovered:
+                # Pre-recovery: selector never matches within budget.
+                # Match the production failure shape.
+                raise RuntimeError(
+                    "Timeout 10000ms exceeded waiting for selector"
+                )
+            return FakeInput()
+
+        async def query_selector(self, *_a, **_k):
+            return FakeButton() if self.recovered else None
+
+        async def query_selector_all(self, *_a, **_k):
+            return []
+
+        async def evaluate_handle(self, *_a, **_k):
+            return FakeSubmitHandle()
+
+        async def evaluate(self, script, *args):
+            script_text = str(script)
+            if "queryText" in script_text:
+                # submit_confirmed: True after recovery + refill.
+                return self.recovered
+            if "document.body?.innerText" in script_text:
+                return ""
+            return ""
+
+        async def content(self):
+            return "<html><body>recovered</body></html>"
+
+    executor = GuestQueryExecutor()
+    fake_page = FakePage()
+
+    # Pre-condition: the recovery budget is reset (per-query semantics).
+    assert executor._doubao_recovery_attempted is False
+
+    refill_calls: list[int] = []
+
+    async def fake_fill_plain_text_input(_self_page, _input_el, _text, _llm):
+        refill_calls.append(1)
+        return True
+
+    monkeypatch.setattr(
+        executor, "_fill_plain_text_input", fake_fill_plain_text_input
+    )
+
+    # Call _browser_query with input_el=None to force the prompt_fill
+    # wait_for_selector path (the production failure surface).
+    resp_text, resp_html, citations = await executor._browser_query(
+        fake_page,
+        {
+            "input_selector": (
+                "#input-engine-container textarea.semi-input-textarea:not([aria-hidden='true']),"
+                " textarea.semi-input-textarea:not([aria-hidden='true']),"
+                " textarea:not([aria-hidden='true']), [contenteditable='true']"
+            ),
+            "response_selector": ".flow-markdown-body",
+            "submit_button": (
+                "#flow-end-msg-send:not([aria-disabled='true']):not([data-disabled='true']),"
+                " button[id='flow-end-msg-send']"
+            ),
+            "submit_key": "Enter",
+            "wait_after_submit": 100,
+            "load_wait": 100,
+            "login_redirect_domains": [],
+            "url": "https://www.doubao.com/chat/",
+        },
+        query_text,
+        "doubao",
+        input_el=None,
+        query_id=185620,
+        runtime_events=[],
+    )
+
+    # Recovery was attempted: page.goto called exactly once with cfg url.
+    assert fake_page.goto_calls == ["https://www.doubao.com/chat/"], (
+        f"expected exactly one page.goto recovery call to cfg['url']; "
+        f"got {fake_page.goto_calls!r}"
+    )
+    # The recovery flag is now latched so a subsequent recovery would
+    # not fire on this executor for the same query.
+    assert executor._doubao_recovery_attempted is True
+    # Recovery completed: refill ran on the re-acquired input.
+    assert len(refill_calls) >= 1, (
+        f"expected _fill_plain_text_input to run after recovery; "
+        f"got {len(refill_calls)} call(s)"
+    )
+    # Pre-recovery: 1 failing wait. Post-recovery: 1 successful wait
+    # (re-acquired input). At least these two are required.
+    assert len(fake_page.wait_for_selector_calls) >= 2, (
+        f"expected pre+post recovery wait_for_selector calls; "
+        f"got {fake_page.wait_for_selector_calls!r}"
+    )
+    # The executor did NOT set the prompt_fill bail reason — recovery
+    # succeeded so the flow continued.
+    assert executor.last_error_reason != "doubao_browser_timeout:prompt_fill", (
+        f"recovery should clear the prompt_fill bail reason; "
+        f"got {executor.last_error_reason!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_doubao_prompt_fill_falls_through_to_bail_when_recovery_fails(
+    monkeypatch,
+):
+    """Refs #963 Q-185620: when the input still does not appear after the
+    one-shot ``page.goto`` recovery (page is permanently broken — e.g.
+    Doubao is fully offline, cookies are dead, IP is hard-banned), the
+    executor MUST fall through and surface the original
+    ``doubao_browser_timeout:prompt_fill`` reason rather than mask the
+    failure with the recovery exception. Recovery is best-effort; the
+    user-visible failure shape stays the same as today.
+    """
+    _install_fake_playwright(monkeypatch)
+
+    from geo_tracker.agent import guest_executor as _ge
+    from geo_tracker.agent.guest_executor import GuestQueryExecutor
+
+    async def _noop(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(_ge, "_save_html", _noop)
+    monkeypatch.setattr(_ge, "_save_screenshot", _noop)
+    monkeypatch.setattr(_ge, "_save_runtime_snapshot", _noop)
+
+    class FakeKeyboard:
+        async def press(self, *_a, **_k):
+            return None
+
+        async def type(self, *_a, **_k):
+            return None
+
+    class FakeMouse:
+        async def move(self, *_a, **_k):
+            return None
+
+    class FakePage:
+        """Permanently broken page — wait_for_selector raises even after
+        the recovery page.goto. Matches the failure mode where the SPA
+        cannot render the input at all (hard ban / dead session)."""
+
+        url = "https://www.doubao.com/chat"
+
+        def __init__(self):
+            self.keyboard = FakeKeyboard()
+            self.mouse = FakeMouse()
+            self.goto_calls: list[str] = []
+
+        async def wait_for_timeout(self, *_a, **_k):
+            return None
+
+        async def goto(self, url, *_a, **_k):
+            self.goto_calls.append(url)
+
+        async def wait_for_selector(self, selector, *_a, **_k):
+            # Always fails, both pre- and post-recovery.
+            raise RuntimeError(
+                "Timeout 10000ms exceeded waiting for selector"
+            )
+
+        async def evaluate(self, *_a, **_k):
+            return ""
+
+        async def content(self):
+            return "<html></html>"
+
+    executor = GuestQueryExecutor()
+    fake_page = FakePage()
+
+    cfg = {
+        "input_selector": (
+            "#input-engine-container textarea.semi-input-textarea:not([aria-hidden='true']),"
+            " textarea.semi-input-textarea:not([aria-hidden='true'])"
+        ),
+        "response_selector": ".flow-markdown-body",
+        "submit_button": "#flow-end-msg-send",
+        "submit_key": "Enter",
+        "wait_after_submit": 100,
+        "load_wait": 100,
+        "login_redirect_domains": [],
+        "url": "https://www.doubao.com/chat/",
+    }
+
+    with pytest.raises(Exception) as exc_info:
+        await executor._browser_query(
+            fake_page,
+            cfg,
+            "Q-185620 query",
+            "doubao",
+            input_el=None,
+            query_id=185620,
+            runtime_events=[],
+        )
+
+    # The exception that propagates is the original wait_for_selector
+    # timeout (not the recovery exception), so the outer ``except`` in
+    # _execute_once classifies it as ``doubao_browser_timeout:prompt_fill``
+    # — same reason as today, no regression.
+    assert "Timeout" in str(exc_info.value), (
+        f"expected the original wait_for_selector timeout to propagate "
+        f"so the reason classifier still produces "
+        f"doubao_browser_timeout:prompt_fill; got {exc_info.value!r}"
+    )
+    # Recovery was attempted exactly once (page.goto called once).
+    assert fake_page.goto_calls == ["https://www.doubao.com/chat/"], (
+        f"expected exactly one page.goto recovery attempt before bail; "
+        f"got {fake_page.goto_calls!r}"
+    )
+    # The recovery flag is latched so any subsequent path in this query
+    # cannot re-attempt recovery (no infinite loop).
+    assert executor._doubao_recovery_attempted is True
+
+
+@pytest.mark.asyncio
+async def test_doubao_prompt_fill_recovery_runs_at_most_once_per_query(
+    monkeypatch,
+):
+    """Refs #963 Q-185620: ONE-SHOT guarantee. If the prompt_fill code
+    path is entered twice within the same query (e.g. via the
+    response_wait retry path in PR #1107 which can recursively call
+    _browser_query), the executor MUST attempt page.goto recovery only
+    once. Looping recovery on a permanently broken page is a regression
+    risk (it could burn the outer 480s budget through repeated 15s+8s
+    goto+wait pairs).
+    """
+    _install_fake_playwright(monkeypatch)
+
+    from geo_tracker.agent import guest_executor as _ge
+    from geo_tracker.agent.guest_executor import GuestQueryExecutor
+
+    async def _noop(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(_ge, "_save_html", _noop)
+    monkeypatch.setattr(_ge, "_save_screenshot", _noop)
+    monkeypatch.setattr(_ge, "_save_runtime_snapshot", _noop)
+
+    class FakeKeyboard:
+        async def press(self, *_a, **_k):
+            return None
+
+        async def type(self, *_a, **_k):
+            return None
+
+    class FakeMouse:
+        async def move(self, *_a, **_k):
+            return None
+
+    class FakePage:
+        url = "https://www.doubao.com/chat"
+
+        def __init__(self):
+            self.keyboard = FakeKeyboard()
+            self.mouse = FakeMouse()
+            self.goto_calls: list[str] = []
+
+        async def wait_for_timeout(self, *_a, **_k):
+            return None
+
+        async def goto(self, url, *_a, **_k):
+            self.goto_calls.append(url)
+
+        async def wait_for_selector(self, selector, *_a, **_k):
+            raise RuntimeError(
+                "Timeout 10000ms exceeded waiting for selector"
+            )
+
+        async def evaluate(self, *_a, **_k):
+            return ""
+
+        async def content(self):
+            return "<html></html>"
+
+    executor = GuestQueryExecutor()
+    fake_page = FakePage()
+
+    cfg = {
+        "input_selector": "textarea",
+        "response_selector": ".flow-markdown-body",
+        "submit_button": "#flow-end-msg-send",
+        "submit_key": "Enter",
+        "wait_after_submit": 100,
+        "load_wait": 100,
+        "login_redirect_domains": [],
+        "url": "https://www.doubao.com/chat/",
+    }
+
+    # First entry — recovery is allowed.
+    with pytest.raises(Exception):
+        await executor._browser_query(
+            fake_page,
+            cfg,
+            "Q-185620 query",
+            "doubao",
+            input_el=None,
+            query_id=185620,
+            runtime_events=[],
+        )
+
+    # Second entry within the same query — recovery is already latched
+    # to True from the first attempt, so page.goto MUST NOT fire again.
+    # Without the latch, this could loop through goto+wait pairs and
+    # burn the outer 480s budget.
+    with pytest.raises(Exception):
+        await executor._browser_query(
+            fake_page,
+            cfg,
+            "Q-185620 query",
+            "doubao",
+            input_el=None,
+            query_id=185620,
+            runtime_events=[],
+        )
+
+    # Recovery fired exactly ONCE across both _browser_query entries.
+    assert len(fake_page.goto_calls) == 1, (
+        f"expected exactly ONE page.goto recovery call across both "
+        f"_browser_query invocations (ONE-SHOT guarantee); "
+        f"got {len(fake_page.goto_calls)} call(s): {fake_page.goto_calls!r}"
+    )
+    # The latch is still set after the second entry.
+    assert executor._doubao_recovery_attempted is True
