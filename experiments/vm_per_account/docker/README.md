@@ -1,6 +1,6 @@
 # Docker-based VM-per-account 部署 (单主机多容器)
 
-跑在你**现有 ECS 升级后**的 docker, 不依赖 GitHub Actions / Aliyun ECS provision API。每个容器 = 1 个隔离的 Chrome + 持久 profile, 操作员通过 noVNC 远程登录, Celery worker 通过 CDP 远程驱动。
+跑在你**现有 ECS 升级后**的 docker, 通过 GitHub Actions CI/CD 自动部署 + SSH 隧道做操作员浏览器访问。每个容器 = 1 个隔离的 Chrome + 持久 profile, Celery worker 通过 CDP 远程驱动。
 
 ## 适用场景
 
@@ -18,79 +18,90 @@
 
 容器资源 cap (docker-compose 里已限): 每容器 2 GB RAM + 1 vCPU。
 
-## 一次性部署
+## 部署模式: CI/CD via GitHub Actions
+
+不在 ECS 上手动跑命令。在 GitHub Actions UI 点按钮, workflow SSH 进 ECS 替你操作。
+
+### 一次性: 配 GitHub Secret
+
+进 https://github.com/jotamotk/trash_test/settings/secrets/actions, 检查 + 添加:
+
+**已有 (其它 workflow 已经在用, 复用即可)**:
+
+| Secret | 值 |
+|---|---|
+| `SERVER_HOST` | ECS 公网 IP (e.g. `116.62.36.xxx`) |
+| `SERVER_USER` | SSH 用户名 (e.g. `root` 或 `ubuntu`) |
+| `SERVER_SSH_KEY` | SSH 私钥 PEM 格式 |
+| `SERVER_SSH_PORT` | 22 (可选, 默认 22) |
+
+**本 workflow 新加**:
+
+| Secret | 值 |
+|---|---|
+| `ECS_REPO_PATH` | ECS 上 repo 绝对路径 (e.g. `/opt/trash_test` 或 `/root/trash_test`) |
+| `VNC_PASSWORD_01` | doubao-01 noVNC 密码 (e.g. 跑 `openssl rand -hex 4` 生成) |
+| `VNC_PASSWORD_02` | doubao-02 noVNC 密码 |
+
+### 第一次部署: 跑 `action=bootstrap`
+
+1. 进 https://github.com/jotamotk/trash_test/actions/workflows/vm-docker-deploy.yml
+2. 点 **Run workflow** → 选 `action=bootstrap` → 点 **Run workflow**
+3. 等 ~3-5 分钟, workflow 会在 ECS 上:
+   - 装 docker (如未装)
+   - 装 ufw + 配置 firewall (deny 6080-9232 公网, allow SSH)
+   - clone 本 repo 到 `$ECS_REPO_PATH`
+   - 用 docker-compose build 镜像
+
+### 启动容器: 跑 `action=up`
+
+1. 同 workflow, 选 `action=up`
+2. workflow 把 `VNC_PASSWORD_01/02` 写到 `.env`, 跑 `docker compose up -d`
+3. 容器跑起来, Chrome + noVNC + x11vnc 起来
+4. workflow Summary 区会打印一条 SSH 隧道命令 (见下)
+
+### 操作员 noVNC 浏览器访问 (SSH 隧道)
+
+Windows 操作员 (PowerShell / Windows Terminal, OpenSSH 内置):
 
 ```bash
-# 在你 ECS 上 (升级配置 + 重启后):
-
-# 1. 装 docker (如果还没)
-curl -fsSL https://get.docker.com | sh
-sudo usermod -aG docker $USER  # 重新登录生效
-
-# 2. 装 Tailscale on host (不在容器内)
-curl -fsSL https://tailscale.com/install.sh | sh
-sudo tailscale up --authkey=$TAILSCALE_AUTH_KEY --hostname=ecs-prod
-
-# 3. Firewall: 锁 noVNC + CDP 只走 Tailscale (必做!) ⚠️
-#    docker-compose 把端口绑到 0.0.0.0 才能让 Tailscale peer 连进来,
-#    所以必须靠 host firewall 拦公网访问。否则有人扫公网就直接进你 Chrome。
-sudo apt-get install -y ufw
-sudo ufw default deny incoming
-sudo ufw allow OpenSSH                    # SSH 留通道
-sudo ufw allow in on tailscale0           # tailscale 接口全开
-sudo ufw deny in proto tcp to any port 6080:6090   # 公网拒绝 noVNC 段
-sudo ufw deny in proto tcp to any port 9222:9232   # 公网拒绝 CDP 段
-sudo ufw --force enable
-sudo ufw status numbered                  # 验证
-
-# 4. 拉 repo, 进 docker 目录
-git clone <repo> && cd trash_test/experiments/vm_per_account/docker
-
-# 5. 配 .env
-cp .env.example .env
-# 编辑 .env, 把 VNC_PASSWORD_01/02 改成你自己的 (e.g. openssl rand -hex 4 生成)
-
-# 6. 起容器
-docker compose up -d
-
-# 7. 验证 — 三个地址都该能通:
-docker compose ps
-docker compose logs doubao-01 | tail -20
-
-# loopback (ECS 本机, 比如 Celery worker)
-curl http://127.0.0.1:9222/json/version    # 应返回 Chrome 信息
-curl http://127.0.0.1:6080/                  # 应返回 noVNC HTML
-
-# Tailscale 接口 (其它 Tailscale peer 访问的路径)
-TS_IP=$(tailscale ip --4 | head -1)
-curl http://$TS_IP:6080/                     # 应返回 noVNC HTML
+ssh -N -p 22 \
+  -L 6080:127.0.0.1:6080 -L 6081:127.0.0.1:6081 \
+  -L 9222:127.0.0.1:9222 -L 9223:127.0.0.1:9223 \
+  <ECS_SSH_USER>@<ECS_PUBLIC_IP>
 ```
 
-### Firewall 解释 (重要)
+`-N` = 只建隧道不开 shell, 终端窗口保持开着。
 
-| 路径 | 通不通 | 原因 |
+如果你 SSH key 不在默认路径, 加 `-i path/to/vm-deploy-key`。
+
+**保持这个 SSH 终端不关**, 浏览器 (Windows Chrome 即可) 开:
+
+```
+http://localhost:6080/vnc.html   ← doubao-01
+http://localhost:6081/vnc.html   ← doubao-02
+```
+
+→ Connect → 输 VNC 密码 (`VNC_PASSWORD_01` 那个值) → 看到 Xfce 桌面 + Chrome 在 doubao.com → **点 "手机号登录"** 输手机号 → 收 SMS → 输验证码 → 登录成功。
+
+登录态持久化在 ECS 上的 `<ECS_REPO_PATH>/experiments/vm_per_account/docker/data/profile-doubao-01/`, Chrome 重启仍在。
+
+## CI/CD 日常操作清单
+
+通过 `vm-docker-deploy.yml` workflow 的 `action` 输入:
+
+| 想做的事 | `action` | 附加输入 |
 |---|---|---|
-| 本机 `127.0.0.1:6080` (Celery worker → CDP) | ✅ | loopback 自然通 |
-| Tailscale peer → `100.x.x.x:6080` (操作员浏览器) | ✅ | ufw `allow in on tailscale0` |
-| 公网 → ECS_public_IP:6080 | ❌ | ufw `deny ... port 6080:6090` 拦截 |
-| Aliyun 安全组规则 | 默认拒绝 6080-9232 | 备份防护 |
+| 首次准备环境 | `bootstrap` | — |
+| 启动容器 | `up` | — |
+| 关闭容器 (保留登录态) | `down` | — |
+| 重启一个容器 | `restart` | `container=doubao-01` |
+| 看日志 | `logs` | `container=doubao-01` + `tail_lines=200` |
+| 拉最新代码到 ECS | `pull` | — |
+| 看资源状态 (free / df / ufw / docker ps) | `status` | — |
+| ⚠️ 完全销毁容器 + 删登录态 | `destroy` | — (危险!) |
 
-**不做 firewall 这步 → 你公网 noVNC 端口暴露 = 任何人扫端口能进 Chrome = 安全事故。**
-
-## 操作员登录豆包
-
-ECS 上 Tailscale 已加入 tailnet → 你 Windows/手机 Tailscale 客户端也加 tailnet → 直接连:
-
-```
-http://<ecs-tailscale-ip>:6080/vnc.html   ← doubao-01 noVNC
-http://<ecs-tailscale-ip>:6081/vnc.html   ← doubao-02 noVNC
-```
-
-输 VNC 密码 (`.env` 里的 `VNC_PASSWORD_01` / `_02`) → 进 Xfce 桌面 → Chrome 已开在 doubao.com → **手机号登录** (不用 APP, 收 SMS) → 跟你平时浏览器登豆包一样。
-
-登录态自动持久化到 `./data/profile-doubao-01/`, 容器重启仍在。
-
-## Celery worker 从 CDP 抓数据
+## Celery worker 从 CDP 抓数据 (跟现有 backend 集成)
 
 ECS 上的 backend / worker 直接读 `127.0.0.1:9222` (CDP) / `127.0.0.1:9223`:
 
@@ -108,28 +119,6 @@ VM_REGISTRY_CSV=doubao-01:http://127.0.0.1:9222,doubao-02:http://127.0.0.1:9223
 
 并把对应 `llm_accounts` row 的 `execution_mode='vm_session'` + `vm_id='doubao-01'`。
 
-## 常用操作
-
-```bash
-# 看所有容器
-docker compose ps
-
-# 重启某个容器 (登录态保留)
-docker compose restart doubao-01
-
-# 完全销毁 + 删除登录态
-docker compose down
-rm -rf ./data/profile-doubao-01
-
-# 查容器内 log
-docker compose logs -f doubao-01
-
-# 进容器 shell debug
-docker compose exec doubao-01 bash
-
-# 增加容器: 复制 docker-compose.yml 里 doubao-02 段, 改名 doubao-03 + 端口 6082/9224
-```
-
 ## 风险 & Mitigation
 
 ### R1.6: 所有容器共享 ECS 公网 IP → Doubao 可能跨账号关联
@@ -140,16 +129,9 @@ docker compose exec doubao-01 bash
 ### 抢 backend 资源
 
 - 容器 RAM/CPU cap 已经在 docker-compose 里 (2 GB / 1 vCPU)
-- 跑前用 `htop` / `free -h` 看 baseline, 起容器后再看, 确认没把 backend 挤死
+- 跑前 `action=status` 看 baseline, 起容器后再看, 确认没把 backend 挤死
 
 ### Chrome session 过期 (~7-30 天后)
 
 - `login_watchdog` (PR #1119 vm_side) 每 60s 检测, 检到掉登录就 POST `/admin/api/vm/needs_relogin` 触发 Slack
-- 你 noVNC 重新扫码登录即可, profile 复用
-
-## 关闭一切
-
-```bash
-docker compose down
-sudo tailscale down   # 如果不想保留 Tailscale 在 host
-```
+- 你重开 SSH 隧道 + noVNC 重新登录即可, profile 复用
