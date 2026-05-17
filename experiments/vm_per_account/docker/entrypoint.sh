@@ -66,6 +66,7 @@ google-chrome \
   --user-data-dir=/profile \
   --remote-debugging-port="$CDP_PORT" \
   --remote-debugging-address=0.0.0.0 \
+  --remote-allow-origins=* \
   --no-sandbox --no-first-run --no-default-browser-check \
   --disable-blink-features=AutomationControlled \
   --disable-dev-shm-usage \
