@@ -1,0 +1,82 @@
+# VM-per-account Doubao Chrome containers on a single host.
+#
+# Each `doubao-NN` service is an isolated Chrome instance with its own
+# persistent profile (login state survives container restart).
+#
+# Host port mapping:
+#   doubao-01:   noVNC :6080  + CDP :9222
+#   doubao-02:   noVNC :6081  + CDP :9223
+#   doubao-03:   noVNC :6082  + CDP :9224
+#   ...add more by copying + incrementing
+#
+# Operator connects:   http://<host-tailscale-ip>:6080/vnc.html
+# Celery worker drives: playwright.chromium.connect_over_cdp("http://<host>:9222")
+#
+# ⚠️ R1.6 risk: all containers share the host's public IP. Multiple Doubao
+# accounts on the same IP MAY trigger Doubao's cross-account correlation
+# detection. Test in PoC before scaling beyond 2-3 accounts. Mitigation if
+# needed: add `--proxy-server=http://qg_ip:port` to each container's Chrome
+# args (one residential IP per container).
+services:
+  doubao-01:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: vm-per-account/doubao-chrome:latest
+    container_name: doubao-01
+    restart: unless-stopped
+    environment:
+      VNC_PASSWORD: ${VNC_PASSWORD_01:?must set VNC_PASSWORD_01 in .env}
+      CDP_PORT: 9222
+      NOVNC_PORT: 6080
+      CHROME_TARGET_URL: https://www.doubao.com/chat
+    ports:
+      # Bind to host loopback only — host's Tailscale handles secure exposure
+      # to operator devices, no public-facing port leakage.
+      - "127.0.0.1:6080:6080"
+      - "127.0.0.1:9222:9222"
+    volumes:
+      - ./data/profile-doubao-01:/profile
+    shm_size: 2gb
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+          cpus: "1.0"
+
+  doubao-02:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: vm-per-account/doubao-chrome:latest
+    container_name: doubao-02
+    restart: unless-stopped
+    environment:
+      VNC_PASSWORD: ${VNC_PASSWORD_02:?must set VNC_PASSWORD_02 in .env}
+      CDP_PORT: 9222
+      NOVNC_PORT: 6080
+      CHROME_TARGET_URL: https://www.doubao.com/chat
+    ports:
+      - "127.0.0.1:6081:6080"
+      - "127.0.0.1:9223:9222"
+    volumes:
+      - ./data/profile-doubao-02:/profile
+    shm_size: 2gb
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+          cpus: "1.0"
+
+  # ---- 多开 DeepSeek 走同样模式 ----
+  # deepseek-01:
+  #   build: .
+  #   environment:
+  #     VNC_PASSWORD: ${VNC_PASSWORD_DEEPSEEK_01:?}
+  #     CHROME_TARGET_URL: https://chat.deepseek.com
+  #     ...
+  #   ports:
+  #     - "127.0.0.1:7080:6080"
+  #     - "127.0.0.1:9322:9222"
+  #   volumes:
+  #     - ./data/profile-deepseek-01:/profile
