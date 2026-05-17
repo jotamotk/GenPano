@@ -656,6 +656,247 @@ jobs:
           PYEND
 
           echo ""
+          echo "=== Mode B: account lookup for phone 16267976942 ==="
+          # Refs #963 user comment: "我在 16267976942 看到了正确的回答，但是系统里还没看到成功的".
+          # Phone 16267976942 corresponds to a specific llm_accounts.id; print
+          # all doubao rows containing that phone so we know which account_id
+          # to filter the rest of the Mode B queries by. Mode B = our system
+          # marked the query failed/no_response while Doubao actually
+          # produced a real answer that is visible in the chat history of
+          # that account.
+          docker compose exec -T postgres psql -X -U genpano -d genpano -P pager=off -c "
+            SELECT id, llm_name, phone_number, status, query_count_today,
+                   daily_limit, cookies_updated_at, last_used_at,
+                   expired_transition_count, consecutive_fails
+            FROM llm_accounts
+            WHERE llm_name='doubao'
+              AND phone_number = '16267976942'
+            ORDER BY id;
+          " </dev/null 2>&1 || true
+
+          echo ""
+          echo "=== Mode B candidates: doubao queries past 24h on phone 16267976942 with failure-without-real-answer ==="
+          # Mode B "looks like": status=failed AND retry_reason in the set of
+          # 'doubao got an answer but our scraper didn't capture/persist it'
+          # signatures: no_response, doubao_homepage_content,
+          # doubao_auth_state_missing, doubao_not_logged_in,
+          # doubao_browser_timeout:%, page_unavailable, soft_time_limit.
+          # Include resp_count so we can immediately see the (failed,
+          # resp_count>0) rows that are the cleanest Mode B evidence
+          # (worker DID persist a response row, yet still marked the query
+          # failed).
+          docker compose exec -T postgres psql -X -U genpano -d genpano -P pager=off -c "
+            SELECT
+              q.id AS query_id,
+              q.status,
+              q.retry_reason,
+              q.retry_count,
+              q.account_id,
+              a.phone_number,
+              q.queued_at,
+              q.finished_at,
+              EXTRACT(EPOCH FROM (q.finished_at - q.queued_at))::int AS seconds_elapsed,
+              (SELECT COUNT(*) FROM llm_responses r WHERE r.query_id = q.id) AS resp_count,
+              (SELECT length(coalesce(r.raw_text,'')) FROM llm_responses r WHERE r.query_id = q.id LIMIT 1) AS raw_text_len,
+              (SELECT length(coalesce(r.response_html,'')) FROM llm_responses r WHERE r.query_id = q.id LIMIT 1) AS resp_html_len
+            FROM queries q
+            JOIN llm_accounts a ON a.id = q.account_id
+            WHERE q.target_llm = 'doubao'
+              AND a.phone_number = '16267976942'
+              AND q.finished_at IS NOT NULL
+              AND q.finished_at > NOW() - INTERVAL '24 hours'
+              AND (
+                q.status = 'failed'
+                OR q.retry_reason IN (
+                  'no_response',
+                  'doubao_homepage_content',
+                  'doubao_auth_state_missing',
+                  'doubao_not_logged_in',
+                  'page_unavailable',
+                  'soft_time_limit'
+                )
+                OR q.retry_reason LIKE 'doubao_browser_timeout:%'
+              )
+            ORDER BY q.finished_at DESC
+            LIMIT 30;
+          " </dev/null 2>&1 || true
+
+          echo ""
+          echo "=== Mode B: ALL doubao failed/no_response in past 24h regardless of account (broader candidate set) ==="
+          # Fallback in case the phone-number lookup misses (phone may be
+          # stored under a different account row). Useful so the same dump
+          # can list e.g. account 42 queries even if the phone column is
+          # NULL/different.
+          docker compose exec -T postgres psql -X -U genpano -d genpano -P pager=off -c "
+            SELECT
+              q.id, q.status, q.retry_reason, q.account_id, a.phone_number,
+              q.queued_at, q.finished_at,
+              (SELECT COUNT(*) FROM llm_responses r WHERE r.query_id = q.id) AS resp_count,
+              (SELECT length(coalesce(r.raw_text,''))
+                  FROM llm_responses r WHERE r.query_id = q.id LIMIT 1) AS raw_text_len
+            FROM queries q
+            LEFT JOIN llm_accounts a ON a.id = q.account_id
+            WHERE q.target_llm = 'doubao'
+              AND q.finished_at IS NOT NULL
+              AND q.finished_at > NOW() - INTERVAL '24 hours'
+              AND (
+                q.retry_reason IN (
+                  'no_response',
+                  'doubao_homepage_content',
+                  'doubao_auth_state_missing',
+                  'doubao_not_logged_in'
+                )
+                OR q.retry_reason LIKE 'doubao_browser_timeout:%'
+              )
+            ORDER BY q.finished_at DESC
+            LIMIT 40;
+          " </dev/null 2>&1 || true
+
+          echo ""
+          echo "=== Mode B: list all screenshot/snapshot artifacts for top-3 candidate IDs ==="
+          # Print the saved-HTML and runtime-snapshot files attached to each
+          # candidate ID, with sizes. Largest "final state" suffix is what
+          # we want to inspect for an actual rendered Doubao answer.
+          docker compose exec -T worker python3 - <<'PYEND'
+          import glob, os
+          # Refs #963 Mode B: the parallel investigation flagged Q-185637
+          # (account 42) as the active stuck-loop case; Q-184971 (account
+          # 47) is the historical case where the saved HTML already showed
+          # 1 flow-markdown-body match (86 chars stripped). Pull the union.
+          candidate_ids = ["185637", "184971", "184988", "184968", "185657"]
+          for qid in candidate_ids:
+              print(f"--- Q-{qid} artifacts ---")
+              for pattern in (
+                  f"/data/screenshots/query_{qid}_doubao_*.json",
+                  f"/data/screenshots/query_{qid}_doubao_*.html",
+              ):
+                  files = sorted(glob.glob(pattern), key=os.path.getmtime, reverse=True)
+                  if not files:
+                      print(f"  (no files matching {pattern})")
+                      continue
+                  for f in files[:15]:
+                      try:
+                          st = os.stat(f)
+                          print(f"  {st.st_size:9d} bytes  {f}")
+                      except Exception as e:
+                          print(f"  ERR  {f}: {e}")
+          PYEND
+
+          echo ""
+          echo "=== Mode B: inspect largest saved HTML per candidate for actual response selectors ==="
+          # For each candidate Q ID, pick the largest saved HTML (any
+          # suffix) and run the response-selector audit:
+          # - count of .flow-markdown-body matches (worker-configured selector)
+          # - count of receive_message / message-content / semi-typography
+          # - dump first 300 chars of stripped flow-markdown-body body
+          # If Doubao rendered the answer somewhere other than
+          # .flow-markdown-body, this is where it shows up.
+          docker compose exec -T worker python3 - <<'PYEND'
+          import glob, os, re
+          candidate_ids = ["185637", "184971", "184988", "184968", "185657"]
+          # The worker config (geo_tracker/agent/executor.py:111) sets
+          # response_selector to ".flow-markdown-body, [class*='receive-message']
+          # [class*='content'], .bot-message .content, [class*='message-content']"
+          # — audit each independently.
+          selectors_regex = [
+              ("flow-markdown-body",
+               r"class=['\"][^'\"]*\bflow-markdown-body\b[^'\"]*['\"]"),
+              ("receive_message-testid",
+               r"data-testid=['\"]receive_message['\"]"),
+              ("message_text_content-testid",
+               r"data-testid=['\"]message_text_content['\"]"),
+              ("class-message-content",
+               r"class=['\"][^'\"]*\bmessage-content\b[^'\"]*['\"]"),
+              ("class-receive-message",
+               r"class=['\"][^'\"]*\breceive-message\b[^'\"]*['\"]"),
+              ("semi-typography",
+               r"class=['\"][^'\"]*\bsemi-typography\b[^'\"]*['\"]"),
+              ("message-list-S2Fv2S",
+               r"class=['\"][^'\"]*\bmessage-list-S2Fv2S\b[^'\"]*['\"]"),
+              ("send-msg-bubble-bg",
+               r"\bsend-msg-bubble-bg\b"),
+          ]
+          for qid in candidate_ids:
+              files = sorted(
+                  glob.glob(f"/data/screenshots/query_{qid}_doubao_*.html"),
+                  key=lambda p: os.path.getsize(p),
+                  reverse=True,
+              )
+              if not files:
+                  print(f"=== Q-{qid}: no HTML artifacts ===")
+                  continue
+              path = files[0]
+              size = os.path.getsize(path)
+              print(f"=== Q-{qid}: largest HTML {path} ({size} bytes) ===")
+              with open(path, "r", encoding="utf-8", errors="replace") as f:
+                  html = f.read()
+              for name, pat in selectors_regex:
+                  n = len(re.findall(pat, html, re.IGNORECASE))
+                  print(f"  {name:32s} count={n}")
+              # Extract the first .flow-markdown-body body content if present
+              fmb = list(re.finditer(
+                  r"<div\b[^>]*class=['\"][^'\"]*\bflow-markdown-body\b[^'\"]*['\"][^>]*>(?P<body>[\s\S]{0,5000}?)</div>",
+                  html, re.IGNORECASE))
+              print(f"  flow-markdown-body body matches: {len(fmb)}")
+              for i, m in enumerate(fmb[:2]):
+                  body = m.group("body")
+                  stripped = re.sub(r"<[^>]+>", " ", body).strip()
+                  stripped = re.sub(r"\s+", " ", stripped)
+                  print(f"    body {i}: raw_len={len(body)} stripped_len={len(stripped)}")
+                  print(f"    first 300 stripped: {stripped[:300]!r}")
+              # Also try semi-typography (Doubao 2026 may put assistant
+              # answer in a semi-typography wrapper)
+              sty = list(re.finditer(
+                  r"<[^>]+class=['\"][^'\"]*\bsemi-typography\b[^'\"]*['\"][^>]*>([\s\S]{0,3000}?)</",
+                  html, re.IGNORECASE))
+              if sty:
+                  print(f"  semi-typography body matches: {len(sty)}")
+                  for i, m in enumerate(sty[:1]):
+                      stripped = re.sub(r"<[^>]+>", " ", m.group(1)).strip()
+                      stripped = re.sub(r"\s+", " ", stripped)
+                      print(f"    semi-typography body {i}: stripped_len={len(stripped)} first 200: {stripped[:200]!r}")
+              # List the file-suffix string for context (no_response,
+              # not_logged_in, homepage_content, submit_failed, etc.)
+              suffix = os.path.basename(path).replace(f"query_{qid}_doubao_", "").rsplit("_", 1)[0]
+              print(f"  suffix: {suffix}")
+          PYEND
+
+          echo ""
+          echo "=== Mode B: worker log slice for each candidate Q-ID ==="
+          # Pull broader log volume so we can correlate per-ID submit /
+          # extension / failure events. The previous dump used --tail 500;
+          # bump to 4000 because Q-185637 alone produced ~30+ extension
+          # lines after submit fired.
+          for qid in 185637 184971 184988 184968 185657; do
+            echo "--- worker log slice for Q-${qid} ---"
+            docker compose logs --tail 4000 worker 2>&1 \
+              | grep -E "(Query ${qid}|query_${qid}|^[^|]+\| .*${qid})" \
+              | tail -120 || true
+            echo ""
+          done
+
+          echo ""
+          echo "=== Mode B: response_selector config in deployed code ==="
+          # AGENTS.md Evidence-First step 3: confirm what the live worker
+          # is actually configured to scrape Doubao with. The selector
+          # string is part of LLM_CONFIG in executor.py and propagates
+          # into guest_executor's response_wait loop. If this string no
+          # longer matches the live Doubao DOM, the worker can stream a
+          # real answer into the HTML save buffer (which DOES capture all
+          # the markup) but the scraper sees nothing.
+          docker compose exec -T worker python3 - <<'PYEND'
+          try:
+              from geo_tracker.agent.executor import LLM_CONFIG
+              cfg = LLM_CONFIG.get("doubao", {})
+              for key in ("url", "input_selector", "submit_selector",
+                          "response_selector", "wait_for_done",
+                          "response_timeout"):
+                  print(f"{key:20s} = {cfg.get(key)!r}")
+          except Exception as e:
+              print(f"could not import LLM_CONFIG: {e}")
+          PYEND
+
+          echo ""
           echo "=== Doubao worker log tail (last 50 lines mentioning doubao) ==="
           docker compose logs --tail 500 worker 2>&1 | grep -iE "doubao|qg|timezone" | tail -50 || true
           REMOTE
