@@ -52,13 +52,25 @@ jobs:
           sudo apt-get install -y google-chrome-stable
           google-chrome --version
 
-      - name: Setup Tailscale (kernel mode)
-        uses: tailscale/github-action@v2
-        with:
-          authkey: ${{ secrets.TAILSCALE_AUTH_KEY }}
-          hostname: vm-doubao-poc-${{ github.run_id }}
-          version: latest
-          use-cache: 'true'
+      - name: Install + start Tailscale (via official install.sh)
+        # Bypass tailscale/github-action@v2 — its sha256 check breaks on
+        # current `latest` Tailscale release. install.sh is upstream-maintained
+        # and Just Works.
+        env:
+          TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+        run: |
+          set -euxo pipefail
+          curl -fsSL https://tailscale.com/install.sh | sudo sh
+          # tailscaled is installed as a systemd unit; start it
+          sudo systemctl enable --now tailscaled
+          # join the tailnet (kernel tun mode, runner has sudo)
+          sudo tailscale up \
+            --authkey="${TAILSCALE_AUTH_KEY}" \
+            --hostname="vm-doubao-poc-${{ github.run_id }}" \
+            --accept-routes \
+            --accept-dns=false
+          # wait a beat for state to settle
+          sleep 3
 
       - name: Show Tailscale status
         run: |
