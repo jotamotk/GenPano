@@ -28,6 +28,7 @@ This endpoint does NOT inherit the existing retry path's celery
 dispatch — it executes inline, then commits. Audit emit uses
 ``severity='med'`` (matches the existing ``retry_query`` audit row).
 """
+
 from __future__ import annotations
 
 import logging
@@ -104,7 +105,7 @@ async def retry_query_via_vm(
     #    module so tests can ``monkeypatch.setattr(vm_quick_retry,
     #    "run_quick_retry", ...)`` and the route picks up the patched
     #    callable instead of the cached symbol.
-    from geo_tracker.agent import vm_quick_retry as _vm_quick_retry
+    from geo_tracker.agent import vm_quick_retry as _vm_quick_retry  # type: ignore[import-not-found]
 
     try:
         result = await _vm_quick_retry.run_quick_retry(
@@ -136,10 +137,15 @@ async def retry_query_via_vm(
         except Exception as audit_exc:
             logger.warning("retry_via_vm: audit emit failed: %r", audit_exc)
 
-        status_code = 503 if exc.code in (
-            _vm_quick_retry.ERR_CDP_UNREACHABLE,
-            _vm_quick_retry.ERR_VM_NOT_LOGGED_IN,
-        ) else 500
+        status_code = (
+            503
+            if exc.code
+            in (
+                _vm_quick_retry.ERR_CDP_UNREACHABLE,
+                _vm_quick_retry.ERR_VM_NOT_LOGGED_IN,
+            )
+            else 500
+        )
         return JSONResponse(
             status_code=status_code,
             content={

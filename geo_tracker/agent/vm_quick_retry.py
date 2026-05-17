@@ -39,6 +39,7 @@ this helper. Issue #1144 explicitly decouples this PoC from the Phase
 1/2 ramp; the flag belongs to ``executors/router.py:select_executor``
 and only gates the celery-dispatched main path.
 """
+
 from __future__ import annotations
 
 import json as _json
@@ -233,7 +234,9 @@ def _quick_screenshot_dir() -> Path:
     is mkdir'd at module-import time in production but may not exist /
     be writable in CI).
     """
-    base = os.getenv("VM_QUICK_RETRY_SCREENSHOT_DIR", "/data/screenshots/vm_quick_retry")
+    base = os.getenv(
+        "VM_QUICK_RETRY_SCREENSHOT_DIR", "/data/screenshots/vm_quick_retry"
+    )
     path = Path(base)
     try:
         path.mkdir(parents=True, exist_ok=True)
@@ -382,8 +385,7 @@ async def _persist_response_and_attempt(
             count_row = (
                 await session.execute(
                     sa_text(
-                        "SELECT COUNT(*) AS n FROM query_attempts "
-                        "WHERE query_id = :qid"
+                        "SELECT COUNT(*) AS n FROM query_attempts WHERE query_id = :qid"
                     ),
                     {"qid": query_id},
                 )
@@ -391,9 +393,7 @@ async def _persist_response_and_attempt(
             if count_row is not None:
                 attempt_n = int(count_row[0]) + 1
         except Exception as exc:
-            logger.warning(
-                "vm_quick_retry: COUNT query_attempts failed: %r", exc
-            )
+            logger.warning("vm_quick_retry: COUNT query_attempts failed: %r", exc)
 
         attempt_metadata = {
             "attempt_n": attempt_n,
