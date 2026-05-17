@@ -110,6 +110,163 @@ jobs:
           " </dev/null 2>&1 || true
 
           echo ""
+          echo "=== IP-binding hypothesis: doubao account re-login frequency (past 48h) ==="
+          # Refs #963 user question: does every qg.net IP rotation force
+          # Doubao to invalidate the account session, making the rotating-IP
+          # strategy structurally broken? The LLMAccount schema uses
+          # ``cookies_updated_at`` as the durable proxy for "last successful
+          # login": ``celery_tasks.py`` writes this column atomically with
+          # the fresh ``cookies_json`` payload at the end of a
+          # ``login_or_register`` handshake (see celery_tasks.py:1948).
+          # If accounts are forced to re-authenticate after every IP swap,
+          # we expect deltas between consecutive cookies_updated_at values
+          # for a given account to cluster well below the per-account
+          # daily quota (~20 queries/day → ~72 min/query at most).
+          docker compose exec -T postgres psql -X -U genpano -d genpano -P pager=off -c "
+            WITH doubao_accts AS (
+              SELECT id, cookies_updated_at,
+                     LAG(cookies_updated_at) OVER (
+                       PARTITION BY id ORDER BY cookies_updated_at
+                     ) AS prev_login
+              FROM llm_accounts
+              WHERE llm_name='doubao'
+                AND cookies_updated_at > NOW() - INTERVAL '48 hours'
+            )
+            SELECT id AS account_id, cookies_updated_at, prev_login,
+                   EXTRACT(EPOCH FROM (cookies_updated_at - prev_login))/60 AS delta_minutes
+            FROM doubao_accts
+            WHERE prev_login IS NOT NULL
+            ORDER BY id, cookies_updated_at
+            LIMIT 40;
+          " </dev/null 2>&1 || true
+
+          echo ""
+          echo "=== IP-binding hypothesis: distribution of cookies_updated_at refreshes per account (past 48h) ==="
+          # Aggregate so we can see at a glance how aggressively each
+          # account is being bounced through re-login. If accounts churn
+          # cookies dozens of times per day, IP-invalidation is the dominant
+          # failure mode; if cookies last hours/days, the hypothesis weakens.
+          docker compose exec -T postgres psql -X -U genpano -d genpano -P pager=off -c "
+            SELECT id AS account_id,
+                   status,
+                   expired_transition_count,
+                   consecutive_fails,
+                   cookies_updated_at,
+                   last_used_at,
+                   EXTRACT(EPOCH FROM (NOW() - cookies_updated_at))/60 AS minutes_since_login,
+                   query_count_today
+            FROM llm_accounts
+            WHERE llm_name='doubao'
+            ORDER BY cookies_updated_at DESC NULLS LAST
+            LIMIT 25;
+          " </dev/null 2>&1 || true
+
+          echo ""
+          echo "=== IP-binding hypothesis: doubao query success vs minutes-since-account-login (past 48h) ==="
+          # If successful queries cluster at minutes_since_login < N and
+          # failures (doubao_auth_state_missing / doubao_not_logged_in /
+          # doubao_homepage_content) cluster at minutes_since_login > M,
+          # IP rotation is silently invalidating the in-flight session.
+          # If both succeed and fail are scattered across the range, IP
+          # rotation is fine and the issue is elsewhere (anti-bot, page
+          # gating, etc.).
+          docker compose exec -T postgres psql -X -U genpano -d genpano -P pager=off -c "
+            SELECT
+              q.id AS query_id,
+              q.account_id,
+              q.status,
+              q.retry_reason,
+              q.retry_count,
+              q.queued_at,
+              q.finished_at,
+              a.cookies_updated_at,
+              EXTRACT(EPOCH FROM (q.queued_at - a.cookies_updated_at))/60 AS minutes_since_login_at_queue,
+              (SELECT COUNT(*) FROM llm_responses r WHERE r.query_id = q.id) AS resp_count
+            FROM queries q
+            JOIN llm_accounts a ON a.id = q.account_id
+            WHERE q.target_llm='doubao'
+              AND q.finished_at IS NOT NULL
+              AND q.finished_at > NOW() - INTERVAL '48 hours'
+            ORDER BY q.finished_at DESC
+            LIMIT 40;
+          " </dev/null 2>&1 || true
+
+          echo ""
+          echo "=== IP-binding hypothesis: per-account session lifetime to first auth failure ==="
+          # For each account, the first auth-state failure (retry_reason
+          # IN {doubao_not_logged_in, doubao_auth_state_missing,
+          # doubao_homepage_content}) after its most recent
+          # cookies_updated_at. Short lifetimes (< a few minutes) support
+          # the IP-binding hypothesis; longer lifetimes (~hours, spanning
+          # many qg IPs) refute it.
+          docker compose exec -T postgres psql -X -U genpano -d genpano -P pager=off -c "
+            WITH last_login AS (
+              SELECT id AS account_id, cookies_updated_at
+              FROM llm_accounts
+              WHERE llm_name='doubao' AND cookies_updated_at IS NOT NULL
+            ),
+            first_fail AS (
+              SELECT q.account_id, MIN(q.finished_at) AS first_fail_at
+              FROM queries q
+              JOIN last_login l ON l.account_id = q.account_id
+              WHERE q.target_llm='doubao'
+                AND q.retry_reason IN (
+                  'doubao_not_logged_in',
+                  'doubao_auth_state_missing',
+                  'doubao_homepage_content'
+                )
+                AND q.finished_at > l.cookies_updated_at
+                AND q.finished_at > NOW() - INTERVAL '48 hours'
+              GROUP BY q.account_id
+            )
+            SELECT
+              l.account_id,
+              l.cookies_updated_at,
+              f.first_fail_at,
+              EXTRACT(EPOCH FROM (f.first_fail_at - l.cookies_updated_at))/60 AS minutes_session_lasted,
+              (SELECT COUNT(*) FROM queries q
+                 WHERE q.account_id = l.account_id
+                   AND q.target_llm='doubao'
+                   AND q.finished_at > l.cookies_updated_at
+                   AND q.finished_at <= f.first_fail_at) AS queries_before_failure
+            FROM last_login l
+            LEFT JOIN first_fail f ON f.account_id = l.account_id
+            WHERE l.cookies_updated_at > NOW() - INTERVAL '48 hours'
+            ORDER BY l.account_id;
+          " </dev/null 2>&1 || true
+
+          echo ""
+          echo "=== IP-binding hypothesis: qg.net extract URL config (does num=1 enforce per-call rotation?) ==="
+          # AGENTS.md Evidence-First: confirm what the production worker is
+          # ACTUALLY configured with for qg, including the ?num= and
+          # ?session_id= / ?sticky= params if any. Note: QG_PROXY_EXTRACT_URL
+          # is a secret containing an apikey; redact before printing.
+          docker compose exec -T worker python3 - <<'PYEND'
+          import os, re
+          url = os.getenv("QG_PROXY_EXTRACT_URL", "")
+          if not url:
+              print("QG_PROXY_EXTRACT_URL: <empty>")
+          else:
+              red = re.sub(r"(key|apikey|token|password|auth)=[^&\s]+",
+                           r"\1=[redacted]", url, flags=re.IGNORECASE)
+              print("QG_PROXY_EXTRACT_URL (redacted):", red)
+              # Pull out only the param keys to confirm sticky-session support
+              # without exposing secrets.
+              try:
+                  from urllib.parse import urlparse, parse_qs
+                  parsed = urlparse(url)
+                  print("  host  :", parsed.netloc)
+                  print("  path  :", parsed.path)
+                  keys = sorted(parse_qs(parsed.query).keys())
+                  print("  param keys:", keys)
+              except Exception as e:
+                  print("  param parse failed:", e)
+          for k in ("QG_PROXY_AUTH_KEY", "QG_PROXY_AUTH_PASSWORD"):
+              v = os.getenv(k, "")
+              print(f"{k}: {'set ('+str(len(v))+' chars)' if v else '<empty>'}")
+          PYEND
+
+          echo ""
           echo "=== Latest 5 doubao runtime-snapshot files (inside worker container) ==="
           docker compose exec -T worker sh -c 'ls -lat /data/screenshots/query_*_doubao_*.json 2>/dev/null | head -5 || echo "(none)"' </dev/null
 
