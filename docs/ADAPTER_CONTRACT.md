@@ -443,6 +443,15 @@ model LLMAccount {
 
 ### 5.3 Cookie 录入格式
 
+> **DEPRECATED-<TODO-merge-date>** for `doubao` / `deepseek` (Refs #1118 / Epic #1110):
+> Phase 3 cleanup retires the env-variable / Admin-paste cookie injection
+> path for these two MVP engines; cookies are now sourced exclusively from
+> the vm_session execution mode + vm_side runner (see ADR-016). The
+> original text below is preserved per AGENTS.md "Admin Surface Rule"
+> (维护原则: 禁止删除未替换的规则, 标 DEPRECATED + 原因) so future
+> engines that still rely on manual cookie paste — e.g. ChatGPT, Gemini —
+> keep a working reference. Status for other engines is unchanged.
+
 用户 (Admin) 导出 Cookie 有两种来源:
 
 - **EditThisCookie JSON** (数组): `[{"domain": ".chatgpt.com", "name": "__Secure-next-auth.session-token", "value": "...", "expirationDate": 1.7e9, ...}]`
@@ -513,6 +522,14 @@ Admin §4.2.4 (账号池仪表盘) 新增列: "Pre-Warm 成功率 (近 7d)" + "�
 - Harness (Session 1 追加): 所有账号状态迁入 `ACTIVE` 必须经过 `PRE_WARMING` 中间态, 禁止 `PENDING → ACTIVE` 直跳 (grep `status:\s*['"]ACTIVE['"]` 反查上一行 `PRE_WARMING`)
 
 ### 5.4 自动注册 (CN 引擎)
+
+> **DEPRECATED-<TODO-merge-date>** for `doubao` / `deepseek` (Refs #1118 / Epic #1110):
+> Phase 3 cleanup retires this auto-registration flow for the two MVP
+> engines; account provisioning is now handled inside the vm_session
+> execution mode + vm_side runner (see ADR-016). Preserved per AGENTS.md
+> "Admin Surface Rule" (维护原则: 禁止删除未替换的规则, 标 DEPRECATED +
+> 原因) so the historical contract and harness expectations remain
+> recoverable if a future engine reuses the lubansms-based flow.
 
 MVP 只做 **豆包 + DeepSeek** 的自动注册, 不做 ChatGPT/Gemini (成本高 + 风控严)。
 

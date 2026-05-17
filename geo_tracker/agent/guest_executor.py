@@ -3,7 +3,9 @@
 - 使用 Playwright 直接访问 LLM 网站，无需账号
 - 支持 ChatGPT、Gemini、Perplexity、Kimi、Doubao、DeepSeek 等
 - Gemini 支持通过 GEMINI_COOKIES_JSON 环境变量注入 Google session cookie
-- Doubao 支持通过 DOUBAO_COOKIES_JSON 环境变量注入火山引擎 session cookie
+- Doubao / DeepSeek: 走 vm_session 执行模式 (Epic #1110 / ADR-016)。Phase 3
+  cleanup (#1118) 移除了豆包/DeepSeek 的环境变量 cookie 注入路径——cookies
+  仅来自 AccountPool + vm_side runner。
 """
 from __future__ import annotations
 
@@ -493,9 +495,13 @@ GUEST_LLM_CONFIG = {
         # the worker's 480s outer budget room for page_load + cleanup.
         "wait_after_submit_max_extension": 120000,
         "load_wait":        10000,
-        # 动态判断：有 DOUBAO_COOKIES_JSON 则可免登录，否则需要登录
-        "requires_login":   not bool(os.getenv("DOUBAO_COOKIES_JSON", "").strip()),
-        "cookies_env":      "DOUBAO_COOKIES_JSON",
+        # Phase 3 cleanup (Refs #1118 / Epic #1110): doubao env-cookie
+        # injection deprecated in favour of vm_session execution mode
+        # (ADR-016). Doubao always goes through the AccountPool +
+        # vm_side runner path now, so requires_login is unconditionally True
+        # for the (now disused) local-cookie fallback branch and there is no
+        # ``cookies_env`` here.
+        "requires_login":   True,
         # 豆包登录页域名检测
         "login_redirect_domains": ["passport.volcengine.com", "sso.volcengine.com", "passport.douyin.com"],
     },
@@ -734,15 +740,19 @@ class GuestQueryExecutor:
         try:
             # Camoufox 反指纹浏览器：海外 LLM 绕 Cloudflare，国内需登录的 LLM 绕反爬
             needs_stealth = config.get("requires_login") or bool(self.account_cookies)
-            # Refs #963 / Codex P2 on PR #1038: when ``DOUBAO_COOKIES_JSON``
-            # is set as an env cookie (requires_login=False) and no
-            # account-pool cookie is assigned, neither use_proxy nor
-            # needs_stealth fires and the worker falls through to the
-            # plain Playwright launch path that the qg block does NOT
-            # cover. That leaves env-cookie Doubao deployments on the
-            # same by-IP 5202 path qg is meant to bypass. When the qg
-            # client is configured AND this is a Doubao query, force the
-            # Camoufox path so the qg reservation block runs unconditionally.
+            # Refs #963 / Codex P2 on PR #1038: historically when the legacy
+            # doubao env-cookie injection was set (which made
+            # ``requires_login`` False) and no account-pool cookie was
+            # assigned, neither use_proxy nor needs_stealth fired and the
+            # worker fell through to the plain Playwright launch path that
+            # the qg block does NOT cover, exposing the worker IP to
+            # Doubao's 5202 path. After Phase 3 cleanup (Refs #1118) the
+            # env-cookie path is gone and Doubao always sits behind
+            # ``requires_login=True`` + AccountPool cookies, so
+            # ``needs_stealth`` is always set. The qg-active force-Camoufox
+            # gate is kept for defence-in-depth: any future regression that
+            # re-introduces a ``requires_login=False`` Doubao path still
+            # gets the qg reservation block.
             qg_active_for_doubao = (
                 llm == "doubao" and self.qg_proxy_client is not None
             )

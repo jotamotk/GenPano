@@ -112,7 +112,11 @@ LLM_CONFIG: dict[str, dict] = {
         "wait_for_done":    "#flow-end-msg-send:not([aria-disabled='true']):not([data-disabled='true']), button[data-testid='chat_input_send_button']:not([disabled])",
         "response_timeout": 90_000,
         "requires_login":   True,
-        "cookies_env":      "DOUBAO_COOKIES_JSON",
+        # Phase 3 cleanup (Refs #1118 / Epic #1110): the legacy env-cookie
+        # injection path for doubao is deprecated and replaced by the
+        # vm_session execution mode (see ADR-016 / vm_side runner). Cookies
+        # come from AccountPool only; do not reintroduce a ``cookies_env``
+        # entry here.
         "login_redirect_domains": ["passport.volcengine.com", "sso.volcengine.com", "passport.douyin.com"],
     },
     "deepseek": {
@@ -124,7 +128,9 @@ LLM_CONFIG: dict[str, dict] = {
         "stream_cursor_selector": "[class*='loading'], [class*='typing']",
         "response_timeout": 90_000,
         "requires_login":   True,
-        "cookies_env":      "DEEPSEEK_COOKIES_JSON",
+        # Phase 3 cleanup (Refs #1118 / Epic #1110): see ``doubao`` block
+        # above — deepseek env-cookie injection deprecated in favour of
+        # vm_session (ADR-016).
         "login_redirect_domains": ["login.deepseek.com"],
     },
     "zhipu": {

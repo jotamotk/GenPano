@@ -101,8 +101,18 @@ def test_deploy_propagates_hero_sms_api_key_without_printing_value() -> None:
     deploy = DEPLOY_WORKFLOW.read_text(encoding="utf-8")
 
     assert "HERO_SMS_API_KEY: ${{ secrets.HERO_SMS_API_KEY }}" in deploy
+    # Phase 3 cleanup (Refs #1118 / Epic #1110): the legacy doubao env-cookie
+    # propagation was removed — doubao / deepseek run via vm_session
+    # (ADR-016). The deploy ssh-action ``envs:`` list no longer includes
+    # the doubao cookie secret. Assertion still pins HERO_SMS_API_KEY's
+    # position so future env-list edits cannot accidentally drop the key
+    # whose propagation this test was originally written to defend. The
+    # negative assertion is dispatched through the
+    # ``backend/tests/lint/test_no_doubao_cookies_json.py`` repo-wide grep
+    # so this file stays free of the deprecated token literal (the
+    # Phase 3 grep CI gate excludes only files matching ``*test_no_doubao*``).
     assert (
-        "envs: GEMINI_COOKIES_JSON,DOUBAO_COOKIES_JSON,ACR_REGISTRY_SECRET,"
+        "envs: GEMINI_COOKIES_JSON,ACR_REGISTRY_SECRET,"
         "ACR_USERNAME,ACR_PASSWORD,CLASH_API_SECRET,HERO_SMS_API_KEY"
     ) in deploy
     assert "print('HERO_SMS_API_KEY=' + value.replace('$', '$$'))" in deploy

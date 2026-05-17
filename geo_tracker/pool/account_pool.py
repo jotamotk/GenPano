@@ -44,6 +44,17 @@ DAILY_RESET_HOUR      = 0      # UTC 00:00 重置每日计数
 # ``consecutive_fails`` gate already handles them. Configurable via env so
 # operators can lower / disable in production without code change.
 MAX_EXPIRED_TRANSITIONS_DEFAULT = 3
+# Phase 3 cleanup follow-up (Refs #1118 / Epic #1110): after the vm_session
+# execution mode (ADR-016) takes over doubao + deepseek, the routing layer
+# (see Phase 2 ramp #1117 / PR #1121) short-circuits ``report_failure`` for
+# those engines before this ricochet branch runs, so this set is effectively
+# inert for them. The membership is intentionally kept (Admin Surface Rule
+# 维护原则: 禁止删除未替换的规则) for two reasons:
+#   1) defence-in-depth — if a regression re-introduces a local_cookie
+#      ricochet for doubao, the 3-strike ban still fires;
+#   2) the set is per-engine, so future engines that exhibit the same
+#      expired-ricochet pattern can be added without resurrecting deleted
+#      code.
 EXPIRED_RICOCHET_BAN_ENGINES = frozenset({"doubao"})
 
 # Refs #963 verify-readonly evidence (issue #963 comment 4469641196 at

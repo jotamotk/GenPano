@@ -62,7 +62,10 @@
 - **方式 A（AccountPool）**: 管理后台 → Accounts → Import Cookies
   - Platform: `doubao`
   - Cookies JSON: 粘贴 EditThisCookie JSON
-- **方式 B（环境变量）**: 设置 `DOUBAO_COOKIES_JSON` 环境变量（适合单账号部署）
+- ~~**方式 B（环境变量）**: 设置 `DOUBAO_COOKIES_JSON` 环境变量（适合单账号部署）~~
+  - **DEPRECATED** (Phase 3 cleanup, Refs #1118 / Epic #1110): 已移除。
+    豆包/DeepSeek 现统一走 vm_session 执行模式 (ADR-016)，cookies 仅从
+    AccountPool + vm_side runner 加载。
 
 **注意事项**:
 - 登录跳转域名检测: `passport.volcengine.com`, `sso.volcengine.com`, `passport.douyin.com`

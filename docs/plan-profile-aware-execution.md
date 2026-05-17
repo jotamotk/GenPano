@@ -10,7 +10,11 @@
 
 - `guest_executor.py` 用硬编码浏览器配置（`en-US`, `America/New_York`, `1920x1080`）执行所有查询，忽略 Profile 的 BrowserProfile 指纹
 - 需要登录的 LLM（豆包、智谱）在 `celery_tasks.py:78-82` 直接被 FAILED 跳过
-- `DOUBAO_COOKIES_JSON` 环境变量只能存**一组** cookies，无法支持多账号轮换
+- 历史问题：豆包的环境变量 cookie 注入只能存**一组** cookies，无法支持
+  多账号轮换。
+  （历史记录：该环境变量在 Phase 3 cleanup (#1118 / Epic #1110) 中已移除，
+  豆包/DeepSeek 改走 vm_session 执行模式 (ADR-016)，cookies 仅从 AccountPool
+  + vm_side runner 加载，天然支持多账号轮换。）
 
 ### 1.2 设计理念 — 无需 Agent 实体
 
