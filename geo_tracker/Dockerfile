@@ -1,8 +1,8 @@
 FROM python:3.11-slim
 
-# Refs #963 cache-bust 2026-05-17 01:54Z: force rebuild to pick up updated
-# QG_PROXY_EXTRACT_URL secret (/get endpoint) from GitHub Actions env.
-# Empty-commit deploys hit layer cache and don't repush worker image.
+# Refs #963 cache-bust 2026-05-17 04:55Z: force fresh build after killing
+# zombie alembic / pid 679 (stale idle-in-tx llm_accounts holder) on the
+# worker, plus pick up updated QG_PROXY_EXTRACT_URL secret (/get).
 
 # 安装系统依赖（Playwright Chromium + Camoufox Firefox 共用）
 # Refs #963: ``tzdata`` is required by Firefox / glibc to resolve named
