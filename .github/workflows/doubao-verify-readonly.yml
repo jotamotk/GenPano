@@ -325,6 +325,180 @@ jobs:
           PYEND
 
           echo ""
+          echo "=== Submit-failed HTML inspection — Q-184971 #flow-end-msg-send state at submit fail ==="
+          # Refs #963: doubao retry on worker SHA d8a22482 saved
+          # /data/screenshots/query_184971_doubao_submit_failed_1778996414.html
+          # at 05:40:14 UTC. The retry log showed the code went straight
+          # from "通过 JS 注入受控 textarea" to "通过 Enter 键提交"
+          # (skipped both the configured submit_button selectors and the
+          # JS _find_submit_button_js fallback). Dump the actual button
+          # state + textarea + overlay markers so the fix can target the
+          # observed cause instead of a guess.
+          docker compose exec -T worker python3 - <<'PYEND'
+          import glob, os, re, html as htmllib
+          # Prefer Q-184971 specifically (the named smoking gun), then any
+          # recent submit_failed HTML.
+          preferred = sorted(
+              glob.glob('/data/screenshots/query_184971_doubao_submit_failed_*.html'),
+              key=os.path.getmtime, reverse=True,
+          )
+          files = preferred or sorted(
+              glob.glob('/data/screenshots/query_*_doubao_submit_failed_*.html'),
+              key=os.path.getmtime, reverse=True,
+          )
+          if not files:
+              print('(no doubao_submit_failed HTML files in /data/screenshots)')
+              raise SystemExit(0)
+          path = files[0]
+          print(f'FILE: {path}')
+          with open(path, 'r', encoding='utf-8', errors='replace') as f:
+              raw = f.read()
+          print(f'size: {len(raw)} bytes')
+
+          # 1. flow-end-msg-send button(s)
+          btn_re = re.compile(
+              r"<(?:button|div|span|a)[^>]*\bid=['\"]flow-end-msg-send['\"][^>]*>",
+              re.IGNORECASE,
+          )
+          btn_matches = btn_re.findall(raw)
+          print(f"--- #flow-end-msg-send opening tags: {len(btn_matches)} ---")
+          for i, m in enumerate(btn_matches[:5]):
+              print(f"MATCH {i}: {m[:1200]}")
+
+          # send-btn-wrapper / send-msg-btn enclosures
+          wrapper_re = re.compile(r"<[^>]+class=['\"][^'\"]*\bsend-btn-wrapper\b[^'\"]*['\"][^>]*>", re.IGNORECASE)
+          wraps = wrapper_re.findall(raw)
+          print(f"--- send-btn-wrapper opening tags: {len(wraps)} (sample) ---")
+          for i, m in enumerate(wraps[:3]):
+              print(f"WRAP {i}: {m[:600]}")
+          smb_re = re.compile(r"<[^>]+class=['\"][^'\"]*\bsend-msg-btn\b[^'\"]*['\"][^>]*>", re.IGNORECASE)
+          smb = smb_re.findall(raw)
+          print(f"--- send-msg-btn opening tags: {len(smb)} (sample) ---")
+          for i, m in enumerate(smb[:5]):
+              print(f"SMB {i}: {m[:600]}")
+
+          # 2. 2KB context around the FIRST flow-end-msg-send occurrence
+          for m in re.finditer(r"flow-end-msg-send", raw, re.IGNORECASE):
+              s = max(0, m.start() - 800)
+              e = min(len(raw), m.end() + 1200)
+              print("--- 2KB context around flow-end-msg-send ---")
+              print(raw[s:e])
+              print("--- END CONTEXT ---")
+              break
+
+          # 3. Disabled / aria-disabled / data-disabled near send-msg-btn classes
+          dis_re = re.compile(r"send-msg-btn[^\"']*-disabled-bg|send-msg-btn[^\"']*disabled", re.IGNORECASE)
+          dis_hits = dis_re.findall(raw)
+          print(f"--- send-msg-btn*-disabled* hits: {len(dis_hits)} (sample) ---")
+          for d in dis_hits[:10]:
+              print(f"  {d}")
+
+          # 4. Textarea state — is the user's prompt still inside?
+          ta_re = re.compile(r"<textarea[^>]*>([\s\S]{0,5000}?)</textarea>", re.IGNORECASE)
+          tas = ta_re.findall(raw)
+          print(f"--- textarea count: {len(tas)} (showing first 3) ---")
+          for i, body in enumerate(tas[:3]):
+              decoded = htmllib.unescape(body or "").strip()
+              print(f"TEXTAREA {i}: len={len(decoded)} content={decoded[:400]!r}")
+
+          # Also dump opening tag for context (semi-input-textarea / aria-hidden)
+          ta_open_re = re.compile(r"<textarea[^>]*>", re.IGNORECASE)
+          for i, m in enumerate(ta_open_re.findall(raw)[:5]):
+              print(f"TEXTAREA-TAG {i}: {m[:400]}")
+
+          # textarea value attr (controlled component case)
+          ta_attr_re = re.compile(r"<textarea[^>]*\bvalue=['\"]([^'\"]{0,5000})['\"][^>]*", re.IGNORECASE)
+          ta_attrs = ta_attr_re.findall(raw)
+          for i, v in enumerate(ta_attrs[:3]):
+              print(f"TEXTAREA-VALUE-ATTR {i}: len={len(v)} value={v[:400]!r}")
+
+          # 5. send-msg-bubble-bg presence (user bubble actually rendered?)
+          bub = re.findall(r"send-msg-bubble-bg", raw, re.IGNORECASE)
+          print(f"--- send-msg-bubble-bg occurrences: {len(bub)} ---")
+
+          # 6. CAPTCHA / overlay / error overlay markers
+          overlay_markers = (
+              "captcha", "verify-slider", "slider-captcha", "cf-challenge",
+              "验证码", "请稍候", "Cloudflare", "challenge", "行为验证",
+              "点击验证", "拖动验证", "该页面暂时不可用",
+              "semi-modal", "semi-overlay", "fixed inset-0",
+          )
+          for marker in overlay_markers:
+              cnt = raw.lower().count(marker.lower())
+              if cnt:
+                  print(f"OVERLAY-MARKER {marker!r}: {cnt}")
+
+          # 7. dialog / modal / login chrome
+          dlg = re.findall(r"role=['\"]dialog['\"]", raw, re.IGNORECASE)
+          print(f"--- role=\"dialog\" matches: {len(dlg)} ---")
+          for needle in ("login-btn-header", "login-dialog", "passport", "扫码登录", "手机号登录"):
+              c = raw.lower().count(needle.lower())
+              if c:
+                  print(f"LOGIN-MARKER {needle!r}: {c}")
+
+          # 8. <form> elements (rare for SPA, but check)
+          forms = re.findall(r"<form[^>]*>", raw, re.IGNORECASE)
+          print(f"--- <form> opening tags: {len(forms)} ---")
+          for i, fm in enumerate(forms[:3]):
+              print(f"FORM {i}: {fm[:300]}")
+
+          # 9. data-testid on/near send buttons
+          testids = re.findall(r"data-testid=['\"]([^'\"]+)['\"]", raw)
+          send_testids = [t for t in testids if "send" in t.lower() or "submit" in t.lower()]
+          print(f"--- send/submit data-testid: {len(send_testids)} (unique sample 10) ---")
+          for t in sorted(set(send_testids))[:10]:
+              print(f"  {t}")
+
+          # 10. Body text snippet — chat page or generic landing?
+          txt = re.sub(r"<script[\s\S]*?</script>", " ", raw, flags=re.IGNORECASE)
+          txt = re.sub(r"<style[\s\S]*?</style>", " ", txt, flags=re.IGNORECASE)
+          txt = re.sub(r"<[^>]+>", " ", txt)
+          txt = re.sub(r"\s+", " ", txt).strip()
+          print("--- visible text (first 600 chars) ---")
+          print(txt[:600])
+          PYEND
+
+          echo ""
+          echo "=== Submit-failed runtime snapshot (no_response counterpart for Q-184971) ==="
+          docker compose exec -T worker python3 - <<'PYEND'
+          import glob, json, os
+          preferred = sorted(
+              glob.glob('/data/screenshots/query_184971_doubao_no_response_*.json'),
+              key=os.path.getmtime, reverse=True,
+          )
+          files = preferred or sorted(
+              glob.glob('/data/screenshots/query_*_doubao_no_response_*.json'),
+              key=os.path.getmtime, reverse=True,
+          )
+          if not files:
+              print('(no doubao_no_response runtime snapshots)')
+              raise SystemExit(0)
+          path = files[0]
+          print(f'FILE: {path}')
+          with open(path) as f:
+              d = json.load(f)
+          page = d.get("page", {}) or {}
+          fp = page.get("fingerprint", {}) or {}
+          print("suffix          :", d.get("suffix"))
+          print("queryId         :", d.get("queryId"))
+          print("savedAt         :", d.get("savedAt"))
+          print("url             :", page.get("url"))
+          print("title           :", (page.get("title") or "")[:120])
+          print("readyState      :", page.get("readyState"))
+          print("doubaoAuthReason:", d.get("doubaoAuthStateReason"))
+          print("onChatPage      :", fp.get("onChatPage"))
+          print("userMessageBubbleCount:", fp.get("userMessageBubbleCount"))
+          print("--- inputSelectors ---")
+          for s in (page.get("inputSelectors") or []):
+              print(json.dumps(s, ensure_ascii=False))
+          print("--- responseSelectors ---")
+          for s in (page.get("responseSelectors") or []):
+              print(json.dumps(s, ensure_ascii=False))
+          print("--- bodyText (first 1200 chars) ---")
+          print((page.get("bodyText") or "")[:1200])
+          PYEND
+
+          echo ""
           echo "=== Doubao worker log tail (last 50 lines mentioning doubao) ==="
           docker compose logs --tail 500 worker 2>&1 | grep -iE "doubao|qg|timezone" | tail -50 || true
           REMOTE
