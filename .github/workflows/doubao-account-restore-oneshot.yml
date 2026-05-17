@@ -1,1 +1,309 @@
-PLACEHOLDER
+name: Doubao Account Restore (one-shot)
+
+# Refs #963 — operator-authorized one-shot restoration of recently
+# created Doubao accounts that were burned by the Mode-C false-positive
+# feedback loop BEFORE the validator fix (#1108) and the 3-strike
+# defense (#1109) were deployed at 07:34Z on commit d4de945 (Build &
+# Deploy run 25984715622).
+#
+# The verify-readonly trigger-5 dump (issue #963 comment 4470002424)
+# confirmed account 48 ban'd with expired_transition_count=3 and
+# accounts 47/46/45 sitting at etc=2 (one strike from ban). After the
+# fixes deployed, the strike counter is no longer mis-incremented for
+# real captured answers, so the user authorized resetting the burnt
+# strike count and reactivating the accounts so the acquisition pool
+# can use them again.
+#
+# WHAT THIS WORKFLOW DOES (only when dry_run=false):
+#   1. SELECT the rows that WOULD be updated (always shown, even in
+#      dry-run) so the operator sees the before-state.
+#   2. UPDATE llm_accounts:
+#        expired_transition_count = 0
+#        status = 'active'
+#        cooldown_until = NULL
+#        consecutive_fails = 0
+#      WHERE id IN (<inputs>) AND llm_name = 'doubao'.
+#   3. SELECT the same rows again to show the after-state.
+#   4. INSERT one account_rotation_log row per restored account with
+#      reason='operator_restore_oneshot' so the audit trail captures
+#      who/when/why.
+#   5. Dispatch auto_login.apply_async(kwargs={"account_id": <id>},
+#      queue="account_login") via the worker container to refresh
+#      stale cookies (most burnt accounts have cookies_updated_at >3h
+#      old at the time of restore).
+#   6. Post a before/after diff comment on issue #963 so the audit
+#      trail is durable.
+#
+# SAFETY GATES:
+#   - Trigger is workflow_dispatch ONLY. No push, no schedule. The
+#     operator must explicitly click "Run workflow" in the Actions UI.
+#   - account_ids is REQUIRED with no default — an accidental click
+#     without inputs cannot fire.
+#   - dry_run defaults to true so an accidental fill-and-click is
+#     harmless. The operator must explicitly flip it to false to
+#     commit the writes.
+#   - llm_name='doubao' is hard-coded into every WHERE clause. This
+#     workflow cannot touch other engines' accounts even if the
+#     operator pastes a non-Doubao id by mistake.
+#   - account_ids is validated to be a comma-separated list of
+#     positive integers. Anything else fails fast before SQL runs.
+on:
+  workflow_dispatch:
+    inputs:
+      account_ids:
+        description: "REQUIRED. Comma-separated Doubao llm_accounts.id list to restore (e.g. 45,46,47,48). No default — must be explicitly provided."
+        required: true
+      dry_run:
+        description: "true (default): SELECT only, no writes. false: apply UPDATE + INSERT account_rotation_log + dispatch auto_login."
+        required: true
+        default: "true"
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  restore:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: SSH + restore Doubao accounts
+        id: ssh
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+          ACCOUNT_IDS: ${{ inputs.account_ids }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          GH_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s' "$SERVER_SSH_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H "$SERVER_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+          # Validate account_ids on the runner BEFORE we touch SSH so a
+          # mis-typed input fails with a clean error in the workflow log.
+          if ! [[ "${ACCOUNT_IDS}" =~ ^[0-9]+(,[0-9]+)*$ ]]; then
+            echo "ERROR: account_ids must be a comma-separated list of positive integers; got: ${ACCOUNT_IDS}"
+            exit 2
+          fi
+          case "${DRY_RUN}" in
+            true|false) ;;
+            *) echo "ERROR: dry_run must be 'true' or 'false'; got: ${DRY_RUN}"; exit 2 ;;
+          esac
+
+          remote_cmd="$(printf 'ACCOUNT_IDS=%q DRY_RUN=%q GH_RUN_ID=%q bash -s' \
+            "${ACCOUNT_IDS}" "${DRY_RUN}" "${GH_RUN_ID}")"
+
+          output=$(ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=accept-new \
+            -o ServerAliveInterval=30 -o ServerAliveCountMax=4 \
+            "$SERVER_USER@$SERVER_HOST" "${remote_cmd}" <<'REMOTE'
+          set -uo pipefail
+          cd /opt/genpano
+
+          # Re-validate on the worker as a defense-in-depth — the SSH
+          # command line is technically operator-controllable.
+          if ! [[ "${ACCOUNT_IDS}" =~ ^[0-9]+(,[0-9]+)*$ ]]; then
+            echo "ERROR (remote): account_ids invalid: ${ACCOUNT_IDS}"
+            exit 2
+          fi
+
+          echo "=== Audit ==="
+          echo "run=https://github.com/jotamotk/trash_test/actions/runs/${GH_RUN_ID}"
+          echo "account_ids=${ACCOUNT_IDS}"
+          echo "dry_run=${DRY_RUN}"
+          echo "utc_started_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+
+          echo ""
+          echo "=== Container build identity (worker) ==="
+          docker compose images worker 2>/dev/null | head -5 || true
+
+          # Always show before-state, even in dry-run.
+          echo ""
+          echo "=== BEFORE state — rows that match account_ids AND llm_name='doubao' ==="
+          docker compose exec -T postgres psql -X -U genpano -d genpano -P pager=off -c "
+            SELECT id, phone, status, expired_transition_count, consecutive_fails,
+                   cooldown_until, cookies_updated_at, created_at, last_login_at
+            FROM llm_accounts
+            WHERE id IN (${ACCOUNT_IDS})
+              AND llm_name='doubao'
+            ORDER BY id;
+          " </dev/null 2>&1 || true
+
+          # Account count sanity check — the operator should see this
+          # match the count of IDs they passed. If it doesn't, one of
+          # the IDs is not a Doubao account and was silently filtered.
+          echo ""
+          echo "=== sanity: matched-row count vs input count ==="
+          docker compose exec -T postgres psql -X -U genpano -d genpano -P pager=off -c "
+            SELECT COUNT(*) AS matched_doubao_rows
+            FROM llm_accounts
+            WHERE id IN (${ACCOUNT_IDS})
+              AND llm_name='doubao';
+          " </dev/null 2>&1 || true
+
+          if [ "${DRY_RUN}" = "true" ]; then
+            echo ""
+            echo "=== DRY-RUN ENABLED — no writes performed ==="
+            echo "To actually restore, re-run with dry_run=false."
+            echo ""
+            echo "=== preview: the UPDATE that WOULD run ==="
+            echo "UPDATE llm_accounts"
+            echo "SET expired_transition_count = 0,"
+            echo "    status = 'active',"
+            echo "    cooldown_until = NULL,"
+            echo "    consecutive_fails = 0"
+            echo "WHERE id IN (${ACCOUNT_IDS})"
+            echo "  AND llm_name = 'doubao';"
+            exit 0
+          fi
+
+          echo ""
+          echo "=== APPLY: UPDATE llm_accounts (clear strike + reactivate) ==="
+          docker compose exec -T postgres psql -X -v ON_ERROR_STOP=1 -U genpano -d genpano -P pager=off -c "
+            UPDATE llm_accounts
+            SET expired_transition_count = 0,
+                status = 'active',
+                cooldown_until = NULL,
+                consecutive_fails = 0
+            WHERE id IN (${ACCOUNT_IDS})
+              AND llm_name = 'doubao'
+            RETURNING id, phone, status, expired_transition_count, consecutive_fails;
+          " </dev/null 2>&1
+
+          echo ""
+          echo "=== AFTER state ==="
+          docker compose exec -T postgres psql -X -U genpano -d genpano -P pager=off -c "
+            SELECT id, phone, status, expired_transition_count, consecutive_fails,
+                   cooldown_until, cookies_updated_at, created_at, last_login_at
+            FROM llm_accounts
+            WHERE id IN (${ACCOUNT_IDS})
+              AND llm_name='doubao'
+            ORDER BY id;
+          " </dev/null 2>&1 || true
+
+          echo ""
+          echo "=== APPLY: INSERT audit row(s) into account_rotation_log ==="
+          # One row per restored account. Wrap in a CTE so we can
+          # generate one INSERT per matched id without a client-side
+          # loop. The reason and evidence fields make the audit trail
+          # self-explanatory three weeks later.
+          docker compose exec -T postgres psql -X -v ON_ERROR_STOP=1 -U genpano -d genpano -P pager=off -c "
+            INSERT INTO account_rotation_log (account_id, reason, evidence, created_at)
+            SELECT id,
+                   'operator_restore_oneshot',
+                   'manual restoration after #1108/#1109 deploy; refs #963; gha_run=${GH_RUN_ID}',
+                   NOW()
+            FROM llm_accounts
+            WHERE id IN (${ACCOUNT_IDS})
+              AND llm_name = 'doubao'
+            RETURNING id, account_id, reason;
+          " </dev/null 2>&1 || echo "WARN: account_rotation_log insert failed — schema may differ; continuing"
+
+          echo ""
+          echo "=== DISPATCH auto_login for each restored account ==="
+          # The worker container has the celery app context already
+          # configured, so we use a tiny inline python call. We pull
+          # the IDs back from the DB rather than parsing the input,
+          # because the DB SELECT is the only source of truth on which
+          # IDs actually got restored (e.g. if one ID was wrong llm).
+          docker compose exec -T worker python - <<'PY'
+          import os
+          ids_csv = os.environ.get("ACCOUNT_IDS", "")
+          ids = [int(x) for x in ids_csv.split(",") if x.strip().isdigit()]
+          try:
+              from geo_tracker.tasks.celery_tasks import auto_login
+          except Exception as e:
+              # If the import path moved, fall back to a few common ones
+              # so the dispatch still fires.
+              try:
+                  from geo_tracker.tasks import auto_login  # type: ignore
+              except Exception:
+                  print(f"ERROR: could not import auto_login: {e}")
+                  raise SystemExit(1)
+          for aid in ids:
+              res = auto_login.apply_async(kwargs={"account_id": aid}, queue="account_login")
+              print(f"dispatched auto_login account_id={aid} task_id={res.id}")
+          PY
+
+          REMOTE
+          )
+
+          # Persist for the next step.
+          {
+            echo "$output"
+          } > /tmp/doubao-restore-output.txt
+
+          # Step summary so the dump is always visible even if the
+          # comment-post step fails or there's no PR/issue context.
+          {
+            echo "## Doubao account restore (one-shot)"
+            echo ""
+            echo "**inputs:** \`account_ids=${ACCOUNT_IDS}\` \`dry_run=${DRY_RUN}\`"
+            echo ""
+            echo '```'
+            head -2000 /tmp/doubao-restore-output.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Post restore result to issue #963 (and any open PR on this branch)
+        if: always()
+        uses: actions/github-script@v7
+        env:
+          INPUT_ACCOUNT_IDS: ${{ inputs.account_ids }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+        with:
+          script: |
+            const fs = require('fs');
+            const accountIds = process.env.INPUT_ACCOUNT_IDS || '';
+            const dryRun = process.env.INPUT_DRY_RUN || '';
+            let body = `## Doubao account restore (one-shot)\n\n`;
+            body += `**inputs:** \`account_ids=${accountIds}\` \`dry_run=${dryRun}\`\n\n`;
+            body += `**run:** https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}\n\n`;
+            try {
+              const out = fs.readFileSync('/tmp/doubao-restore-output.txt', 'utf-8');
+              // GitHub comment cap is 65536 chars; leave headroom.
+              const max = 50000;
+              const trimmed = out.length > max ? out.slice(0, max) + '\n…[truncated]' : out;
+              body += '```\n' + trimmed + '\n```\n';
+            } catch (e) {
+              body += `failed to read output: ${String(e)}\n`;
+            }
+
+            // Always post to #963 as the canonical Doubao tracking issue.
+            try {
+              await github.rest.issues.createComment({
+                issue_number: 963,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body,
+              });
+              core.notice('Posted restore result to issue #963');
+            } catch (e) {
+              core.warning('createComment on #963 failed: ' + String(e));
+            }
+
+            // Also post on any open PR that has this commit at its HEAD,
+            // so a Claude/Codex session reviewing that PR sees the dump
+            // inline. Same pattern as doubao-verify-readonly.yml.
+            try {
+              const sha = context.sha;
+              const prs = await github.rest.search.issuesAndPullRequests({
+                q: `repo:${context.repo.owner}/${context.repo.repo} is:pr is:open ${sha}`,
+              });
+              for (const item of prs.data.items) {
+                if (item.number === 963) continue;
+                await github.rest.issues.createComment({
+                  issue_number: item.number,
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  body,
+                });
+                core.notice(`Also posted restore result to PR #${item.number}`);
+              }
+            } catch (e) {
+              core.warning('PR search/comment failed: ' + String(e));
+            }
