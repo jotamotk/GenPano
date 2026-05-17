@@ -1,0 +1,168 @@
+name: Topics #1029 Readback
+
+# Investigation-only read-only DB readback for issue #1029.
+# Purpose: capture the actual per-topic state of BestCoffer topics so the
+# user-facing-list vs admin-count gap (4 of 13) has hard evidence, instead
+# of code-inference hypotheses (see reverts in #1065).
+#
+# This workflow only runs SELECTs inside a READ ONLY transaction. No writes.
+#
+# Poll iteration marker (forces fresh push): 2026-05-17T00:00:00Z iter=5
+# Iter5: exhaustive historical data grep across all related tables.
+# User claims topics 162-170 had a "complete run" historically — verify by
+# checking queries, llm_responses, response_analyses, analyzer_runs,
+# brand_mentions, archive tables, and topic creation timeline. Output is
+# minimal aggregate counts only (no row dumps) to stay well under the
+# GitHub 64KB comment limit and avoid truncating other diagnostic sections.
+
+on:
+  workflow_dispatch:
+    inputs:
+      brand_id:
+        description: "BestCoffer canonical brand id"
+        required: true
+        default: "24"
+  push:
+    branches:
+      - claude/investigate-issue-1029-readback-Ny8TZ
+    paths:
+      - '.github/workflows/topics-1029-readback.yml'
+
+concurrency:
+  group: topics-1029-readback
+  cancel-in-progress: false
+
+jobs:
+  readback:
+    name: Capture per-topic readback for BestCoffer
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    env:
+      BRAND_ID: ${{ github.event.inputs.brand_id || '24' }}
+      SERVER_HOST: ${{ secrets.SERVER_HOST }}
+      SERVER_USER: ${{ secrets.SERVER_USER }}
+      SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+
+    steps:
+      - name: Validate brand_id
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${BRAND_ID}" =~ ^[0-9]+$ ]] || { echo "brand_id must be a positive integer, got '${BRAND_ID}'"; exit 1; }
+          echo "brand_id=${BRAND_ID}"
+
+      - name: Set up SSH
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "${SERVER_SSH_KEY}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H "${SERVER_HOST}" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Run readback SQL on live test environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          ssh \
+            -i ~/.ssh/id_rsa \
+            -o StrictHostKeyChecking=accept-new \
+            "${SERVER_USER}@${SERVER_HOST}" \
+            "BRAND_ID='${BRAND_ID}' bash -s" <<'REMOTE' | tee /tmp/topics_1029_readback.txt
+          # NOTE: deliberately not using 'set -euo pipefail' here — earlier iter4
+          # aborted at the first '| head -60' pipe (SIGPIPE -> pipefail kill).
+          # Each step uses '|| true' instead so a single failure doesn't truncate
+          # the diagnostic.
+          set +e
+          cd /opt/genpano
+
+          echo "=== Captured at ==="
+          date -u +"%Y-%m-%dT%H:%M:%SZ"
+
+          echo "=== ALL SQL via single -f file (iter5 — exhaustive historical grep) ==="
+          # Iter5: user claims topics 162-170 had a "complete run" historically.
+          # Iter1-4 only checked the current pipeline state. Now grep all
+          # related tables for any historical traces: queries, llm_responses,
+          # response_analyses, analyzer_runs, brand_mentions, plus archive/
+          # snapshot tables in pg_catalog, plus topic creation timeline, plus
+          # any old prompts (in case prompts were regenerated and old IDs were
+          # replaced). Aggregate counts only — no row dumps.
+          # No explicit BEGIN/ROLLBACK so each statement is its own
+          # auto-commit-style txn; ON_ERROR_STOP=off lets psql keep going
+          # after a column-missing or table-missing error.
+          # Read-only by intent — only SELECTs.
+          printf '%s\n' "\\pset pager off" \
+            "\\set ON_ERROR_STOP off" \
+            "\\echo '=== 1. queries by prompt_id 252..291 (current prompts) ==='" \
+            "SELECT 'queries' AS src, target_llm, status, COUNT(*) AS n FROM queries WHERE prompt_id IN (252,253,254,255,256,257,258,259,260,261,262,263,264,265,266,267,268,269,270,271,272,273,274,275,276,277,278,279,280,281,282,283,288,289,290,291) GROUP BY target_llm, status ORDER BY target_llm, status;" \
+            "\\echo '=== 2. queries via topic_id 162..170 (catches prompt regen) ==='" \
+            "SELECT 'queries_via_topic' AS src, p.topic_id, q.target_llm, q.status, COUNT(*) AS n FROM queries q JOIN prompts p ON p.id = q.prompt_id WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170) GROUP BY p.topic_id, q.target_llm, q.status ORDER BY p.topic_id, q.target_llm, q.status;" \
+            "\\echo '=== 3. llm_responses for topics 162..170 ==='" \
+            "SELECT 'llm_responses' AS src, q.target_llm, r.analysis_status, COUNT(*) AS n FROM queries q JOIN llm_responses r ON r.query_id = q.id JOIN prompts p ON p.id = q.prompt_id WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170) GROUP BY q.target_llm, r.analysis_status ORDER BY q.target_llm, r.analysis_status;" \
+            "\\echo '=== 4. response_analyses for topics 162..170 ==='" \
+            "SELECT 'response_analyses' AS src, COUNT(*) AS n FROM response_analyses ra JOIN llm_responses r ON r.id = ra.response_id JOIN queries q ON q.id = r.query_id JOIN prompts p ON p.id = q.prompt_id WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170);" \
+            "\\echo '=== 5. analyzer_runs for topics 162..170 ==='" \
+            "SELECT 'analyzer_runs' AS src, COUNT(*) AS n FROM analyzer_runs ar JOIN llm_responses r ON r.id = ar.response_id JOIN queries q ON q.id = r.query_id JOIN prompts p ON p.id = q.prompt_id WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170);" \
+            "\\echo '=== 6. brand_mentions for topics 162..170 ==='" \
+            "SELECT 'brand_mentions' AS src, COUNT(*) AS n FROM brand_mentions bm JOIN llm_responses r ON r.id = bm.response_id JOIN queries q ON q.id = r.query_id JOIN prompts p ON p.id = q.prompt_id WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170);" \
+            "\\echo '=== 7. archive / snapshot / history / backup tables ==='" \
+            "SELECT 'archive_tables' AS src, schemaname, tablename FROM pg_tables WHERE tablename ILIKE '%archive%' OR tablename ILIKE '%snapshot%' OR tablename ILIKE '%history%' OR tablename ILIKE '%backup%' ORDER BY schemaname, tablename;" \
+            "\\echo '=== 8. topic creation timeline (153,154,158,159 visible vs 162..170 stuck) ==='" \
+            "SELECT id, LEFT(text, 80) AS text_excerpt, status, generated_by, created_at, updated_at FROM topics WHERE id IN (153,154,158,159, 162,163,164,165,166,167,168,169,170) ORDER BY created_at;" \
+            "\\echo '=== 9. all responses last 7d by topic for brand 24 ==='" \
+            "SELECT 'all_brand_responses_7d_by_topic' AS src, p.topic_id, COUNT(*) AS n FROM llm_responses r JOIN queries q ON q.id = r.query_id JOIN prompts p ON p.id = q.prompt_id JOIN topics t ON t.id = p.topic_id WHERE t.brand_id = 24 AND r.collected_at > NOW() - INTERVAL '7 days' GROUP BY p.topic_id ORDER BY p.topic_id;" \
+            "\\echo '=== 10. ALL prompts for stuck topics (counts + earliest/latest) ==='" \
+            "SELECT 'old_prompts_for_stuck_topics' AS src, p.topic_id, COUNT(p.id) AS prompt_count, MIN(p.id) AS min_prompt_id, MAX(p.id) AS max_prompt_id, MIN(p.created_at) AS earliest, MAX(p.created_at) AS latest FROM prompts p WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170) GROUP BY p.topic_id ORDER BY p.topic_id;" \
+            "\\echo '=== 11. fact-package / cached package tables (information_schema) ==='" \
+            "SELECT 'fact_package_tables' AS src, table_schema, table_name FROM information_schema.tables WHERE table_name ILIKE '%fact_package%' OR table_name ILIKE '%analyzer_fact%' OR table_name ILIKE '%cache%' ORDER BY table_schema, table_name;" \
+            "\\echo '=== 12. all queries ever for prompt 252..291 — id ranges to spot deleted rows ==='" \
+            "SELECT 'queries_id_range' AS src, p.topic_id, COUNT(q.id) AS query_count, MIN(q.id) AS min_qid, MAX(q.id) AS max_qid, MIN(q.created_at) AS earliest, MAX(q.created_at) AS latest FROM queries q JOIN prompts p ON p.id = q.prompt_id WHERE p.topic_id IN (162,163,164,165,166,167,168,169,170) GROUP BY p.topic_id ORDER BY p.topic_id;" \
+            > /tmp/diag_1029.sql
+          docker cp /tmp/diag_1029.sql genpano-postgres-1:/tmp/diag_1029.sql 2>&1 || true
+          docker compose exec -T postgres psql -U genpano -d genpano -X -f /tmp/diag_1029.sql 2>&1 || true
+
+          echo "=== Readback complete ==="
+          REMOTE
+
+      - name: Upload readback log as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: topics-1029-readback
+          path: /tmp/topics_1029_readback.txt
+          if-no-files-found: warn
+
+      - name: Post readback to PR #1077 as comment
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: 1077
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -s /tmp/topics_1029_readback.txt ]; then
+            echo "readback file missing or empty; skipping PR comment"
+            exit 0
+          fi
+          {
+            echo "## Historical data grep readback (issue #1029, iter 5)"
+            echo ""
+            echo "**Run**: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo "**Branch**: \`${{ github.ref_name }}\`"
+            echo ""
+            echo "<details><summary>Raw SQL + worker log output (click)</summary>"
+            echo ""
+            echo '```'
+            # Strip ANSI; cap to ~55KB to stay under GitHub's 64KB comment limit.
+            sed 's/\x1b\[[0-9;]*m//g' /tmp/topics_1029_readback.txt | head -c 55000
+            echo ''
+            echo '```'
+            echo ""
+            echo "</details>"
+          } > /tmp/readback-comment.md
+          gh pr comment "$PR_NUMBER" --repo "$REPO" --body-file /tmp/readback-comment.md
