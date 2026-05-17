@@ -1,0 +1,204 @@
+name: VM Tailscale PoC (Phase 0 M1 — temporary runner-as-VM)
+
+# Spins up a GitHub Actions runner with Xfce + Chrome + x11vnc + noVNC
+# joined to the user's Tailscale tailnet. Lets the operator open the
+# runner's desktop from any phone/laptop (Tailscale required), manually
+# log into doubao.com via QR code, and verify the VM-per-account
+# architecture works end-to-end before committing to real cloud VMs.
+#
+# Limitations vs production Aliyun ECS:
+#   - Runner is EPHEMERAL (4h default, max 6h GitHub limit). No persistent
+#     profile across reruns — purely a smoke test.
+#   - Datacenter IP (GitHub Actions runner), not Beijing residential.
+#     Doubao MAY trip risk-control more easily; acceptable for one-off
+#     login smoke test, not for sustained ramp.
+#   - Single concurrent VM per workflow run.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tailscale_auth_key:
+        description: 'Tailscale auth-key (tskey-auth-...). Defaults to the one provided in chat for PoC. Rotate after test.'
+        required: true
+        default: 'tskey-auth-kw7G6PNxPQ11CNTRL-oC8cRQwqnHh9bk8p9WbrHhcDrk4fZYkK'
+        type: string
+      keep_alive_minutes:
+        description: 'How long to keep VM alive (default 240 = 4h, max 350)'
+        required: false
+        default: '240'
+        type: string
+
+jobs:
+  vm-poc:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+    permissions:
+      contents: read
+
+    steps:
+      - name: Generate VNC password
+        id: vnc
+        run: |
+          set -euo pipefail
+          VNC_PW=$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 8 || true)
+          # Mask so it doesn't leak into raw logs
+          echo "::add-mask::$VNC_PW"
+          echo "vnc_pw=$VNC_PW" >> "$GITHUB_OUTPUT"
+
+      - name: Install Xfce + Chrome + VNC stack
+        run: |
+          set -euxo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            xfce4-session xfce4-panel xfwm4 xfce4-terminal \
+            x11vnc novnc websockify \
+            xvfb xdotool dbus-x11 \
+            curl ca-certificates gnupg apt-transport-https \
+            fonts-wqy-microhei fonts-noto-cjk
+          # Google Chrome stable
+          sudo install -d -m 0755 /etc/apt/keyrings
+          curl -fsSL https://dl.google.com/linux/linux_signing_key.pub \
+            | sudo gpg --dearmor -o /etc/apt/keyrings/google-chrome.gpg
+          echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/google-chrome.gpg] https://dl.google.com/linux/chrome/deb/ stable main" \
+            | sudo tee /etc/apt/sources.list.d/google-chrome.list
+          sudo apt-get update -qq
+          sudo apt-get install -y google-chrome-stable
+          google-chrome --version
+
+      - name: Setup Tailscale (kernel mode)
+        uses: tailscale/github-action@v2
+        with:
+          authkey: ${{ inputs.tailscale_auth_key }}
+          hostname: vm-doubao-poc-${{ github.run_id }}
+          version: latest
+          use-cache: 'true'
+
+      - name: Show Tailscale status
+        run: |
+          set -euxo pipefail
+          tailscale status || true
+          tailscale ip --4 || true
+          tailscale ip --6 || true
+
+      - name: Start Xvfb on :0
+        run: |
+          set -euxo pipefail
+          Xvfb :0 -screen 0 1920x1080x24 -nolisten tcp &
+          sleep 2
+          # sanity: xdpyinfo if available
+          DISPLAY=:0 xdpyinfo | head -2 || true
+
+      - name: Start Xfce session
+        run: |
+          set -euxo pipefail
+          DISPLAY=:0 dbus-launch --exit-with-session startxfce4 \
+            >/tmp/xfce.log 2>&1 &
+          sleep 5
+
+      - name: Start Chrome (doubao profile)
+        run: |
+          set -euxo pipefail
+          mkdir -p $HOME/profile-doubao
+          DISPLAY=:0 google-chrome \
+            --user-data-dir=$HOME/profile-doubao \
+            --remote-debugging-port=9222 \
+            --remote-debugging-address=127.0.0.1 \
+            --no-sandbox --no-first-run --no-default-browser-check \
+            --disable-blink-features=AutomationControlled \
+            --disable-dev-shm-usage \
+            --window-size=1920,1080 \
+            'https://www.doubao.com/chat' \
+            >/tmp/chrome-doubao.log 2>&1 &
+          sleep 5
+          # sanity: hit CDP
+          curl -sf http://127.0.0.1:9222/json/version | head -5 || true
+
+      - name: Start x11vnc + websockify (noVNC)
+        env:
+          VNC_PW: ${{ steps.vnc.outputs.vnc_pw }}
+        run: |
+          set -euxo pipefail
+          echo -n "$VNC_PW" > /tmp/.vncpw.plain
+          x11vnc -storepasswd "$VNC_PW" /tmp/.vncpasswd
+          # x11vnc bound to all interfaces (so Tailscale peers can reach it)
+          # Note: we rely on Tailscale ACL, not local firewall, for access control
+          x11vnc -display :0 -forever -shared -rfbauth /tmp/.vncpasswd \
+            >/tmp/x11vnc.log 2>&1 &
+          sleep 2
+          # websockify on 6080 wrapping localhost:5900
+          websockify --web /usr/share/novnc 6080 localhost:5900 \
+            >/tmp/websockify.log 2>&1 &
+          sleep 2
+
+      - name: Print connection info to job summary
+        env:
+          VNC_PW: ${{ steps.vnc.outputs.vnc_pw }}
+        run: |
+          set -euxo pipefail
+          TAILSCALE_IP=$(tailscale ip --4 | head -1)
+          TAILSCALE_HOST="vm-doubao-poc-${{ github.run_id }}"
+          # Stash for ops to copy
+          {
+            echo "## 🚀 VM Test Environment Ready"
+            echo ""
+            echo "### Connection (open from your phone with Tailscale running)"
+            echo ""
+            echo "**Option A — by Tailscale hostname** (recommended, magic-DNS):"
+            echo "\`\`\`"
+            echo "http://${TAILSCALE_HOST}:6080/vnc.html"
+            echo "\`\`\`"
+            echo ""
+            echo "**Option B — by Tailscale IP** (if magic-DNS not enabled):"
+            echo "\`\`\`"
+            echo "http://${TAILSCALE_IP}:6080/vnc.html"
+            echo "\`\`\`"
+            echo ""
+            echo "### VNC password"
+            echo ""
+            echo "\`${VNC_PW}\`"
+            echo ""
+            echo "### What to do next (in noVNC browser session)"
+            echo "1. Click **Connect** in the noVNC page; enter the VNC password above"
+            echo "2. You should see the Xfce desktop with Chrome already on https://www.doubao.com/chat"
+            echo "3. Click **手机号登录** or **扫码登录** — use your phone's 豆包/抖音 APP to scan QR (recommended)"
+            echo "4. After login lands on chat UI, send a test prompt (e.g. \"推荐一个国产手机品牌\") to verify"
+            echo "5. If success: VM-per-account architecture is end-to-end validated — leave a comment on Epic #1110"
+            echo ""
+            echo "### Auto-shutdown"
+            echo "This runner will exit in ${{ inputs.keep_alive_minutes }} minutes."
+            echo "If you finish earlier, just close the noVNC tab — the runner times out by itself."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo ""
+          echo "=================================================="
+          echo "noVNC: http://${TAILSCALE_HOST}:6080/vnc.html"
+          echo "       (or  http://${TAILSCALE_IP}:6080/vnc.html )"
+          echo "VNC password: $VNC_PW"
+          echo "=================================================="
+
+      - name: Keep runner alive for operator session
+        run: |
+          set -euxo pipefail
+          MINS="${{ inputs.keep_alive_minutes }}"
+          # Clamp to safety bound (GitHub runner max 360 min, leave 10 min headroom for cleanup)
+          if [ "$MINS" -gt 350 ]; then MINS=350; fi
+          echo "Sleeping for $MINS minutes; runner will exit on timeout."
+          # Sleep in chunks so we can see "alive" heartbeat in logs
+          for ((i=1; i<=MINS; i++)); do
+            sleep 60
+            if [ $((i % 5)) -eq 0 ]; then
+              echo "[$i / $MINS min] alive; tailscale status:"
+              tailscale status --self=false | head -3 || true
+            fi
+          done
+
+      - name: Cleanup
+        if: always()
+        run: |
+          # Tailscale logout so the ephemeral node disappears from your tailnet
+          tailscale logout || true
+          pkill -f x11vnc || true
+          pkill -f websockify || true
+          pkill -f google-chrome || true
+          pkill -f startxfce4 || true
+          pkill -f Xvfb || true
