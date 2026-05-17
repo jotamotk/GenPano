@@ -8901,6 +8901,14 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                     @click="retryAttempt(attemptDrawer)"
                     x-text="attemptDrawer && isAttemptRetrying(attemptDrawer.queryDbId) ? '等待刷新' : '手动重试'"></button>
           </template>
+          <!-- Refs Epic #1110 / Issue #1144: parallel "Retry via VM" path -->
+          <template x-if="attemptDrawer.status==='failed' || attemptDrawer.status==='waiting_manual'">
+            <button data-testid="attempt-retry-via-vm-btn"
+                    class="h-9 px-4 rounded-btn border border-accent/40 text-accent text-[13px] font-semibold bg-white hover:bg-accent/5 disabled:opacity-60 disabled:cursor-wait"
+                    :disabled="attemptDrawer && isAttemptRetryingViaVm(attemptDrawer.queryDbId)"
+                    @click="retryAttemptViaVm(attemptDrawer)"
+                    x-text="attemptDrawer && isAttemptRetryingViaVm(attemptDrawer.queryDbId) ? '执行中…' : 'Retry via VM'"></button>
+          </template>
           <template x-if="attemptDrawer.status==='failed' || attemptDrawer.status==='waiting_manual'">
             <button class="h-9 px-4 rounded-btn border border-warning/30 text-warning text-[13px] font-medium bg-white hover:bg-warning/5">送 DLQ</button>
           </template>
@@ -14405,6 +14413,47 @@ function adminApp() {
       } catch (e) {
         this.stopRetryStatusWatch(queryDbId);
         this.toast('重试失败: ' + (e.message || e));
+      }
+    },
+
+    // Refs Epic #1110 / Issue #1144: quick "Retry via VM" path. Parallel
+    // to retryAttempt() — bypasses cookie inject + celery dispatch and
+    // executes synchronously against the doubao-01 VM CDP endpoint.
+    _vmRetryInflight: {},
+    isAttemptRetryingViaVm(queryDbId) {
+      return !!this._vmRetryInflight[Number(queryDbId)];
+    },
+    async retryAttemptViaVm(att) {
+      const queryDbId = Number(att && att.queryDbId);
+      if (!Number.isFinite(queryDbId) || queryDbId <= 0) {
+        this.toast('Retry via VM 失败: 缺少 query id');
+        return;
+      }
+      this._vmRetryInflight[queryDbId] = true;
+      try {
+        const res = await fetch(API_BASE + '/queries/' + queryDbId + '/retry_via_vm', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reason: 'manual retry via VM from admin' }),
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          const errCode = (body && body.error) || ('HTTP ' + res.status);
+          throw new Error(errCode);
+        }
+        const chars = Number(body.raw_text_chars || 0);
+        const n = Number(body.attempt_n || 0);
+        this.toast('Retry via VM 成功 · query #' + queryDbId + ' · rawText ' + chars + ' chars · attempt #' + n);
+        try {
+          await this.refreshAttemptView(queryDbId);
+        } catch (_) {
+          // refreshAttemptView surfaces its own failures.
+        }
+      } catch (e) {
+        this.toast('Retry via VM 失败: ' + (e.message || e));
+      } finally {
+        delete this._vmRetryInflight[queryDbId];
       }
     },
 

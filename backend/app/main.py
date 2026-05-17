@@ -227,6 +227,17 @@ from app.api.queries import router as _queries_router  # noqa: E402
 app.include_router(_queries_router, prefix="/api")
 app.include_router(_queries_router, prefix="/admin/api")
 
+# Refs Epic #1110 / Issue #1144: quick "Retry via VM" admin endpoint.
+# Parallel to (not replacing) the existing /api/queries/{id}/retry
+# cookie-inject path. Both endpoints coexist. The new endpoint lives in
+# a dedicated module to keep the existing retry handler untouched
+# (Issue #1144 Forbidden Scope) and to keep Playwright/CDP-touching code
+# off the import path of the read-only stats router.
+from app.api.queries.retry_via_vm import router as _retry_via_vm_router  # noqa: E402
+
+app.include_router(_retry_via_vm_router, prefix="/api")
+app.include_router(_retry_via_vm_router, prefix="/admin/api")
+
 # Analyzer routes (Phase 9 slice 9c). admin_console served
 # /api/analyzer/* without auth; FastAPI port adds Depends(current_admin).
 from app.api.analyzer import router as _analyzer_router  # noqa: E402
