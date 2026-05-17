@@ -23,6 +23,7 @@
 | [ADR-013](./013-alerts-scope-shared.md) | Alerts scope 字段共表不同视图 | Accepted | 2026-05-04 |
 | [ADR-014](./014-audit-decorator.md) | Audit Decorator 统一注入 | Accepted | 2026-05-04 |
 | [ADR-015](./015-cost-events-budget-scope.md) | cost_events scope 4 分独立预算 | Accepted | 2026-05-04 |
+| [ADR-016](./016-vm-per-account-ramp.md) | VM-per-Account 灰度 ramp (Phase 2) | Proposed | 2026-05-17 |
 
 ## 写作约定
 
