@@ -179,10 +179,15 @@ async def existing_llm_responses_table(db_session: AsyncSession) -> None:
     Mirrors the production schema's subset we touch:
     raw_text + response_html + screenshot_path + response_time_ms +
     collected_at + query_id.
+
+    Drop first because conftest.Base.metadata.create_all may have
+    pre-created an llm_responses placeholder (via some other table's FK
+    backref reflection) without the columns we need. Idempotent.
     """
+    await db_session.execute(sa_text("DROP TABLE IF EXISTS llm_responses"))
     await db_session.execute(
         sa_text(
-            "CREATE TABLE IF NOT EXISTS llm_responses ("
+            "CREATE TABLE llm_responses ("
             "id INTEGER PRIMARY KEY AUTOINCREMENT, "
             "query_id INTEGER UNIQUE, "
             "raw_text TEXT, "
