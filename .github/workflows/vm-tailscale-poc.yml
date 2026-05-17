@@ -17,10 +17,6 @@ name: VM Tailscale PoC (Phase 0 M1 — temporary runner-as-VM)
 on:
   workflow_dispatch:
     inputs:
-      tailscale_auth_key:
-        description: 'Tailscale auth-key (tskey-auth-...). Paste at dispatch time (NOT stored). Generate at https://login.tailscale.com/admin/settings/keys'
-        required: true
-        type: string
       keep_alive_minutes:
         description: 'How long to keep VM alive (default 240 = 4h, max 350)'
         required: false
@@ -59,7 +55,7 @@ jobs:
       - name: Setup Tailscale (kernel mode)
         uses: tailscale/github-action@v2
         with:
-          authkey: ${{ inputs.tailscale_auth_key }}
+          authkey: ${{ secrets.TAILSCALE_AUTH_KEY }}
           hostname: vm-doubao-poc-${{ github.run_id }}
           version: latest
           use-cache: 'true'
