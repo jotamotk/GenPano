@@ -101,6 +101,14 @@ case "$ACTION" in
         exit 1
       fi
     done
+    # docker compose build parses the full compose file (including
+    # environment: VAR:?required) so .env must exist BEFORE we build, not
+    # just before 'up'. Write it from secrets here too.
+    umask 0177
+    {
+      printf 'VNC_PASSWORD_01=%s\n' "${VNC_PASSWORD_01:?must set VNC_PASSWORD_01}"
+      printf 'VNC_PASSWORD_02=%s\n' "${VNC_PASSWORD_02:?must set VNC_PASSWORD_02}"
+    } > .env.tmp && mv .env.tmp .env
     # build image
     dc build
     echo "=== bootstrap complete ==="
