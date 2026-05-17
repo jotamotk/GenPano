@@ -40,6 +40,8 @@ class AccountQuotaSettlement:
         pool: AccountPool | None,
         *,
         reason: str | None,
+        query_id: int | None = None,
+        response_text: str | None = None,
     ) -> bool:
         if not self.reserved_account_id or self.settled:
             return False
@@ -48,9 +50,20 @@ class AccountQuotaSettlement:
 
         if _should_report_account_failure(reason):
             if pool is not None:
+                # Refs #963 Codex P1 on PR #1109: the strike-skip guard
+                # in :meth:`AccountPool.report_failure` is consulted at
+                # the failure decision moment — BEFORE ``db.add(response)``
+                # has inserted the ``LLMResponse`` row. Forward
+                # ``response_text`` (the in-memory captured answer) so
+                # the helper can detect a first-time Mode-C false-
+                # positive even when no orphan row exists yet. The DB
+                # lookup remains as a fallback for orphan-row cases
+                # (e.g. Q-184971's row 668 from a prior successful attempt).
                 await pool.report_failure(
                     self.reserved_account_id,
                     reason=reason or "unknown",
+                    query_id=query_id,
+                    response_text=response_text,
                 )
             return False
 
