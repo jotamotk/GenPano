@@ -73,6 +73,113 @@ jobs:
           docker compose images worker 2>/dev/null | head -5 || true
 
           echo ""
+          echo "=== [TRIGGER-5 SNAPSHOT] final state per query (185614,185617,185620,185623,185626) ==="
+          # Refs #963 + GH Actions run 25988219057 (trigger at ~10:18Z on
+          # claude/verify-doubao via doubao-trigger-5-verify.yml).
+          # AGENTS.md Evidence-First step 1: capture the broken-surface
+          # output. The previous monitor loop did not log final status.
+          # Pull queries.status + retry_reason + retry_count + account_id
+          # + per-row llm_responses count + max raw_text length so we can
+          # state whether ANY of the 5 reached done with captured response
+          # (the business success gate for #1106/#1107/#1108/#1109/#1128).
+          docker compose exec -T postgres psql -X -U genpano -d genpano -P pager=off -c "
+            SELECT q.id,
+                   q.status,
+                   q.retry_reason,
+                   q.retry_count,
+                   q.account_id,
+                   q.queued_at,
+                   q.finished_at,
+                   EXTRACT(EPOCH FROM (NOW() - q.queued_at))::int AS sec_since_queue,
+                   (SELECT COUNT(*) FROM llm_responses r WHERE r.query_id=q.id) AS resp_count,
+                   (SELECT MAX(CHAR_LENGTH(r.raw_text)) FROM llm_responses r WHERE r.query_id=q.id) AS max_raw_text_len,
+                   (SELECT MAX(CHAR_LENGTH(r.response_html)) FROM llm_responses r WHERE r.query_id=q.id) AS max_resp_html_len
+            FROM queries q
+            WHERE q.id IN (185614,185617,185620,185623,185626)
+            ORDER BY q.id;
+          " </dev/null 2>&1 || true
+
+          echo ""
+          echo "=== [TRIGGER-5 ACCOUNTS] etc/status for accounts that handled the 5 ==="
+          # Account-level evidence: print the etc + status + cookies_updated_at
+          # of every distinct account_id referenced by the 5 queries, plus the
+          # baseline 45/46/47/48 set (restored at 09:24Z to etc=0). This lets
+          # the report compute "etc delta vs baseline 1".
+          docker compose exec -T postgres psql -X -U genpano -d genpano -P pager=off -c "
+            SELECT id, phone_number, status,
+                   expired_transition_count, consecutive_fails,
+                   query_count_today, daily_limit,
+                   cookies_updated_at, last_used_at
+            FROM llm_accounts
+            WHERE llm_name='doubao'
+              AND (id IN (45,46,47,48)
+                   OR id IN (
+                     SELECT DISTINCT account_id FROM queries
+                     WHERE id IN (185614,185617,185620,185623,185626)
+                       AND account_id IS NOT NULL
+                   ))
+            ORDER BY id;
+          " </dev/null 2>&1 || true
+
+          echo ""
+          echo "=== [TRIGGER-5 RAW PREVIEW] llm_responses head per query (if any captured) ==="
+          # If ANY of the 5 produced an llm_responses row, dump first 300
+          # chars of raw_text per response — direct proof the fixes worked.
+          docker compose exec -T postgres psql -X -U genpano -d genpano -P pager=off -c "
+            SELECT q.id AS query_id,
+                   q.status,
+                   q.retry_reason,
+                   CHAR_LENGTH(r.raw_text) AS raw_text_len,
+                   SUBSTRING(r.raw_text, 1, 300) AS raw_text_head
+            FROM queries q
+            JOIN llm_responses r ON r.query_id = q.id
+            WHERE q.id IN (185614,185617,185620,185623,185626)
+            ORDER BY q.id;
+          " </dev/null 2>&1 || true
+
+          echo ""
+          echo "=== [TRIGGER-5 LOG] worker log slice per query_id (tail 8000) ==="
+          # Per-ID worker log slice. Use a broad regex so we catch
+          # 'query_<id>', '<id>:', or '|<id>|' line-formats that the celery
+          # task uses to tag log lines.
+          for qid in 185614 185617 185620 185623 185626; do
+            echo "--- worker log slice for query_id=${qid} ---"
+            docker compose logs --tail 8000 worker 2>&1 \
+              | grep -E "query_${qid}\b|\b${qid}\b" \
+              | tail -80 || true
+            echo ""
+          done
+
+          echo ""
+          echo "=== [TRIGGER-5 #1128 MARKERS] global worker log grep for PR #1128 recovery helper ==="
+          # PR #1128 deployed at ~10:14Z extended page.goto recovery to
+          # auth-check + prompt-fill failure points. The canonical log
+          # markers from the PR are:
+          #   - '页面回退到首页' (helper detected SPA homepage regression)
+          #   - 'page.goto recovery succeeded' (helper recovered the page)
+          #   - 'recovery succeeded' (any variant — covers #1107 + #1128)
+          # PR #1109 marker: 'skipping strike for account_id=' (3-strike
+          # skip when query has real captured response). Print per-marker
+          # match count + last 30 hits so the report can state "did the
+          # new helper actually fire and recover any of the 5".
+          for marker in \
+            '页面回退到首页' \
+            'page.goto recovery succeeded' \
+            'recovery succeeded' \
+            'skipping strike for account_id=' \
+            '页面恢复后成功重发' \
+            '通过 JS 注入受控 textarea' ; do
+            echo "--- marker: ${marker} ---"
+            hits=$(docker compose logs --tail 8000 worker 2>&1 | grep -E "${marker}" | tail -30)
+            n=$(printf '%s' "${hits}" | grep -c . || true)
+            echo "count=${n}"
+            if [ "${n}" -gt 0 ]; then
+              printf '%s\n' "${hits}"
+            fi
+            echo ""
+          done
+
+          echo ""
           echo "=== [MODE-CLASS] most recent ~12 doubao failed queries in past 2 hours ==="
           # User reported "同时我还跑了几个query，全部失败" — classify each row
           # by mode (A=submit never confirmed, B=submit fired but no
