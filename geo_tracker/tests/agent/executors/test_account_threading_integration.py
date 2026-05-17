@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import sys
 import types
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -177,6 +177,176 @@ async def test_account_threads_through_select_executor_to_remote_connector_acqui
     # release_context still runs in the finally so the connector cleanup
     # contract holds even on the spy-raised path.
     assert len(release_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_remote_proxy_dead_propagates_to_executor_last_error_reason(monkeypatch):
+    """Bug 2 acceptance trace: AdapterError(PROXY_DEAD) raised by
+    RemoteCDPConnector.acquire_context MUST surface as
+    ``executor.last_error_reason == "PROXY_DEAD"`` after _execute_once
+    completes.
+
+    The celery_tasks failure path reads ``executor.last_error_reason``
+    via ``_empty_response_failure_reason`` and feeds it to
+    ``quota_settlement.settle_failure(reason=...)`` → which calls
+    ``AccountPool.report_failure(..., reason="PROXY_DEAD")``. That last
+    call is what activates the vm_session 30-minute cooldown branch
+    (account_pool.py:624). The fix in this PR (Bug 2) wires
+    ``resolve_execution_failure_reason`` to propagate AdapterError.code
+    instead of collapsing it to ``browser_exception``.
+    """
+    _install_fake_playwright(monkeypatch)
+
+    from geo_tracker.agent.executors import BrowserConnector
+    from geo_tracker.agent.executors.remote_vm import AdapterError
+    from geo_tracker.agent.executors.router import select_executor
+    from geo_tracker.agent.guest_executor import GUEST_LLM_CONFIG
+
+    account = _make_vm_session_account(vm_id="vm-prod-008", account_id=22001)
+
+    class _DeadVmConnector(BrowserConnector):
+        """Simulates a vm-unreachable RemoteCDPConnector: acquire_context
+        raises AdapterError(PROXY_DEAD) — exactly the case where the
+        registry-watchdog from Issue #1115 would mark the VM down or
+        the CDP socket would refuse the connect."""
+
+        local_storage_data: dict = {}
+        use_camoufox: bool = False
+        active_qg_lease = None
+        injected_cookies_count: int = 0
+
+        async def acquire_context(self, llm, acct):
+            raise AdapterError(
+                "PROXY_DEAD",
+                detail=f"vm {getattr(acct, 'vm_id', None)!r} unreachable (test)",
+                proxyId=getattr(acct, "vm_id", None),
+            )
+
+        async def release_context(self, context):
+            return None
+
+    dead_connector = _DeadVmConnector()
+    executor = select_executor(
+        account,
+        env={
+            "VM_EXECUTOR_ENABLED": "true",
+            "VM_EXECUTOR_ENGINES": "doubao,deepseek",
+        },
+        remote_connector_factory=lambda: dead_connector,
+    )
+
+    fake_query = MagicMock()
+    fake_query.target_llm = "doubao"
+    fake_query.id = 99002
+
+    result = await executor._execute_once(
+        fake_query, GUEST_LLM_CONFIG["doubao"], use_proxy=False
+    )
+
+    # Acquire raised, _execute_once returned None.
+    assert result is None
+    # The acceptance assertion: PROXY_DEAD survived the trip from
+    # AdapterError.code → resolve_execution_failure_reason →
+    # executor.last_error_reason. Before the Bug 2 fix, this was
+    # ``browser_exception`` and the AccountPool vm_session cooldown
+    # never fired.
+    assert executor.last_error_reason == "PROXY_DEAD", (
+        f"expected PROXY_DEAD, got {executor.last_error_reason!r}. "
+        "Bug 2 regression — resolve_execution_failure_reason did not "
+        "propagate AdapterError.code."
+    )
+
+
+@pytest.mark.asyncio
+async def test_remote_proxy_dead_calls_account_pool_report_failure_with_proxy_dead(
+    monkeypatch,
+):
+    """End-to-end Bug 2 trace: simulate the executor → settle_failure →
+    AccountPool.report_failure chain with a mocked AccountPool. Asserts
+    ``report_failure(account_id, reason="PROXY_DEAD", ...)`` is invoked,
+    which is the exact precondition for the vm_session 30-minute
+    cooldown branch (account_pool.py:624) — the line the original PR
+    #1121 review pointed at as never being hit in production."""
+    _install_fake_playwright(monkeypatch)
+
+    from geo_tracker.agent.executors import BrowserConnector
+    from geo_tracker.agent.executors.remote_vm import AdapterError
+    from geo_tracker.agent.executors.router import select_executor
+    from geo_tracker.agent.guest_executor import GUEST_LLM_CONFIG
+    from geo_tracker.tasks.account_quota_settlement import AccountQuotaSettlement
+    from geo_tracker.tasks.query_failure import _empty_response_failure_reason
+
+    account = _make_vm_session_account(vm_id="vm-prod-009", account_id=33001)
+
+    class _DeadVmConnector(BrowserConnector):
+        local_storage_data: dict = {}
+        use_camoufox: bool = False
+        active_qg_lease = None
+        injected_cookies_count: int = 0
+
+        async def acquire_context(self, llm, acct):
+            raise AdapterError("PROXY_DEAD", detail="cdp refused", proxyId="vm-prod-009")
+
+        async def release_context(self, context):
+            return None
+
+    executor = select_executor(
+        account,
+        env={
+            "VM_EXECUTOR_ENABLED": "true",
+            "VM_EXECUTOR_ENGINES": "doubao,deepseek",
+        },
+        remote_connector_factory=lambda: _DeadVmConnector(),
+    )
+
+    fake_query = MagicMock()
+    fake_query.target_llm = "doubao"
+    fake_query.id = 99003
+
+    await executor._execute_once(
+        fake_query, GUEST_LLM_CONFIG["doubao"], use_proxy=False
+    )
+
+    # Replay the slice of celery_tasks.execute_query that maps an
+    # empty/failed response into a settle_failure call. We mirror the
+    # production sequence so the trace covers the actual call site, not
+    # an artificial wrapper.
+    failure_reason = _empty_response_failure_reason(
+        None,
+        executor=executor,
+        account_cookies=None,
+    )
+    # _empty_response_failure_reason returns ``executor.last_error_reason``
+    # verbatim when set — so this must be PROXY_DEAD after Bug 2 fix.
+    assert failure_reason == "PROXY_DEAD"
+
+    # settle_failure with a mocked pool. The assertion below is the
+    # acceptance gate: report_failure(reason="PROXY_DEAD") MUST be the
+    # call that reaches AccountPool — that's the only way the
+    # vm_session cooldown branch fires.
+    pool = MagicMock()
+    pool.report_failure = AsyncMock()
+
+    settlement = AccountQuotaSettlement()
+    settlement.reserve(account.id)
+    await settlement.settle_failure(
+        db=MagicMock(),
+        pool=pool,
+        reason=failure_reason,
+        query_id=fake_query.id,
+    )
+
+    pool.report_failure.assert_awaited_once()
+    call_kwargs = pool.report_failure.call_args.kwargs
+    call_args = pool.report_failure.call_args.args
+    # account_id is first positional, reason is keyword.
+    assert call_args[0] == 33001
+    assert call_kwargs.get("reason") == "PROXY_DEAD", (
+        f"expected PROXY_DEAD, got {call_kwargs!r}. "
+        "Bug 2 regression — AccountPool.report_failure did not receive "
+        "the canonical code, so the vm_session cooldown branch will "
+        "not fire."
+    )
 
 
 @pytest.mark.asyncio
