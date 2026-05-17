@@ -31,10 +31,15 @@ services:
       NOVNC_PORT: 6080
       CHROME_TARGET_URL: https://www.doubao.com/chat
     ports:
-      # Bind to host loopback only — host's Tailscale handles secure exposure
-      # to operator devices, no public-facing port leakage.
-      - "127.0.0.1:6080:6080"
-      - "127.0.0.1:9222:9222"
+      # Bind to ALL interfaces (0.0.0.0). Access control is delegated to:
+      #   (a) Aliyun security group — default deny 6080-9230 from public
+      #   (b) host ufw rule — allow in on tailscale0 only (see README §
+      #       "Firewall: lock noVNC + CDP to Tailscale only")
+      # Loopback-only would block the operator's Tailscale-peer browser from
+      # reaching the noVNC port; this binding lets the host's tailscale0
+      # interface accept the connection while ufw blocks every other path.
+      - "6080:6080"
+      - "9222:9222"
     volumes:
       - ./data/profile-doubao-01:/profile
     shm_size: 2gb
@@ -57,8 +62,8 @@ services:
       NOVNC_PORT: 6080
       CHROME_TARGET_URL: https://www.doubao.com/chat
     ports:
-      - "127.0.0.1:6081:6080"
-      - "127.0.0.1:9223:9222"
+      - "6081:6080"
+      - "9223:9222"
     volumes:
       - ./data/profile-doubao-02:/profile
     shm_size: 2gb

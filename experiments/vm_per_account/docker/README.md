@@ -31,22 +31,51 @@ sudo usermod -aG docker $USER  # 重新登录生效
 curl -fsSL https://tailscale.com/install.sh | sh
 sudo tailscale up --authkey=$TAILSCALE_AUTH_KEY --hostname=ecs-prod
 
-# 3. 拉 repo, 进 docker 目录
+# 3. Firewall: 锁 noVNC + CDP 只走 Tailscale (必做!) ⚠️
+#    docker-compose 把端口绑到 0.0.0.0 才能让 Tailscale peer 连进来,
+#    所以必须靠 host firewall 拦公网访问。否则有人扫公网就直接进你 Chrome。
+sudo apt-get install -y ufw
+sudo ufw default deny incoming
+sudo ufw allow OpenSSH                    # SSH 留通道
+sudo ufw allow in on tailscale0           # tailscale 接口全开
+sudo ufw deny in proto tcp to any port 6080:6090   # 公网拒绝 noVNC 段
+sudo ufw deny in proto tcp to any port 9222:9232   # 公网拒绝 CDP 段
+sudo ufw --force enable
+sudo ufw status numbered                  # 验证
+
+# 4. 拉 repo, 进 docker 目录
 git clone <repo> && cd trash_test/experiments/vm_per_account/docker
 
-# 4. 配 .env
+# 5. 配 .env
 cp .env.example .env
 # 编辑 .env, 把 VNC_PASSWORD_01/02 改成你自己的 (e.g. openssl rand -hex 4 生成)
 
-# 5. 起容器
+# 6. 起容器
 docker compose up -d
 
-# 验证
+# 7. 验证 — 三个地址都该能通:
 docker compose ps
 docker compose logs doubao-01 | tail -20
+
+# loopback (ECS 本机, 比如 Celery worker)
 curl http://127.0.0.1:9222/json/version    # 应返回 Chrome 信息
 curl http://127.0.0.1:6080/                  # 应返回 noVNC HTML
+
+# Tailscale 接口 (其它 Tailscale peer 访问的路径)
+TS_IP=$(tailscale ip --4 | head -1)
+curl http://$TS_IP:6080/                     # 应返回 noVNC HTML
 ```
+
+### Firewall 解释 (重要)
+
+| 路径 | 通不通 | 原因 |
+|---|---|---|
+| 本机 `127.0.0.1:6080` (Celery worker → CDP) | ✅ | loopback 自然通 |
+| Tailscale peer → `100.x.x.x:6080` (操作员浏览器) | ✅ | ufw `allow in on tailscale0` |
+| 公网 → ECS_public_IP:6080 | ❌ | ufw `deny ... port 6080:6090` 拦截 |
+| Aliyun 安全组规则 | 默认拒绝 6080-9232 | 备份防护 |
+
+**不做 firewall 这步 → 你公网 noVNC 端口暴露 = 任何人扫端口能进 Chrome = 安全事故。**
 
 ## 操作员登录豆包
 
