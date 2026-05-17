@@ -1386,6 +1386,449 @@ async def test_doubao_submit_failed_promotes_auth_failure_reason(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_doubao_submit_retry_bails_when_page_regressed_to_homepage(
+    monkeypatch,
+):
+    """Refs #963 evidence-first fix: Q-184971 retry on worker SHA d8a22482
+    at 2026-05-17 05:40:14 UTC saved a submit_failed HTML where the SPA
+    had collapsed back to Doubao's homepage. The HTML had 0 occurrences
+    of #flow-end-msg-send / send-msg-btn / send-btn-wrapper, only one
+    aria-hidden helper textarea, and the visible body was recommendation
+    cards (有什么我能帮你的吗？ + 资讯...). The submit_button for-loop
+    found nothing, _find_submit_button_js returned None, and the code
+    fired two wasted Enter keypresses into the homepage. The retry path
+    should detect "no input + no send button" and bail with a specific
+    reason rather than burn the confirm-poll budget on a regressed page.
+
+    The bail must:
+      - return ("", "", []) early (before the 10-iter confirm poll);
+      - call _save_html so the page state is preserved for debugging;
+      - set last_error_reason via _prefer_doubao_auth_failure_reason
+        when auth markers are present (e.g. login chrome detected after
+        regression), falling back to "doubao_input_lost_before_submit"
+        when no stronger signal exists.
+    """
+    _install_fake_playwright(monkeypatch)
+
+    from geo_tracker.agent import guest_executor as _ge
+    from geo_tracker.agent.guest_executor import GuestQueryExecutor
+
+    captured_html_suffixes: list[str] = []
+
+    async def fake_save_html(_page, _query_id, suffix):
+        captured_html_suffixes.append(suffix)
+
+    async def fake_save_screenshot(*_a, **_k):
+        return None
+
+    async def fake_save_runtime_snapshot(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(_ge, "_save_html", fake_save_html)
+    monkeypatch.setattr(_ge, "_save_screenshot", fake_save_screenshot)
+    monkeypatch.setattr(_ge, "_save_runtime_snapshot", fake_save_runtime_snapshot)
+
+    query_text = "bestCoffer advantages for travel?"
+
+    class FakeInput:
+        async def bounding_box(self):
+            return None
+
+        async def click(self, *args, **kwargs):
+            return None
+
+        async def fill(self, *args, **kwargs):
+            return None
+
+        async def evaluate(self, *args, **kwargs):
+            return query_text
+
+    class FakeKeyboard:
+        async def press(self, *args, **kwargs):
+            return None
+
+        async def type(self, *args, **kwargs):
+            return None
+
+    class FakeMouse:
+        async def move(self, *args, **kwargs):
+            return None
+
+    class FakeSubmitHandle:
+        def as_element(self):
+            return None
+
+    class FakePage:
+        """Simulates Doubao homepage state at submit-failed time.
+
+        Mirrors Q-184971's saved HTML:
+          - query_selector returns None for input selectors (input gone);
+          - evaluate_handle returns a JS handle whose as_element is None
+            (no #flow-end-msg-send found anywhere);
+          - page.evaluate for submit confirmation returns False;
+          - page.evaluate for body innerText returns the recommendation
+            cards body (which contains 登录 marker so
+            _prefer_doubao_auth_failure_reason classifies as
+            doubao_not_logged_in).
+        """
+
+        url = "https://www.doubao.com/chat"
+
+        def __init__(self):
+            self.keyboard = FakeKeyboard()
+            self.mouse = FakeMouse()
+
+        async def wait_for_timeout(self, *_a, **_k):
+            return None
+
+        async def evaluate_handle(self, *_a, **_k):
+            return FakeSubmitHandle()
+
+        async def query_selector(self, _selector, *_a, **_k):
+            # input + button selectors all return None — page regressed.
+            return None
+
+        async def query_selector_all(self, _selector, *_a, **_k):
+            return []
+
+        async def evaluate(self, script, *args):
+            script_text = str(script)
+            if "document.body?.innerText" in script_text:
+                # Doubao homepage recommendation cards + 登录 header
+                return (
+                    "有什么我能帮你的吗？\n"
+                    "资讯：哈佛博士苏萌预测月球十年内现永久驻留基地\n"
+                    "登录"
+                )
+            # submit_confirmed queryText script -> never confirmed
+            if "queryText" in script_text:
+                return False
+            return ""
+
+        async def content(self):
+            return (
+                "<html><body>"
+                "<div><h2>有什么我能帮你的吗？</h2></div>"
+                "<header><button class=\"login-button\">登录</button></header>"
+                "</body></html>"
+            )
+
+    executor = GuestQueryExecutor()
+    fake_page = FakePage()
+
+    async def fake_fill_plain_text_input(*_a, **_k):
+        return True
+
+    monkeypatch.setattr(executor, "_fill_plain_text_input", fake_fill_plain_text_input)
+
+    resp_text, resp_html, citations = await executor._browser_query(
+        fake_page,
+        {
+            "input_selector": "textarea",
+            "response_selector": ".flow-markdown-body",
+            "submit_button": (
+                "#flow-end-msg-send:not([aria-disabled='true']):not([data-disabled='true']),"
+                " button[id='flow-end-msg-send']"
+            ),
+            "submit_key": "Enter",
+            "wait_after_submit": 100,
+            "load_wait": 100,
+            "login_redirect_domains": [],
+            "url": "https://www.doubao.com/chat/",
+        },
+        query_text,
+        "doubao",
+        input_el=FakeInput(),
+        query_id=184971,
+        runtime_events=[],
+    )
+
+    # The new bail must short-circuit the retry path: no response, no
+    # citations, no html (the page regressed and we refused to fire
+    # Enter into nothing).
+    assert (resp_text, resp_html, citations) == ("", "", [])
+    # _save_html was called with the submit_failed suffix for evidence.
+    assert "doubao_submit_failed" in captured_html_suffixes, (
+        f"expected _save_html called with doubao_submit_failed suffix; "
+        f"got {captured_html_suffixes!r}"
+    )
+    # _prefer_doubao_auth_failure_reason classifies the homepage's
+    # visible "登录" header → doubao_not_logged_in wins over the
+    # fallback doubao_input_lost_before_submit.
+    assert executor.last_error_reason == "doubao_not_logged_in"
+
+
+@pytest.mark.asyncio
+async def test_doubao_submit_retry_bails_with_specific_reason_when_no_auth_signal(
+    monkeypatch,
+):
+    """Refs #963 evidence-first fix: when the page regressed and there
+    is NO login chrome (no 登录 marker, no login dialog), the fallback
+    last_error_reason should be the specific
+    ``doubao_input_lost_before_submit`` so the operator ledger
+    distinguishes this collapse from generic ``no_response``.
+    """
+    _install_fake_playwright(monkeypatch)
+
+    from geo_tracker.agent import guest_executor as _ge
+    from geo_tracker.agent.guest_executor import GuestQueryExecutor
+
+    async def _noop(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(_ge, "_save_html", _noop)
+    monkeypatch.setattr(_ge, "_save_screenshot", _noop)
+    monkeypatch.setattr(_ge, "_save_runtime_snapshot", _noop)
+
+    query_text = "bestCoffer advantages?"
+
+    class FakeInput:
+        async def bounding_box(self):
+            return None
+
+        async def click(self, *_a, **_k):
+            return None
+
+        async def fill(self, *_a, **_k):
+            return None
+
+        async def evaluate(self, *_a, **_k):
+            return query_text
+
+    class FakeKeyboard:
+        async def press(self, *_a, **_k):
+            return None
+
+        async def type(self, *_a, **_k):
+            return None
+
+    class FakeMouse:
+        async def move(self, *_a, **_k):
+            return None
+
+    class FakeSubmitHandle:
+        def as_element(self):
+            return None
+
+    class FakePage:
+        url = "https://www.doubao.com/chat"
+
+        def __init__(self):
+            self.keyboard = FakeKeyboard()
+            self.mouse = FakeMouse()
+
+        async def wait_for_timeout(self, *_a, **_k):
+            return None
+
+        async def evaluate_handle(self, *_a, **_k):
+            return FakeSubmitHandle()
+
+        async def query_selector(self, *_a, **_k):
+            return None
+
+        async def query_selector_all(self, *_a, **_k):
+            return []
+
+        async def evaluate(self, script, *args):
+            script_text = str(script)
+            # innerText: page text WITHOUT any 登录 / login marker —
+            # _prefer_doubao_auth_failure_reason will NOT classify this
+            # as doubao_not_logged_in, so the fallback specific reason
+            # ``doubao_input_lost_before_submit`` survives.
+            if "document.body?.innerText" in script_text:
+                return "有什么我能帮你的吗？\n资讯：今日新闻"
+            if "queryText" in script_text:
+                return False
+            return ""
+
+        async def content(self):
+            return (
+                "<html><body>"
+                "<h2>有什么我能帮你的吗？</h2>"
+                "</body></html>"
+            )
+
+    executor = GuestQueryExecutor()
+    fake_page = FakePage()
+
+    async def fake_fill_plain_text_input(*_a, **_k):
+        return True
+
+    monkeypatch.setattr(executor, "_fill_plain_text_input", fake_fill_plain_text_input)
+
+    resp_text, resp_html, citations = await executor._browser_query(
+        fake_page,
+        {
+            "input_selector": "textarea",
+            "response_selector": ".flow-markdown-body",
+            "submit_button": "#flow-end-msg-send",
+            "submit_key": "Enter",
+            "wait_after_submit": 100,
+            "load_wait": 100,
+            "login_redirect_domains": [],
+            "url": "https://www.doubao.com/chat/",
+        },
+        query_text,
+        "doubao",
+        input_el=FakeInput(),
+        query_id=184971,
+        runtime_events=[],
+    )
+
+    assert (resp_text, resp_html, citations) == ("", "", [])
+    # When the regressed page has no authenticated marker,
+    # _prefer_doubao_auth_failure_reason classifies as
+    # ``doubao_auth_state_missing`` (a specific operator-useful reason).
+    # If even that helper returns None — e.g. the body parses as a normal
+    # chat page with no auth markers — the new fallback
+    # ``doubao_input_lost_before_submit`` kicks in so the ledger never
+    # ends up as the generic ``no_response`` for this collapse pattern.
+    assert executor.last_error_reason in (
+        "doubao_auth_state_missing",
+        "doubao_input_lost_before_submit",
+    ), (
+        f"expected a specific page-regression reason "
+        f"(doubao_auth_state_missing or doubao_input_lost_before_submit); "
+        f"got {executor.last_error_reason!r}"
+    )
+    # And NOT the pre-fix generic ``no_response``.
+    assert executor.last_error_reason != "no_response"
+
+
+@pytest.mark.asyncio
+async def test_chatgpt_submit_retry_does_not_inherit_doubao_bail_reason(
+    monkeypatch,
+):
+    """Refs #963 Codex P2 review on PR #1106: the submit-confirm retry
+    block runs for all engines. The Doubao-specific bail (set
+    ``last_error_reason = doubao_input_lost_before_submit`` and return
+    early when both the input element and the JS submit-button handle
+    are gone) must NOT fire for chatgpt / deepseek, otherwise a
+    non-Doubao engine would inherit a Doubao reason in the operator
+    ledger. Confirm that for ``llm_name == "chatgpt"`` the retry path:
+      - does NOT short-circuit with ``("", "", [])`` before the
+        confirm poll;
+      - does NOT set ``last_error_reason`` to
+        ``doubao_input_lost_before_submit``;
+      - DOES press Enter (the pre-fix blind-Enter behavior is the
+        compat path for non-Doubao engines).
+    """
+    _install_fake_playwright(monkeypatch)
+
+    from geo_tracker.agent import guest_executor as _ge
+    from geo_tracker.agent.guest_executor import GuestQueryExecutor
+
+    async def _noop(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(_ge, "_save_html", _noop)
+    monkeypatch.setattr(_ge, "_save_screenshot", _noop)
+    monkeypatch.setattr(_ge, "_save_runtime_snapshot", _noop)
+
+    query_text = "anything"
+    enter_presses: list[int] = []
+
+    class FakeInput:
+        async def bounding_box(self):
+            return None
+
+        async def click(self, *_a, **_k):
+            return None
+
+        async def fill(self, *_a, **_k):
+            return None
+
+        async def evaluate(self, *_a, **_k):
+            return query_text
+
+    class FakeKeyboard:
+        async def press(self, key, *_a, **_k):
+            if key == "Enter":
+                enter_presses.append(1)
+
+        async def type(self, *_a, **_k):
+            return None
+
+    class FakeMouse:
+        async def move(self, *_a, **_k):
+            return None
+
+    class FakeSubmitHandle:
+        def as_element(self):
+            return None
+
+    class FakePage:
+        url = "https://chatgpt.com"
+
+        def __init__(self):
+            self.keyboard = FakeKeyboard()
+            self.mouse = FakeMouse()
+
+        async def wait_for_timeout(self, *_a, **_k):
+            return None
+
+        async def evaluate_handle(self, *_a, **_k):
+            return FakeSubmitHandle()
+
+        async def query_selector(self, *_a, **_k):
+            return None
+
+        async def query_selector_all(self, *_a, **_k):
+            return []
+
+        async def evaluate(self, script, *args):
+            script_text = str(script)
+            if "document.body?.innerText" in script_text:
+                return "Empty page"
+            if "queryText" in script_text:
+                return False
+            return ""
+
+        async def content(self):
+            return "<html><body></body></html>"
+
+    executor = GuestQueryExecutor()
+    fake_page = FakePage()
+
+    async def fake_fill_plain_text_input(*_a, **_k):
+        return True
+
+    monkeypatch.setattr(executor, "_fill_plain_text_input", fake_fill_plain_text_input)
+
+    await executor._browser_query(
+        fake_page,
+        {
+            "input_selector": "textarea",
+            "response_selector": ".markdown",
+            "submit_button": "button[data-testid='send-button']",
+            "submit_key": "Enter",
+            "wait_after_submit": 100,
+            "load_wait": 100,
+            "login_redirect_domains": [],
+            "url": "https://chatgpt.com",
+        },
+        query_text,
+        "chatgpt",
+        input_el=FakeInput(),
+        query_id=999999,
+        runtime_events=[],
+    )
+
+    # The Doubao-only bail reason must not bleed into chatgpt.
+    assert executor.last_error_reason != "doubao_input_lost_before_submit", (
+        f"chatgpt must not inherit Doubao bail reason; "
+        f"got {executor.last_error_reason!r}"
+    )
+    # And Enter is pressed on the retry path (blind-Enter compat for
+    # non-Doubao engines preserved). Initial submit fires Enter once
+    # (submit_key) and the retry fires Enter again → at least 2.
+    assert len(enter_presses) >= 2, (
+        f"expected Enter to fire on retry for chatgpt; "
+        f"got {len(enter_presses)} press(es)"
+    )
+
+
+@pytest.mark.asyncio
 async def test_doubao_auth_state_overrides_generic_browser_timeout(monkeypatch):
     _install_fake_playwright(monkeypatch)
 

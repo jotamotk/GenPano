@@ -2912,8 +2912,39 @@ class GuestQueryExecutor:
                         if input_retry:
                             await input_retry.click(force=True)
                             await page.wait_for_timeout(300)
-                        await page.keyboard.press("Enter")
-                        logger.info(f"[{llm_name}] 重试 Enter 提交")
+                            await page.keyboard.press("Enter")
+                            logger.info(f"[{llm_name}] 重试 Enter 提交")
+                        elif llm_name == "doubao":
+                            # Refs #963: Doubao SPA regressed to homepage
+                            # between the first failed submit and this
+                            # retry. No input element + no clickable send
+                            # button means Enter would fire into nothing
+                            # and we'd waste the 10-iteration confirm
+                            # poll. Bail with the specific reason so the
+                            # operator ledger shows
+                            # ``doubao_input_lost_before_submit`` instead
+                            # of generic ``no_response``. Gated to Doubao
+                            # because the fallback reason string and the
+                            # operator-action mapping it triggers are
+                            # Doubao-specific; chatgpt / deepseek keep
+                            # the old blind-Enter behavior below.
+                            logger.warning(
+                                f"[{llm_name}] 重试时输入框和发送按钮均已消失，放弃重试"
+                            )
+                            await _save_html(
+                                page, debug_query_id, f"{llm_name}_submit_failed"
+                            )
+                            await self._prefer_doubao_auth_failure_reason(
+                                llm_name, page
+                            )
+                            self.last_error_reason = (
+                                self.last_error_reason
+                                or "doubao_input_lost_before_submit"
+                            )
+                            return "", "", []
+                        else:
+                            await page.keyboard.press("Enter")
+                            logger.info(f"[{llm_name}] 重试 Enter 提交")
                     for _ in range(10):
                         if await _submit_confirmed():
                             confirmed = True
