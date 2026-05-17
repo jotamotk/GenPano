@@ -1,0 +1,143 @@
+name: VM PoC Query (real Doubao via SSH tunnel to ECS)
+
+# Tier-3 verification for Epic #1110:
+#   - Tunnel CDP 9222/9223 from the ECS host (where doubao-01 / doubao-02
+#     containers expose CDP on 127.0.0.1) back to the GH Actions runner.
+#   - Runner has Playwright; runs poc_runner.py against http://127.0.0.1:9222.
+#   - This validates the full "operator logs in once via noVNC, Celery worker
+#     drives Chrome over CDP" flow.
+#
+# Requires: bootstrap + up have run, doubao-NN containers healthy, operator
+# has already logged into Doubao via noVNC.
+
+on:
+  workflow_dispatch:
+    inputs:
+      engine:
+        description: 'Engine (doubao / deepseek)'
+        required: true
+        type: choice
+        options: [doubao, deepseek]
+        default: doubao
+      cdp_port:
+        description: 'Local CDP port to tunnel to (9222 = doubao-01, 9223 = doubao-02)'
+        required: true
+        default: '9222'
+        type: string
+      prompt_text:
+        description: 'Prompt text to send'
+        required: true
+        default: '推荐一个性价比高的国产手机品牌'
+        type: string
+      prompt_id:
+        description: 'Tag for artifact folder name'
+        required: false
+        default: 'm1_smoke'
+        type: string
+      reps:
+        description: 'How many times to repeat the prompt'
+        required: false
+        default: '1'
+        type: string
+
+jobs:
+  poc-query:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Playwright
+        run: |
+          python -m pip install --upgrade pip
+          # Playwright pinned to a version that supports connect_over_cdp;
+          # browsers are not installed because we attach to a remote Chrome.
+          pip install 'playwright==1.47.0'
+
+      - name: Setup SSH key + open background tunnel to ECS CDP
+        env:
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_SSH_PORT: ${{ secrets.SERVER_SSH_PORT }}
+          CDP_PORT: ${{ inputs.cdp_port }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 0700 ~/.ssh
+          printf '%s\n' "$SERVER_SSH_KEY" > ~/.ssh/id_ssh
+          chmod 0600 ~/.ssh/id_ssh
+          PORT="${SERVER_SSH_PORT:-22}"
+          ssh-keyscan -p "$PORT" -H "$SERVER_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+          # Open SSH tunnel in background. Forward runner localhost CDP_PORT
+          # to ECS 127.0.0.1:CDP_PORT (where doubao-NN container is bound).
+          nohup ssh -i ~/.ssh/id_ssh -p "$PORT" \
+            -N \
+            -o ExitOnForwardFailure=yes \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=4 \
+            -L "${CDP_PORT}:127.0.0.1:${CDP_PORT}" \
+            "${SERVER_USER}@${SERVER_HOST}" \
+            > /tmp/ssh-tunnel.log 2>&1 &
+          echo $! > /tmp/ssh-tunnel.pid
+
+          # Wait up to 10s for the local port to start accepting connections.
+          for i in $(seq 1 20); do
+            if (echo > /dev/tcp/127.0.0.1/${CDP_PORT}) >/dev/null 2>&1; then
+              echo "tunnel ready: 127.0.0.1:${CDP_PORT}"
+              break
+            fi
+            sleep 0.5
+          done
+          (echo > /dev/tcp/127.0.0.1/${CDP_PORT}) >/dev/null 2>&1 || {
+            echo "FATAL: tunnel never came up; ssh-tunnel.log:"
+            cat /tmp/ssh-tunnel.log
+            exit 1
+          }
+
+          # Verify CDP responds to /json/version (= Chrome is up inside the
+          # doubao container).
+          curl -sf "http://127.0.0.1:${CDP_PORT}/json/version" | head -5
+
+      - name: Run poc_runner.py
+        env:
+          CDP_PORT: ${{ inputs.cdp_port }}
+          ENGINE: ${{ inputs.engine }}
+          PROMPT_TEXT: ${{ inputs.prompt_text }}
+          PROMPT_ID: ${{ inputs.prompt_id }}
+          REPS: ${{ inputs.reps }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          python experiments/vm_per_account/poc_runner.py \
+            --cdp-endpoint "http://127.0.0.1:${CDP_PORT}" \
+            --engine "$ENGINE" \
+            --prompt-text "$PROMPT_TEXT" \
+            --prompt-id "$PROMPT_ID" \
+            --reps "$REPS" \
+            --output-dir artifacts \
+            --timeout-secs 120
+
+      - name: Stop SSH tunnel
+        if: always()
+        run: |
+          if [ -f /tmp/ssh-tunnel.pid ]; then
+            kill "$(cat /tmp/ssh-tunnel.pid)" 2>/dev/null || true
+          fi
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: poc-query-${{ inputs.engine }}-${{ inputs.prompt_id }}-${{ github.run_id }}
+          path: artifacts/
+          if-no-files-found: warn
+          retention-days: 7
