@@ -91,6 +91,15 @@ def _quotas(cur, paused_engines: List[str]) -> List[Dict[str, Any]]:
     ``llm_accounts.profile_id`` for accounts that have no explicit binding
     rows yet, so we don't silently drop them on rollout.
     """
+    # vm_session accounts (Refs Epic #1110 / Issue #1116 Codex review on
+    # PR #1122) deliberately have ``cookies_json IS NULL`` —— the DB-level
+    # ``chk_exec_mode_cookies`` CHECK from PR #1121 forbids them from
+    # carrying cookies because the VM holds the persistent logged-in
+    # browser. Without the ``execution_mode = 'vm_session'`` short-circuit,
+    # the scheduler's binding allocator would skip every vm_session row
+    # and never dispatch a query to it, defeating the whole Phase 2
+    # architecture. The legacy cookies-required predicate is kept for
+    # local_cookie rows so broken legacy accounts are still rejected.
     cur.execute(
         """
         WITH bindings AS (
@@ -103,8 +112,10 @@ def _quotas(cur, paused_engines: List[str]) -> List[Dict[str, Any]]:
             FROM llm_accounts a
             LEFT JOIN account_profile_map apm ON apm.account_id = a.id
             WHERE a.status = 'active'
-              AND a.cookies_json IS NOT NULL
-              AND a.cookies_json != ''
+              AND (
+                  a.execution_mode = 'vm_session'
+                  OR (a.cookies_json IS NOT NULL AND a.cookies_json != '')
+              )
         )
         SELECT account_id, engine, account_cap, profile_id, quota
         FROM bindings
@@ -294,6 +305,10 @@ def run_daily_dispatch(
                 # batch.
                 cur.execute("SAVEPOINT sp_sched")
                 try:
+                    # Refs Epic #1110 / Issue #1116 (Codex review on PR
+                    # #1122): mirror the binding-allocation cookies filter
+                    # exception so vm_session accounts (cookies_json NULL
+                    # by design) are pre-assignable to scheduled queries.
                     cur.execute(
                         """
                         SELECT a.id
@@ -303,8 +318,10 @@ def run_daily_dispatch(
                               AND apm.profile_id = %s
                         WHERE a.llm_name = %s
                           AND a.status = 'active'
-                          AND a.cookies_json IS NOT NULL
-                          AND a.cookies_json != ''
+                          AND (
+                              a.execution_mode = 'vm_session'
+                              OR (a.cookies_json IS NOT NULL AND a.cookies_json != '')
+                          )
                           AND (%s IS NULL
                                OR apm.profile_id IS NOT NULL
                                OR a.profile_id::text = %s)
