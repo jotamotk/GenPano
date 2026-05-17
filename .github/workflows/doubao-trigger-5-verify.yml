@@ -97,6 +97,33 @@ jobs:
           QUERY_IDS_SQL="$(printf '%s,' "${IDS[@]}" | sed 's/,$//')"
 
           echo ""
+          echo "=== [DISCOVERY] Fresh pending / retry-able doubao candidates ==="
+          # Operator goal: validate deployed fixes #1106/1107/1108/1109 on a
+          # fresh trigger after the 09:24Z restore. Surface the candidate
+          # pool so we have an audit trail. Operator's workflow_dispatch
+          # input still wins; this block does not auto-mutate QUERY_IDS.
+          psql_cmd -c "
+            SELECT id, status, retry_count, retry_reason, account_id, queued_at
+            FROM queries
+            WHERE target_llm='doubao'
+              AND status='pending'
+            ORDER BY id ASC
+            LIMIT 10;
+          "
+          psql_cmd -c "
+            SELECT id, status, retry_count, retry_reason, account_id,
+                   queued_at, finished_at
+            FROM queries
+            WHERE target_llm='doubao'
+              AND status='failed'
+              AND retry_count < 8
+              AND COALESCE(retry_reason,'') NOT IN ('account_no_active')
+              AND finished_at > NOW() - INTERVAL '48 hours'
+            ORDER BY finished_at DESC
+            LIMIT 10;
+          "
+
+          echo ""
           echo "=== Selected query rows BEFORE dispatch ==="
           # Sanity-check the IDs exist, are doubao, and are pending.
           psql_cmd -c "
@@ -104,6 +131,20 @@ jobs:
                    brand_id, prompt_id, account_id
             FROM queries
             WHERE id IN (${QUERY_IDS_SQL})
+            ORDER BY id;
+          "
+
+          echo ""
+          echo "=== Accounts 45/46/47/48 BEFORE (post-restore baseline) ==="
+          # Operator restored these 4 accounts at 09:24Z to etc=0/active.
+          # Snapshot exact values right before dispatch so the after-block
+          # can compute deltas per account.
+          psql_cmd -c "
+            SELECT id, phone_number, status, query_count_today, daily_limit,
+                   expired_transition_count, consecutive_fails,
+                   cookies_updated_at, last_used_at
+            FROM llm_accounts
+            WHERE llm_name='doubao' AND id IN (45,46,47,48)
             ORDER BY id;
           "
 
@@ -220,6 +261,62 @@ jobs:
                      (status='cooldown') DESC,
                      cookies_updated_at DESC NULLS LAST
             LIMIT 12;
+          "
+
+          echo ""
+          echo "=== Accounts 45/46/47/48 AFTER (post-trigger delta vs 09:24Z restore) ==="
+          # The restore at 09:24Z set etc=0/active. Print exact after-values
+          # so the report can compute etc delta per account.
+          psql_cmd -c "
+            SELECT id, phone_number, status, query_count_today, daily_limit,
+                   expired_transition_count, consecutive_fails,
+                   cookies_updated_at, last_used_at
+            FROM llm_accounts
+            WHERE llm_name='doubao' AND id IN (45,46,47,48)
+            ORDER BY id;
+          "
+
+          echo ""
+          echo "=== [FIX-PATH MARKERS] global worker log scan (last 8000 lines) ==="
+          # Three deployed fixes' canonical log lines. If any of these
+          # appears, the new code path actually fired during this trigger
+          # window. Print matching lines + per-marker count.
+          # Marker 1 (PR #1107): mode-A page collapse recovery succeeded.
+          # Marker 2 (PR #1109): report_failure skipped a strike against
+          #                      an account_id (transient/page-level fail,
+          #                      not auth).
+          # Marker 3 (PR #1107): the JS-injected controlled textarea
+          #                      fallback path actually ran.
+          for marker in \
+            '\[doubao\] 页面恢复后成功重发' \
+            'report_failure: skipping strike for account_id=' \
+            '\[doubao\] 通过 JS 注入受控 textarea' ; do
+            echo "--- marker: ${marker} ---"
+            hits=$(docker compose logs --tail 8000 worker 2>&1 | grep -E "${marker}" | tail -30)
+            n=$(printf '%s' "${hits}" | grep -c . || true)
+            echo "count=${n}"
+            if [ "${n}" -gt 0 ]; then
+              printf '%s\n' "${hits}"
+            fi
+            echo ""
+          done
+
+          echo ""
+          echo "=== [#1108 VALIDATOR EVIDENCE] failed rows w/ raw_text >= 100 chars ==="
+          # Mode-C false-positive detector: if any of our 5 queries ended
+          # 'failed' but persisted a captured response of >=100 chars,
+          # the #1108 validator did not prevent the false-positive.
+          # Quote raw_text head + retry_reason verbatim.
+          psql_cmd -c "
+            SELECT q.id, q.status, q.retry_reason, q.retry_count, q.account_id,
+                   CHAR_LENGTH(r.raw_text) AS raw_text_len,
+                   SUBSTRING(r.raw_text, 1, 200) AS raw_text_head
+            FROM queries q
+            JOIN llm_responses r ON r.query_id = q.id
+            WHERE q.id IN (${QUERY_IDS_SQL})
+              AND q.status='failed'
+              AND CHAR_LENGTH(r.raw_text) >= 100
+            ORDER BY q.id;
           "
 
           echo ""
