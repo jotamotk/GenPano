@@ -212,7 +212,7 @@ describe('BrandVisibilityPage KPI cards (issue #988)', () => {
     expect(screen.queryByText('47.8%')).not.toBeInTheDocument()
   })
 
-  it('makes missing by-engine Mention Rate and SoV explicit while keeping citation share secondary', () => {
+  it('renders partial-state banner above the by-engine bar chart and does not leak internal strings', () => {
     mockState.engineData = {
       project_id: '11111111-2222-3333-4444-555555555555',
       period: { from: '2026-05-08', to: '2026-05-15' },
@@ -250,15 +250,17 @@ describe('BrandVisibilityPage KPI cards (issue #988)', () => {
     renderVisibilityPage()
 
     const block = screen.getByTestId('engine-visibility-breakdown')
-    expect(within(block).getByText('ChatGPT')).toBeInTheDocument()
-    expect(within(block).getByText('Mention Rate')).toBeInTheDocument()
-    expect(within(block).getByText('SoV')).toBeInTheDocument()
-    expect(within(block).getAllByText('Unavailable')).toHaveLength(2)
     expect(
-      within(block).getAllByText('SoV has target evidence but no competitive denominator yet.').length,
-    ).toBeGreaterThan(0)
-    expect(within(block).getByText(/Citation share is secondary context/i)).toBeInTheDocument()
-    expect(within(block).getByText('62.0%')).toBeInTheDocument()
+      within(block).getByText('By-engine visibility needs more evidence'),
+    ).toBeInTheDocument()
+    expect(
+      within(block).getByText('SoV has target evidence but no competitive denominator yet.'),
+    ).toBeInTheDocument()
+    // The bar chart itself replaces per-engine cards, so internal/intermediate strings
+    // must not leak even though the underlying state is partial.
+    expect(within(block).queryByText('Partial by-engine visibility evidence')).not.toBeInTheDocument()
+    expect(within(block).queryByText('partial_analyzer_data')).not.toBeInTheDocument()
+    expect(within(block).queryByText('Visibility metrics incomplete')).not.toBeInTheDocument()
   })
 
   it('renders an explicit empty by-engine visibility state', () => {
@@ -292,7 +294,7 @@ describe('BrandVisibilityPage KPI cards (issue #988)', () => {
     expect(within(block).getByText('Engine visibility data unavailable')).toBeInTheDocument()
   })
 
-  it('renders healthy by-engine Mention Rate and SoV as primary values while citation remains secondary', () => {
+  it('renders healthy by-engine state without the partial/empty/error banner', () => {
     mockState.engineData = {
       project_id: '11111111-2222-3333-4444-555555555555',
       period: { from: '2026-05-08', to: '2026-05-15' },
@@ -317,18 +319,15 @@ describe('BrandVisibilityPage KPI cards (issue #988)', () => {
     renderVisibilityPage()
 
     const block = screen.getByTestId('engine-visibility-breakdown')
-    expect(within(block).getByText('ChatGPT')).toBeInTheDocument()
-    expect(within(block).getByText('37.0%')).toBeInTheDocument()
-    expect(within(block).getByText('24.0%')).toBeInTheDocument()
-    expect(within(block).getByText('11.0%')).toBeInTheDocument()
-    expect(within(block).getByText(/Citation share is secondary context/i)).toBeInTheDocument()
-    expect(within(block).queryByText('Unavailable')).not.toBeInTheDocument()
+    // Healthy state must NOT show any of the partial/empty/error banner copy.
+    expect(within(block).queryByText('By-engine visibility needs more evidence')).not.toBeInTheDocument()
     expect(within(block).queryByText('Partial by-engine visibility evidence')).not.toBeInTheDocument()
     expect(within(block).queryByText('No by-engine visibility evidence')).not.toBeInTheDocument()
     expect(within(block).queryByText('By-engine visibility error')).not.toBeInTheDocument()
+    expect(within(block).queryByText('Engine visibility data unavailable')).not.toBeInTheDocument()
   })
 
-  it('renders target-only SoV as unavailable while keeping mention and citation values fact-backed', () => {
+  it('shows the target-only SoV banner above the chart and never leaks internal/intermediate strings', () => {
     mockState.engineData = {
       project_id: '11111111-2222-3333-4444-555555555555',
       period: { from: '2026-05-08', to: '2026-05-15' },
@@ -362,15 +361,11 @@ describe('BrandVisibilityPage KPI cards (issue #988)', () => {
     renderVisibilityPage()
 
     const block = screen.getByTestId('engine-visibility-breakdown')
-    expect(within(block).getByText('chatgpt')).toBeInTheDocument()
     expect(within(block).getByText('By-engine visibility needs more evidence')).toBeInTheDocument()
-    expect(within(block).getByText('Primary metrics need evidence')).toBeInTheDocument()
-    expect(within(block).getAllByText('100.0%')).toHaveLength(2)
-    expect(within(block).getByText('Unavailable')).toBeInTheDocument()
     expect(
-      within(block).getAllByText('SoV has target evidence but no competitive denominator yet.').length,
-    ).toBeGreaterThan(0)
-    expect(within(block).getByText('2 / 2 evidence')).toBeInTheDocument()
+      within(block).getByText('SoV has target evidence but no competitive denominator yet.'),
+    ).toBeInTheDocument()
+    // Internal/intermediate strings must not leak even though state is partial.
     expect(within(block).queryByText('Partial by-engine visibility evidence')).not.toBeInTheDocument()
     expect(within(block).queryByText('partial_analyzer_data')).not.toBeInTheDocument()
     expect(within(block).queryByText('Visibility metrics incomplete')).not.toBeInTheDocument()

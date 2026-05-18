@@ -1,22 +1,24 @@
-"""Merge second concurrent head pair on 2026-05-18.
+"""Merge concurrent alembic heads (second occurrence on 2026-05-18).
 
-Two more sibling migrations landed on ``main`` with the same
-``down_revision`` of ``20260518_merge_heads``:
+Two siblings landed on ``main`` after PR #1227's first merge migration:
 
 - ``20260518_backfill_brand_websites``
-  (PR #1234 — symmetric citation->brand domain attribution + backfill
-  website columns).
+  (#1234 — Refs Issue #1225 — backfill ``brands.website`` for bestCoffer,
+  欧莱雅, 雅诗兰黛 so the citation-mapper domain lookup has anything to
+  match against).
 - ``20260518_backfill_ds_brands``
-  (PR #1236 — backfill ``brands`` table with 9 数据安全 industry
-  entries so #1218's unified industry filter resolves the name-only
-  mention buckets and the bestCoffer competitor panel populates).
+  (#1236 — Refs Issue #1185 / #1230 — backfill 9 数据安全 industry brands).
 
-Each was correct in isolation, but the live ``alembic upgrade head``
-step in ``deploy.yml`` failed with "Multiple head revisions are
-present", blocking the prod rollout that #1236 needs to deliver the
-business goal on #1185. This migration is a no-op graph merge — no
-schema change, no data change — purely a structural join so future
-migrations chain off a single head again.
+Both used ``20260518_merge_heads`` as their ``down_revision`` and landed
+concurrently, so ``alembic upgrade head`` raises
+``Multiple head revisions are present`` on every deployment — same class
+of issue PR #1227 (``20260518_merge_heads``) resolved earlier today.
+That earlier merge migration only collapsed the heads that existed at
+its time; subsequent concurrent merges produce new sibling heads that
+need another structural merge revision.
+
+No-op merge — purely a graph join so future migrations chain off one
+head again.
 """
 
 from __future__ import annotations
@@ -37,4 +39,4 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """No-op: matching no-op downgrade."""
+    """No-op: downgrade walks back to whichever parent the user picks."""

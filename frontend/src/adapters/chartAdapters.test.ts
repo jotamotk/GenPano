@@ -158,7 +158,11 @@ describe('chart adapters analyzer formula-status guards', () => {
     ])
   })
 
-  it('does not render sentiment explanatory rows from score-only evidence', () => {
+  it('does not render sentiment-driven topic attribution rows from score-only evidence', () => {
+    // `adaptTopicAttribution` legitimately gates on the `sentiment` metric
+    // because the topic_attribution endpoint computes per-topic negative
+    // counts from sentiment analysis. Without trustworthy sentiment evidence,
+    // the explanatory chart should stay empty.
     const partialEvidence = {
       project_id: 'p1',
       state: 'partial',
@@ -181,25 +185,6 @@ describe('chart adapters analyzer formula-status guards', () => {
             negative_count: 3,
             negative_ratio: 0.75,
             sample_snippet: 'sticky finish',
-          },
-        ],
-      }),
-    ).toEqual([])
-
-    expect(
-      adaptMentionSamples({
-        ...partialEvidence,
-        items: [
-          {
-            mention_id: 1,
-            response_id: 10,
-            label: 'negative',
-            polarity: 'negative',
-            summary: 'sticky finish',
-            snippet: 'sticky finish',
-            engine: 'deepseek',
-            topic: 'Texture',
-            occurred_at: '2026-05-11T00:00:00Z',
           },
         ],
       }),
@@ -290,6 +275,139 @@ describe('chart adapters analyzer formula-status guards', () => {
         confidence: null,
       },
     ])
+  })
+
+  // Issue #1175: the mention_samples endpoint is a paginated response-sample
+  // list, not a sentiment-metric endpoint. It does not carry
+  // `metric_formula_evidence.sentiment`. The previous gate
+  // `canUseChartMetrics(out, ['sentiment'])` stripped every real response.
+  // Live server diagnostics run 26032322450 against BestCoffer brandId=24
+  // captured `state=ok, formula_status=ok, evidence_count=89, items=20`
+  // — the user saw "Loaded 0 of 273 matching responses" anyway because
+  // the adapter returned []. The fix gates on the endpoint's own
+  // ChartState (ok/partial) instead.
+  it('renders mention_samples rows when the endpoint state is ok and no sentiment metric evidence is present', () => {
+    // Real shape captured from CONTRACT_SUMMARY for BestCoffer brandId=24:
+    // {"state":"ok","state_reason":"data_available","formula_status":"ok",
+    //  "evidence_count":89,"items":20}. Reproduce a 2-item slice with the
+    // same field set the backend emits per mention sample.
+    const rows = adaptMentionSamples({
+      project_id: 'bestcoffer',
+      state: 'ok',
+      state_reason: 'data_available',
+      formula_status: 'ok',
+      evidence_count: 89,
+      total: 273,
+      limit: 20,
+      offset: 0,
+      has_more: true,
+      items: [
+        {
+          mention_id: 501,
+          response_id: 9001,
+          query_id: 4242,
+          label: 'positive',
+          polarity: 'positive',
+          summary: 'BestCoffer 在数据脱敏方面表现稳定',
+          snippet: '在数据脱敏方面表现稳定',
+          response_text:
+            'BestCoffer 在数据脱敏与权限审计场景的覆盖度高于同类产品，是金融行业常见选型。',
+          engine: 'chatgpt',
+          topic: '数据脱敏',
+          occurred_at: '2026-05-15T10:00:00Z',
+        },
+        {
+          mention_id: 502,
+          response_id: 9002,
+          query_id: 4243,
+          label: 'neutral',
+          polarity: 'neutral',
+          summary: '使用场景集中在金融客户',
+          snippet: '使用场景集中在金融客户',
+          response_text:
+            'BestCoffer 主要服务金融行业客户，对其他行业的覆盖目前可见证据较少。',
+          engine: 'deepseek',
+          topic: '行业覆盖',
+          occurred_at: '2026-05-15T11:00:00Z',
+        },
+      ],
+    })
+
+    expect(rows).toHaveLength(2)
+    expect(rows[0]).toEqual({
+      label: 'positive',
+      topic: '数据脱敏',
+      engine: 'chatgpt',
+      time: '2026-05-15',
+      summary: 'BestCoffer 在数据脱敏方面表现稳定',
+      polarity: 'positive',
+      queryId: 4242,
+      mentionId: 501,
+      responseId: 9001,
+      snippet: '在数据脱敏方面表现稳定',
+      responseText:
+        'BestCoffer 在数据脱敏与权限审计场景的覆盖度高于同类产品，是金融行业常见选型。',
+    })
+    expect(rows[1].responseText).toContain('BestCoffer 主要服务金融行业客户')
+  })
+
+  it('still respects an empty endpoint state for mention_samples', () => {
+    expect(
+      adaptMentionSamples({
+        project_id: 'p1',
+        state: 'empty',
+        formula_status: 'missing_required_inputs',
+        items: [],
+        total: 0,
+        evidence_count: 0,
+      }),
+    ).toEqual([])
+  })
+
+  it('returns [] for malformed mention_samples inputs', () => {
+    expect(adaptMentionSamples(undefined)).toEqual([])
+    // Adapter must not crash on a null items field even if state passes.
+    expect(
+      adaptMentionSamples({
+        project_id: 'p1',
+        state: 'ok',
+        formula_status: 'ok',
+        items: null as unknown as never,
+      } as unknown as Parameters<typeof adaptMentionSamples>[0]),
+    ).toEqual([])
+  })
+
+  it('renders mention_samples rows under partial state without sentiment evidence', () => {
+    // When the backend declares state='partial' (some samples available,
+    // some upstream rollups still missing), the panel should still render
+    // the visible items rather than collapsing to the "needs backend
+    // fields" fallback. The user saw an empty panel under exactly this
+    // shape on /brand/sentiment for BestCoffer.
+    const rows = adaptMentionSamples({
+      project_id: 'p1',
+      state: 'partial',
+      state_reason: 'partial_evidence',
+      formula_status: 'partial',
+      items: [
+        {
+          mention_id: 1,
+          response_id: 10,
+          query_id: 99,
+          label: 'negative',
+          polarity: 'negative',
+          summary: 'sticky finish',
+          snippet: 'sticky finish',
+          response_text: 'Some users describe the texture as sticky.',
+          engine: 'deepseek',
+          topic: 'Texture',
+          occurred_at: '2026-05-11T00:00:00Z',
+        },
+      ],
+    })
+
+    expect(rows).toHaveLength(1)
+    expect(rows[0].polarity).toBe('negative')
+    expect(rows[0].responseText).toBe('Some users describe the texture as sticky.')
   })
 
   // Issue #1002 follow-up: the upstream citation_sources.title column

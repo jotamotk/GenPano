@@ -143,7 +143,7 @@ jobs:
               p="${p#"${p%%[![:space:]]*}"}"; p="${p%"${p##*[![:space:]]}"}"
               [ -z "$p" ] && continue
               if [ $FIRST -eq 1 ]; then FIRST=0; else TOPIC_CLAUSE="${TOPIC_CLAUSE} OR "; fi
-              TOPIC_CLAUSE="${TOPIC_CLAUSE}t.name ILIKE '%${p}%'"
+              TOPIC_CLAUSE="${TOPIC_CLAUSE}t.text ILIKE '%${p}%'"
             done
             TOPIC_CLAUSE="${TOPIC_CLAUSE})"
           else

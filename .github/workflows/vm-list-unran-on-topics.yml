@@ -1,0 +1,60 @@
+name: VM List Unran Queries on Topics
+
+on:
+  workflow_dispatch:
+    inputs:
+      topic_substrs:
+        description: 'CSV topic text substrings'
+        required: true
+        default: '投融资尽职调查,细颗粒度权限,端到端加密,亚太节点低延迟跨境,科研实验机密,企业文档全链路审计,双重水印文档保护,微信生态便捷加密,虚拟数据室服务主流品牌'
+        type: string
+
+jobs:
+  list:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - name: Setup SSH
+        env:
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_SSH_PORT: ${{ secrets.SERVER_SSH_PORT }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 0700 ~/.ssh
+          printf '%s\n' "$SERVER_SSH_KEY" > ~/.ssh/id_ssh
+          chmod 0600 ~/.ssh/id_ssh
+          PORT="${SERVER_SSH_PORT:-22}"
+          ssh-keyscan -p "$PORT" -H "$SERVER_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+      - name: List unran
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_SSH_PORT: ${{ secrets.SERVER_SSH_PORT }}
+          SUBSTRS: ${{ inputs.topic_substrs }}
+        run: |
+          set -euo pipefail
+          PORT="${SERVER_SSH_PORT:-22}"
+          REMOTE="${SERVER_USER}@${SERVER_HOST}"
+          CLAUSE=""
+          IFS=',' read -ra PARTS <<< "$SUBSTRS"
+          FIRST=1
+          for p in "${PARTS[@]}"; do
+            p="${p#"${p%%[![:space:]]*}"}"; p="${p%"${p##*[![:space:]]}"}"
+            [ -z "$p" ] && continue
+            if [ $FIRST -eq 1 ]; then FIRST=0; else CLAUSE="${CLAUSE} OR "; fi
+            CLAUSE="${CLAUSE}t.text ILIKE '%${p}%'"
+          done
+          SQL="SELECT q.id, q.target_llm, q.status,
+                      substring(t.text from 1 for 25) AS topic,
+                      substring(q.query_text from 1 for 80) AS query_text
+               FROM topics t
+               JOIN prompts p ON p.topic_id = t.id
+               JOIN queries q ON q.prompt_id = p.id
+               WHERE (${CLAUSE})
+                 AND q.target_llm IN ('doubao','deepseek')
+                 AND q.status IN ('failed','expired','pending','no_response')
+               ORDER BY t.text, q.target_llm, q.id
+               LIMIT 40;"
+          ssh -i ~/.ssh/id_ssh -p "$PORT" "$REMOTE" \
+            "sudo docker exec genpano-postgres-1 psql -U genpano -d genpano -c \"${SQL}\""

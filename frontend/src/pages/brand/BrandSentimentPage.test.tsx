@@ -210,7 +210,12 @@ describe('BrandSentimentPage response evidence contract', () => {
     expect(screen.getByText(/Showing all 108 responses/)).toBeInTheDocument()
   })
 
-  it('preserves project, brand, engine, and polarity scope when filters change', () => {
+  it('preserves project, brand, and engine scope when filters change', () => {
+    // Issue #1248: polarity is now a pure client-side display filter (see
+    // useMentionSamples call in BrandSentimentPage.tsx). The backend always
+    // receives the all-view request so the client filter can narrow it.
+    // We assert here that the project/brand/engine scope still threads
+    // through, and that polarity is not forwarded.
     renderSentimentPage()
 
     fireEvent.click(screen.getByRole('button', { name: 'Positive' }))
@@ -218,7 +223,6 @@ describe('BrandSentimentPage response evidence contract', () => {
     expect(mocks.useMentionSamples).toHaveBeenLastCalledWith(
       '11111111-2222-3333-4444-555555555555',
       expect.objectContaining({
-        polarity: 'positive',
         limit: 100,
         offset: 0,
         filters: expect.objectContaining({
@@ -227,11 +231,145 @@ describe('BrandSentimentPage response evidence contract', () => {
         }),
       }),
     )
+    const lastCall = mocks.useMentionSamples.mock.calls.at(-1)
+    expect(lastCall?.[1]).not.toHaveProperty('polarity')
   })
 
   it('does not show demo badges on live response evidence', () => {
     renderSentimentPage()
 
     expect(screen.queryByText(/Mock/i)).not.toBeInTheDocument()
+  })
+
+  // Issue #1248: BestCoffer brand 24 ships responses where the backend
+  // `get_mention_samples` polarity filter joins through `brand_mentions`
+  // (empty for that brand per readonly evidence run
+  // https://github.com/jotamotk/trash_test/actions/runs/26034927203 with
+  // brand_mention_count: 0), so the user sees the loaded window for
+  // polarity=all but 0 visible rows after clicking 正面/负面. The frontend
+  // must apply its own client-side polarity filter on the already-loaded
+  // items regardless of `isLive`.
+  describe('Issue #1248 client-side polarity filter', () => {
+    it('hides negative and neutral rows when Positive is selected (live mode)', async () => {
+      renderSentimentPage()
+
+      // Sanity: under "All" the mixed fixture renders both polarities.
+      expect(screen.getByText('Response summary 1')).toBeInTheDocument()
+      expect(screen.getByText('Response summary 2')).toBeInTheDocument()
+
+      fireEvent.click(screen.getByRole('button', { name: 'Positive' }))
+
+      // Even-indexed fixture rows are positive; they stay visible. Await
+      // the re-render that re-accumulates the live samples after the
+      // polarity-button click resets accumulatedLiveSamples to [].
+      expect(await screen.findByText('Response summary 1')).toBeInTheDocument()
+      expect(screen.getByText('Response summary 3')).toBeInTheDocument()
+      // Odd-indexed fixture rows are negative; they must be filtered out
+      // client-side even though the mocked backend still returns them.
+      expect(screen.queryByText('Response summary 2')).not.toBeInTheDocument()
+      expect(screen.queryByText('Response summary 4')).not.toBeInTheDocument()
+    })
+
+    it('hides positive and neutral rows when Negative is selected (live mode)', async () => {
+      renderSentimentPage()
+
+      fireEvent.click(screen.getByRole('button', { name: 'Negative' }))
+
+      expect(await screen.findByText('Response summary 2')).toBeInTheDocument()
+      expect(screen.getByText('Response summary 4')).toBeInTheDocument()
+      expect(screen.queryByText('Response summary 1')).not.toBeInTheDocument()
+      expect(screen.queryByText('Response summary 3')).not.toBeInTheDocument()
+    })
+
+    it('restores every loaded row when 全部 (All) is reselected', async () => {
+      renderSentimentPage()
+
+      fireEvent.click(screen.getByRole('button', { name: 'Positive' }))
+      expect(await screen.findByText('Response summary 1')).toBeInTheDocument()
+      expect(screen.queryByText('Response summary 2')).not.toBeInTheDocument()
+
+      fireEvent.click(screen.getByRole('button', { name: 'All' }))
+
+      expect(await screen.findByText('Response summary 2')).toBeInTheDocument()
+      expect(screen.getByText('Response summary 1')).toBeInTheDocument()
+    })
+
+    it('surfaces the filter delta in the window label when a polarity is active', async () => {
+      renderSentimentPage()
+
+      fireEvent.click(screen.getByRole('button', { name: 'Positive' }))
+
+      // Loaded window stays the same; the filter delta is appended so the
+      // user does not see "Showing 100 of 108" while only 50 rows render.
+      // The substring appears in both the header window label and the live
+      // diagnostic block — at least one match proves the filter delta is
+      // surfaced.
+      const matches = await screen.findAllByText(/match the positive filter/)
+      expect(matches.length).toBeGreaterThan(0)
+    })
+  })
+
+  // Issue #1247: backend's `_label_for_polarity` emits English titlecase
+  // ('Positive' / 'Negative' / 'Neutral'). The previous code compared
+  // `item.label === '正面'` (Chinese), which never matched, so every
+  // badge fell through to the default (pale gray) variant. The fix uses
+  // `item.polarity` (lowercase canonical) for color resolution.
+  //
+  // NOTE: this test calls `mocks.useMentionSamples.mockImplementation(...)`,
+  // which permanently overrides the default mock for any test that runs
+  // after it in this file. It is placed LAST so the #1248 describe block
+  // above keeps the default 108-row fixture. Do not move it earlier
+  // without also adding a mock restore in an afterEach hook.
+  it('colors the polarity badge by item.polarity (not item.label) so backend English titlecase still resolves Positive→green / Negative→red / Neutral→default', () => {
+    const polarityFixtures = [
+      { polarity: 'positive', label: 'Positive', expectedClass: 't-badge-success' },
+      { polarity: 'negative', label: 'Negative', expectedClass: 't-badge-danger' },
+      { polarity: 'neutral', label: 'Neutral', expectedClass: 't-badge-default' },
+    ]
+    const polaritySamples = polarityFixtures.map((row, idx) => ({
+      query_id: 7000 + idx,
+      mention_id: 800 + idx,
+      response_id: 900 + idx,
+      label: row.label,
+      polarity: row.polarity,
+      summary: `Polarity row ${row.polarity}`,
+      snippet: `Snippet ${row.polarity}`,
+      response_text: `Full text ${row.polarity}`,
+      engine: 'ChatGPT',
+      topic: `Topic ${row.polarity}`,
+      occurred_at: '2026-05-18T00:00:00Z',
+    }))
+
+    mocks.useMentionSamples.mockImplementation(() => ({
+      data: {
+        project_id: '11111111-2222-3333-4444-555555555555',
+        state: 'ok',
+        metric_formula_evidence: { sentiment: { formula_status: 'ok' } },
+        items: polaritySamples,
+        total: polaritySamples.length,
+        limit: 100,
+        offset: 0,
+        has_more: false,
+        evidence_count: polaritySamples.length,
+        selected_filters: { brand_id: 42, polarity: null },
+      },
+      isLoading: false,
+      error: null,
+    }))
+
+    renderSentimentPage()
+
+    for (const fixture of polarityFixtures) {
+      // The polarity badge sits next to a topic of `Topic <polarity>` and
+      // a summary of `Polarity row <polarity>`. Scope by summary card to
+      // avoid colliding with the polarity *filter* buttons of the same name.
+      const summary = screen.getByText(`Polarity row ${fixture.polarity}`)
+      const card = summary.closest('.rounded-card') as HTMLElement
+      expect(card).not.toBeNull()
+      const badge = card.querySelector('.t-badge') as HTMLElement
+      expect(badge).not.toBeNull()
+      expect(badge).toHaveTextContent(fixture.label)
+      expect(badge).toHaveClass(fixture.expectedClass)
+    }
   })
 })

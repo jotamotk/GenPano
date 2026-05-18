@@ -103,8 +103,17 @@ export default function BrandSentimentPage() {
     filters: chartFilters,
   });
   const attributionQ = useTopicAttribution(isLive ? liveProjectId : null, 5, chartFilters);
+  // Issue #1248: polarity is intentionally NOT passed to the backend any more.
+  // The backend `get_mention_samples` polarity filter joins through the
+  // `brand_mentions` table (backend/app/api/v1/projects/_charts_service.py:1885-1887)
+  // which is empty for some brands (e.g. BestCoffer brand 24, see readonly
+  // evidence run https://github.com/jotamotk/trash_test/actions/runs/26034927203
+  // → brand_mention_count: 0 vs admin_fact_response_count: 191). For those
+  // brands, polarity=positive made the backend return 0 items even though the
+  // all-view returned 100/298. The defensive fix is to always load the
+  // all-view set from the backend and narrow client-side. The backend
+  // JOIN-shape mismatch is tracked as a separate followup.
   const samplesQ = useMentionSamples(isLive ? liveProjectId : null, {
-    polarity: polarity === 'all' ? undefined : polarity,
     limit: RESPONSE_SAMPLE_LIMIT,
     offset: responseOffset,
     filters: chartFilters,
@@ -243,9 +252,13 @@ export default function BrandSentimentPage() {
         .join('|')}`,
     [responseOffset, samplesQ.data],
   );
+  // Issue #1248: polarity is excluded from responseScopeKey because polarity
+  // is now a pure client-side display filter (see the useMentionSamples call
+  // above). Including polarity here would wipe the accumulator on every
+  // polarity click and the client-side filter would have nothing to narrow.
   const responseScopeKey = useMemo(
-    () => JSON.stringify({ projectId: liveProjectId, polarity, filters: chartFilters }),
-    [liveProjectId, polarity, chartFilters],
+    () => JSON.stringify({ projectId: liveProjectId, filters: chartFilters }),
+    [liveProjectId, chartFilters],
   );
 
   useEffect(() => {
@@ -285,7 +298,18 @@ export default function BrandSentimentPage() {
         .filter((kw) => kw.polarity === 'negative')
         .map((kw) => ({ word: kw.keyword, weight: kw.count }))
     : SENTIMENT_KEYWORDS.negative || [];
-  const filteredResponses = isLive ? samplesData : samplesData.filter((item: SentimentResponseRow) => {
+  // Issue #1248: always apply the client-side polarity filter, including under
+  // live mode. The backend `get_mention_samples` polarity filter joins through
+  // `brand_mentions` (see backend/app/api/v1/projects/_charts_service.py:1885-1887),
+  // which is empty for some brands (e.g. BestCoffer brand 24 has
+  // brand_mention_count: 0 per readonly evidence run
+  // https://github.com/jotamotk/trash_test/actions/runs/26034927203), while the
+  // "all" view derives from a different source. Trusting the backend to filter
+  // produced 0 visible rows after clicking 正面/负面 even though the loaded
+  // window contained multiple positive/negative labels. The defensive
+  // client-side filter on already-loaded items keeps the UI consistent
+  // regardless of backend join-shape mismatches.
+  const filteredResponses = samplesData.filter((item: SentimentResponseRow) => {
     if (polarity === 'all') return true;
     const normalizedPolarity = String(item.polarity || item.label || '').toLowerCase();
     if (polarity === 'positive') return normalizedPolarity === 'positive' || item.label === '正面';
@@ -297,10 +321,18 @@ export default function BrandSentimentPage() {
   const responseTotal = isLive ? (samplesQ.data?.total ?? fetchedResponseCount) : fetchedResponseCount;
   const responseHasMore = isLive ? Boolean(samplesQ.data?.has_more) && fetchedResponseCount < responseTotal : false;
   const evidenceCount = isLive ? (samplesQ.data?.evidence_count ?? responseTotal) : fetchedResponseCount;
+  // Issue #1248: when the client-side polarity filter narrows the loaded
+  // window, surface the filter delta explicitly so users do not read
+  // "Showing 100 of 298 responses" while only 42 polarity-matching rows
+  // render below.
+  const polarityFilterActive = polarity !== 'all';
+  const polarityFilterSuffix = polarityFilterActive
+    ? ` (${visibleResponseCount} match the ${polarity} filter)`
+    : '';
   const responseWindowLabel = isLive
     ? responseHasMore
-      ? `Showing ${visibleResponseCount} of ${responseTotal} responses`
-      : `Showing all ${visibleResponseCount} responses`
+      ? `Showing ${fetchedResponseCount} of ${responseTotal} responses${polarityFilterSuffix}`
+      : `Showing all ${fetchedResponseCount} responses${polarityFilterSuffix}`
     : `Showing ${visibleResponseCount} demo responses`;
   const responseApiNeed =
     'Needs backend fields from #1191: query_id, response_text, total, limit, offset, has_more, evidence_count, selected_filters.';
@@ -514,10 +546,13 @@ export default function BrandSentimentPage() {
               key={pol}
               aria-label={pol === 'all' ? 'All' : pol === 'positive' ? 'Positive' : 'Negative'}
               onClick={() => {
+                // Issue #1248: polarity is now a pure client-side display
+                // filter applied to already-loaded samples. We no longer
+                // reset the response offset or wipe the accumulator,
+                // because the backend always returns the all-view set
+                // (see useMentionSamples call above).
                 setPolarity(pol);
                 setExpandedResponseKey(null);
-                setResponseOffset(0);
-                setAccumulatedLiveSamples([]);
               }}
               className="px-3 py-1.5 rounded-pill text-xs font-medium transition-colors"
               style={
@@ -538,8 +573,8 @@ export default function BrandSentimentPage() {
             <div className="rounded-card border border-dashed border-themed-subtle bg-themed-subtle/60 p-3">
               <p className="text-xs text-themed-muted leading-relaxed">
                 {responseHasMore
-                  ? `Loaded ${visibleResponseCount} of ${responseTotal} matching responses. ${evidenceCount} evidence rows match the current scope.`
-                  : `All ${visibleResponseCount} loaded responses are visible for the current scope. ${evidenceCount} evidence rows match the API filters.`}
+                  ? `Loaded ${fetchedResponseCount} of ${responseTotal} matching responses${polarityFilterActive ? ` (${visibleResponseCount} match the ${polarity} filter)` : ''}. ${evidenceCount} evidence rows match the current scope.`
+                  : `All ${fetchedResponseCount} loaded responses are visible for the current scope${polarityFilterActive ? ` (${visibleResponseCount} match the ${polarity} filter)` : ''}. ${evidenceCount} evidence rows match the API filters.`}
               </p>
               {responseHasMore && <p className="text-[11px] text-themed-muted mt-1">{responseApiNeed}</p>}
             </div>
@@ -553,14 +588,14 @@ export default function BrandSentimentPage() {
               className="rounded-card bg-themed-subtle p-3 border-l-4"
               style={{
                 borderLeftColor:
-                  item.label === '正面' ? 'var(--color-chart-7)'
-                  : item.label === '负面' ? 'var(--color-danger)'
+                  item.polarity === 'positive' ? 'var(--color-chart-7)'
+                  : item.polarity === 'negative' ? 'var(--color-danger)'
                   : 'var(--color-chart-line-grid)',
               }}
             >
               <div className="flex items-center justify-between mb-2">
                 <Badge
-                  variant={item.label === '正面' ? 'green' : item.label === '负面' ? 'red' : 'default'}
+                  variant={item.polarity === 'positive' ? 'green' : item.polarity === 'negative' ? 'red' : 'default'}
                   size="sm"
                 >
                   {item.label}
