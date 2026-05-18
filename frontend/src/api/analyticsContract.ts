@@ -38,6 +38,8 @@ export interface MetricFormulaEvidence extends MetricContractFields {
   missing_inputs?: string[]
   numerator?: number | null
   denominator?: number | null
+  numerator_count?: number | null
+  denominator_count?: number | null
   analyzer_coverage?: AnalyzerCoverage | null
   [key: string]: unknown
 }
@@ -93,6 +95,7 @@ export interface AnalyticsContractMetadata {
   metric_formula_evidence?: Record<string, MetricFormulaEvidence>
   analyzer_coverage?: AnalyzerCoverage | null
   selected_filters?: SelectedAnalyticsFilters | null
+  source_provenance?: string[]
   request_id?: string | null
   data_freshness?: DataFreshness | null
 }
@@ -274,9 +277,11 @@ export function buildMetricTrustState(input: MetricTrustInput | null | undefined
   const ok = isOkFormulaStatus(status)
   const validZero = reasonLabels.includes('Valid zero')
   const numericValue = asFiniteNumber(input?.value)
+  const numerator = asFiniteNumber(input?.numerator ?? input?.numerator_count)
+  const denominator = asFiniteNumber(input?.denominator ?? input?.denominator_count)
   const hasFormulaProof =
-    asFiniteNumber(input?.numerator) != null &&
-    asFiniteNumber(input?.denominator) != null
+    numerator != null &&
+    denominator != null
   const needsZeroProof = validZero || numericValue === 0
   const zeroWithoutProof = ok && needsZeroProof && !hasFormulaProof
   if (zeroWithoutProof) {
@@ -298,8 +303,8 @@ export function buildMetricTrustState(input: MetricTrustInput | null | undefined
   const canShowValue = tone === 'ok'
   const details = [
     ...coverageDetails(coverage),
-    input?.numerator != null || input?.denominator != null
-      ? `${input?.numerator ?? '--'} / ${input?.denominator ?? '--'} evidence`
+    numerator != null || denominator != null
+      ? `${numerator ?? '--'} / ${denominator ?? '--'} evidence`
       : '',
   ].filter(Boolean)
   const label = validZero && tone === 'ok'

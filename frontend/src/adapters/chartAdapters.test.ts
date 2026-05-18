@@ -44,6 +44,120 @@ describe('chart adapters analyzer formula-status guards', () => {
     ])
   })
 
+  it('maps the backend ok by-engine visibility contract without mixing metrics', () => {
+    const rows = adaptEngineMetricsToBreakdown({
+      project_id: 'p1',
+      period: { from: '2026-05-01', to: '2026-05-12' },
+      state: 'ok',
+      state_reason: 'data_available',
+      formula_status: 'ok',
+      source_provenance: ['admin_facts', 'brand_mentions', 'citation_sources'],
+      evidence_counts: { admin_fact_response_count: 2 },
+      metric_formula_evidence: {
+        coverage: { formula_status: 'ok' },
+        sov: { formula_status: 'ok', denominator_count: 4 },
+        citation: { formula_status: 'ok' },
+      },
+      selected_filters: {
+        project_id: 'p1',
+        from: '2026-05-01',
+        to: '2026-05-12',
+      },
+      items: [
+        {
+          engine: 'chatgpt',
+          mention_rate: 0.5,
+          sov: 0.25,
+          citation_rate: 1.0,
+          sentiment: null,
+        },
+      ],
+    })
+
+    expect(rows).toEqual([
+      {
+        engine: 'chatgpt',
+        mentionRate: 50,
+        sov: 25,
+        citationShare: 100,
+      },
+    ])
+  })
+
+  it('keeps target-only SoV unavailable while preserving fact-backed mention and citation values', () => {
+    const rows = adaptEngineMetricsToBreakdown({
+      project_id: 'p1',
+      period: { from: '2026-05-01', to: '2026-05-12' },
+      state: 'partial',
+      state_reason: 'partial_analyzer_data',
+      formula_status: 'partial',
+      missing_inputs: ['target_only_sov'],
+      metric_formula_evidence: {
+        coverage: { formula_status: 'ok' },
+        sov: {
+          formula_status: 'missing_required_inputs',
+          numerator_count: 2,
+          denominator_count: 2,
+        },
+        citation: { formula_status: 'ok' },
+      },
+      items: [
+        {
+          engine: 'chatgpt',
+          mention_rate: 1.0,
+          sov: null,
+          citation_rate: 1.0,
+          sentiment: 0.7,
+        },
+      ],
+    })
+
+    expect(rows).toEqual([
+      {
+        engine: 'chatgpt',
+        mentionRate: 100,
+        sov: null,
+        citationShare: 100,
+      },
+    ])
+  })
+
+  it('keeps citation-specific unusable evidence out of the visibility metrics', () => {
+    const rows = adaptEngineMetricsToBreakdown({
+      project_id: 'p1',
+      period: { from: '2026-05-01', to: '2026-05-12' },
+      state: 'partial',
+      formula_status: 'partial',
+      missing_inputs: ['unresolved_citation_attribution'],
+      metric_formula_evidence: {
+        coverage: { formula_status: 'ok' },
+        sov: { formula_status: 'ok' },
+        citation: {
+          formula_status: 'missing_required_inputs',
+          reason_codes: ['unresolved_citation_attribution'],
+        },
+      },
+      items: [
+        {
+          engine: 'chatgpt',
+          mention_rate: 1.0,
+          sov: 0.5,
+          citation_rate: null,
+          sentiment: 0.7,
+        },
+      ],
+    })
+
+    expect(rows).toEqual([
+      {
+        engine: 'chatgpt',
+        mentionRate: 100,
+        sov: 50,
+        citationShare: null,
+      },
+    ])
+  })
+
   it('does not render sentiment explanatory rows from score-only evidence', () => {
     const partialEvidence = {
       project_id: 'p1',

@@ -203,4 +203,19 @@ describe('analytics formula-status guards', () => {
     expect(state.tone).toBe('partial')
     expect(state.reasonLabels).toContain('Valid zero proof missing')
   })
+
+  it('keeps backend count aliases in metric trust details', () => {
+    const state = buildMetricTrustState({
+      metricKey: 'sov',
+      value: null,
+      formula_status: 'missing_required_inputs',
+      reason_codes: ['target_only_sov'],
+      numerator_count: 2,
+      denominator_count: 2,
+    })
+
+    expect(state.tone).toBe('missing')
+    expect(state.summary).toBe('SoV has target evidence but no competitive denominator yet.')
+    expect(state.details).toContain('2 / 2 evidence')
+  })
 })
