@@ -311,6 +311,12 @@ def _series_has_real_evidence(
     return context.evidence_counts.get("geo_score_daily_rows", 0) > 0
 
 
+def _only_peripheral_package_inputs(missing_inputs: list[str]) -> bool:
+    return bool(missing_inputs) and all(
+        item in _PERIPHERAL_PACKAGE_INPUTS for item in missing_inputs
+    )
+
+
 def _apply_metric_series_contract(
     series: list[MetricSeries],
     context: AnalyticsContractContext,
@@ -347,13 +353,27 @@ def _apply_metric_series_contract(
         if _series_has_real_evidence(
             item, context, missing_inputs, evidence_source=evidence_source
         ):
+            formula_status = (
+                FORMULA_OK_STATUS
+                if _only_peripheral_package_inputs(missing_inputs)
+                else FORMULA_PARTIAL_STATUS
+            )
+            state = "ok" if formula_status == FORMULA_OK_STATUS else "partial"
+            state_reason = (
+                "data_available" if formula_status == FORMULA_OK_STATUS else "partial_analyzer_data"
+            )
+            item_missing_inputs = (
+                item.missing_inputs
+                if formula_status == FORMULA_OK_STATUS
+                else _unique([*item.missing_inputs, *missing_inputs])
+            )
             out.append(
                 item.model_copy(
                     update={
-                        "formula_status": FORMULA_PARTIAL_STATUS,
-                        "missing_inputs": _unique([*item.missing_inputs, *missing_inputs]),
-                        "state": "partial",
-                        "state_reason": "partial_analyzer_data",
+                        "formula_status": formula_status,
+                        "missing_inputs": item_missing_inputs,
+                        "state": state,
+                        "state_reason": state_reason,
                     }
                 )
             )
