@@ -314,6 +314,67 @@ def _sentiment_by_engine_from_facts(
     return items, len(seen)
 
 
+_SENTIMENT_ENGINE_ATTRIBUTION_MISSING_INPUTS = [
+    "llm_responses.target_llm",
+    "queries.target_llm",
+]
+
+
+async def _sentiment_engine_attribution_gap_from_mentions(
+    session: AsyncSession,
+    brand_id: int,
+    from_d: date,
+    to_d: date,
+) -> tuple[int, dict[str, int], list[str]]:
+    from_dt, to_dt = _dt_range(from_d, to_d)
+    engine_source_count = int(
+        (
+            await session.execute(
+                select(func.count(GeoScoreDaily.id)).where(
+                    and_(
+                        GeoScoreDaily.brand_id == brand_id,
+                        GeoScoreDaily.date >= from_dt,
+                        GeoScoreDaily.date <= to_dt,
+                        GeoScoreDaily.target_llm.isnot(None),
+                    )
+                )
+            )
+        ).scalar_one()
+        or 0
+    )
+    if engine_source_count > 0:
+        return 0, {}, []
+
+    brand_filter = await brand_mention_match_condition(session, brand_id)
+    label_expr = func.lower(func.trim(func.coalesce(BrandMention.sentiment, "")))
+    evidence_count = int(
+        (
+            await session.execute(
+                select(func.count(BrandMention.id)).where(
+                    and_(
+                        brand_filter,
+                        BrandMention.created_at >= from_dt,
+                        BrandMention.created_at <= to_dt,
+                        BrandMention.sentiment_score.isnot(None),
+                        label_expr.in_(["positive", "neutral", "negative"]),
+                    )
+                )
+            )
+        ).scalar_one()
+        or 0
+    )
+    if evidence_count <= 0:
+        return 0, {}, []
+    return (
+        evidence_count,
+        _chart_counts(
+            sentiment_label_count=evidence_count,
+            engine_missing_sentiment_label_count=evidence_count,
+        ),
+        _SENTIMENT_ENGINE_ATTRIBUTION_MISSING_INPUTS,
+    )
+
+
 async def _sentiment_by_engine_from_response_window(
     session: AsyncSession,
     project: Project,
@@ -1257,6 +1318,34 @@ async def get_sentiment_by_engine(
                 source_provenance=["admin_facts", "brand_mentions", "response_analyses"],
                 brand_id=brand_id,
             )
+        if not items:
+            (
+                attribution_gap_count,
+                attribution_gap_counts,
+                attribution_gap_missing,
+            ) = await _sentiment_engine_attribution_gap_from_mentions(
+                session,
+                brand_id,
+                from_d,
+                to_d,
+            )
+            if attribution_gap_missing:
+                out = _sentiment_by_engine_missing_out(
+                    project_id=project.id,
+                    period=_period(from_d, to_d),
+                    evidence_count=attribution_gap_count,
+                    evidence_counts=attribution_gap_counts,
+                    missing_inputs=attribution_gap_missing,
+                )
+                return await _with_sentiment_by_engine_contract(
+                    out,
+                    session,
+                    project,
+                    from_d,
+                    to_d,
+                    source_provenance=["brand_mentions", "llm_responses", "queries"],
+                    brand_id=brand_id,
+                )
         state = "ok" if items else "empty"
         out = SentimentByEngineOut(
             project_id=project.id,
