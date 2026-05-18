@@ -45,10 +45,10 @@ export default function PanoTrendChart({ trendData, primaryName, competitors, is
   const normalized = useMemo(() => (trendData ?? []).map((d, i) => {
     const liveLabel = concreteDateLabel(d.date) || concreteDateLabel(d.name);
     const demoLabel =
-      typeof d.name === 'string' && d.name.trim()
-        ? d.name.trim()
-        : d.day != null
-          ? `${d.day}d`
+      d.day != null
+        ? `${d.day}d`
+        : typeof d.name === 'string' && d.name.trim()
+          ? d.name.trim()
           : `D${i + 1}`;
     const label = isLive ? liveLabel : demoLabel;
     if (!label) return null;

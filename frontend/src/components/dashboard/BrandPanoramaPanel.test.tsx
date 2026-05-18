@@ -2,6 +2,7 @@ import { render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import BrandPanoramaPanel from './BrandPanoramaPanel'
+import PanoTrendChart from './brand-panorama/charts/PanoTrendChart'
 import { LocaleProvider } from '../../contexts/LocaleContext'
 
 vi.mock('recharts', async () => {
@@ -184,5 +185,29 @@ describe('BrandPanoramaPanel live KPI rendering', () => {
 
     expect(screen.getByText('Live trend dates are missing.')).toBeInTheDocument()
     expect(screen.queryByTestId('pano-trend-data')).not.toBeInTheDocument()
+  })
+
+  it('keeps demo trend labels on ordinal day fallback instead of mock names', () => {
+    const localizedDayLabel = '1\u65e5'
+
+    render(
+      <PanoTrendChart
+        trendData={[
+          {
+            day: 1,
+            name: localizedDayLabel,
+            panoScore: 81,
+          },
+        ]}
+        primaryName="Demo Brand"
+        competitors={[]}
+        isLive={false}
+        t={(key) => key}
+      />,
+    )
+
+    const chartData = screen.getByTestId('pano-trend-data').textContent || ''
+    expect(chartData).toContain('1d')
+    expect(chartData).not.toContain(localizedDayLabel)
   })
 })
