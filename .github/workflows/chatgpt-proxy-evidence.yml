@@ -1,5 +1,9 @@
 name: ChatGPT proxy_api_unreachable evidence (read-only)
 
+# Re-trigger: previous run completed before PR #1209 existed, so the
+# github-script comment step had no PR to attach evidence to. Touching
+# the file to fire one more run inside PR context.
+#
 # Refs branch claude/fix-chatgpt-error-fjyfb.
 # AGENTS.md `### Evidence-First Debugging`: before proposing any fix for the
 # user-reported ChatGPT proxy_api_unreachable failures (Q-185664 / Q-185661 /
