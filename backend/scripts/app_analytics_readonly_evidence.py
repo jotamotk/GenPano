@@ -660,6 +660,48 @@ WHERE brand_id = ANY({all_brand_array})
 GROUP BY brand_id
 ORDER BY table_name, brand_id;
 
+\\echo '--- topic_score_daily distinct-topic coverage per brand (missing-topics-heatmap) ---'
+SELECT
+  brand_id,
+  COUNT(DISTINCT topic_id) AS distinct_topics,
+  COUNT(*) AS row_count,
+  MIN(date::date) AS first_date,
+  MAX(date::date) AS last_date
+FROM topic_score_daily
+WHERE brand_id = ANY({all_brand_array})
+  AND date::date BETWEEN '{date_from}'::date AND '{date_to}'::date
+GROUP BY brand_id
+ORDER BY brand_id;
+
+\\echo '--- top-N candidate ordering as heatmap Path A computes it (LIMIT 30) ---'
+SELECT
+  tsd.topic_id,
+  t.text AS topic_name,
+  SUM(tsd.mention_count) AS total_mentions,
+  COUNT(DISTINCT tsd.brand_id) AS brands_with_data
+FROM topic_score_daily tsd
+LEFT JOIN topics t ON t.id = tsd.topic_id
+WHERE tsd.brand_id = ANY({all_brand_array})
+  AND tsd.date::date BETWEEN '{date_from}'::date AND '{date_to}'::date
+GROUP BY tsd.topic_id, t.text
+ORDER BY total_mentions DESC NULLS LAST
+LIMIT 30;
+
+\\echo '--- per-brand topic ownership vs daily rollup coverage ---'
+SELECT
+  t.brand_id,
+  COUNT(*) AS topics_owned,
+  COUNT(*) FILTER (WHERE EXISTS (
+    SELECT 1 FROM topic_score_daily tsd
+    WHERE tsd.topic_id = t.id
+      AND tsd.brand_id = t.brand_id
+      AND tsd.date::date BETWEEN '{date_from}'::date AND '{date_to}'::date
+  )) AS topics_with_daily_rows
+FROM topics t
+WHERE t.brand_id = ANY({all_brand_array})
+GROUP BY t.brand_id
+ORDER BY t.brand_id;
+
 ROLLBACK;
 """.strip()
     assert_read_only_sql(sql)
@@ -724,6 +766,25 @@ def build_api_probe_plan(config: EvidenceConfig) -> list[ApiProbe]:
             "topic_heatmap",
             "GET",
             f"/api/v1/projects/{project}/topic-heatmap?{heatmap_query}",
+        ),
+        ApiProbe(
+            "topic_heatmap_sentiment_default",
+            "GET",
+            f"/api/v1/projects/{project}/topic-heatmap?"
+            + _query({**no_brand_common, "metric": "sentiment", "compare_with": compare_with}),
+        ),
+        ApiProbe(
+            "topic_heatmap_sentiment_top_n_30",
+            "GET",
+            f"/api/v1/projects/{project}/topic-heatmap?"
+            + _query(
+                {
+                    **no_brand_common,
+                    "metric": "sentiment",
+                    "compare_with": compare_with,
+                    "top_n": 30,
+                }
+            ),
         ),
         ApiProbe(
             "sentiment",

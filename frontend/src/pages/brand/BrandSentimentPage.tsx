@@ -99,7 +99,7 @@ export default function BrandSentimentPage() {
   const trendQ = useSentimentTrendByEngine(isLive ? liveProjectId : null, chartFilters);
   const heatmapQ = useTopicHeatmap(isLive ? liveProjectId : null, {
     metric: 'sentiment',
-    topN: 8,
+    topN: 20,
     filters: chartFilters,
   });
   const attributionQ = useTopicAttribution(isLive ? liveProjectId : null, 5, chartFilters);
