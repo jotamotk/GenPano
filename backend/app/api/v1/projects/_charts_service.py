@@ -32,6 +32,11 @@ from genpano_models import (
 from sqlalchemy import and_, case, desc, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.v1.projects._analytics_contract import (
+    FORMULA_OK_STATUS,
+    FORMULA_PARTIAL_STATUS,
+    formula_diagnostics_for,
+)
 from app.api.v1.projects._charts_dto import (
     AuthorityRadarOut,
     AuthorityRadarRow,
@@ -69,11 +74,6 @@ from app.api.v1.projects._charts_dto import (
     TopicAttributionOut,
     TopicAttributionRow,
     TopicHeatmapOut,
-)
-from app.api.v1.projects._analytics_contract import (
-    FORMULA_OK_STATUS,
-    FORMULA_PARTIAL_STATUS,
-    formula_diagnostics_for,
 )
 from app.api.v1.projects._legacy_lookups import (
     resolve_brand_industry,
@@ -518,8 +518,7 @@ def _target_only_sov_engines(fact_rows: list[dict[str, Any]]) -> set[str]:
     return {
         engine
         for engine, values in buckets.items()
-        if values["target_mentions"] > 0
-        and values["all_mentions"] <= values["target_mentions"]
+        if values["target_mentions"] > 0 and values["all_mentions"] <= values["target_mentions"]
     }
 
 
@@ -541,11 +540,7 @@ def _with_engine_target_only_sov_contract(
         key: dict(value) if isinstance(value, dict) else value
         for key, value in out.metric_formula_evidence.items()
     }
-    sov_evidence = (
-        dict(evidence.get("sov"))
-        if isinstance(evidence.get("sov"), dict)
-        else {}
-    )
+    sov_evidence = dict(evidence.get("sov")) if isinstance(evidence.get("sov"), dict) else {}
     if sov_evidence:
         sov_evidence["reason_codes"] = _unique(
             [*(sov_evidence.get("reason_codes") or []), "target_only_sov"]
