@@ -528,7 +528,12 @@ async function findModalProbe(baseUrl: string, token: string): Promise<ModalProb
   throw new Error(`DATA_BLOCKER: no real response attempt could be selected for Response attempts modal. ${JSON.stringify(candidateSummary)}`)
 }
 
-async function openResponseAttemptsModal(page: Page, baseUrl: string, probe: ModalProbe) {
+type OpenedResponseModal = {
+  modal: Locator
+  responsePromise: Promise<any>
+}
+
+async function openResponseAttemptsModal(page: Page, baseUrl: string, probe: ModalProbe): Promise<OpenedResponseModal> {
   const route =
     `/brand/topics?brandId=${probe.brandId}&from=${encodeURIComponent(probe.fromDate)}` +
     `&to=${encodeURIComponent(probe.toDate)}&profileGroup=all` +
@@ -546,12 +551,72 @@ async function openResponseAttemptsModal(page: Page, baseUrl: string, probe: Mod
     ? cardTexts.findIndex(text => text.includes(queryNeedle))
     : -1
   const card = groupCards.nth(selectedIndex >= 0 ? selectedIndex : 0)
+  const responsePath = `/api/v1/projects/${probe.projectId}/queries/${probe.queryId}/response`
+  const responsePromise = page
+    .waitForResponse(
+      response => {
+        const url = response.url()
+        return url.includes(responsePath) && url.includes(`brand_id=${probe.brandId}`)
+      },
+      { timeout: 45_000 },
+    )
+    .catch(error => error)
   await card.click()
 
   const modal = page.getByRole('dialog', { name: /Response attempts/i })
   await expect(modal).toBeVisible({ timeout: 15_000 })
   await expect(modal.getByRole('button', { name: /Close response attempts/i })).toBeVisible()
-  return modal
+  return { modal, responsePromise }
+}
+
+async function waitForResponseModalLoaded(modal: Locator, responsePromise: Promise<any>, probe: ModalProbe) {
+  const response = await responsePromise
+  const apiEvidence = response && typeof response.status === 'function'
+    ? {
+        status: response.status(),
+        ok: response.ok(),
+        url: response.url(),
+      }
+    : {
+        status: null,
+        ok: false,
+        error: response instanceof Error ? response.message : String(response),
+      }
+
+  if (apiEvidence.status && apiEvidence.status >= 500) {
+    return {
+      loaded: false,
+      status: 'RESPONSE_ENDPOINT_BLOCKER',
+      reason: 'selected_query_response_api_failed',
+      apiEvidence,
+    }
+  }
+
+  const loading = modal.getByText(/Loading response/i)
+  const fullAnswer = modal.getByText(/Full LLM answer/i)
+  const loadingHidden = await expect(loading).toBeHidden({ timeout: 45_000 }).then(() => true).catch(() => false)
+  const fullAnswerVisible = await expect(fullAnswer).toBeVisible({ timeout: 45_000 }).then(() => true).catch(() => false)
+
+  if (!apiEvidence.ok || !loadingHidden || !fullAnswerVisible) {
+    return {
+      loaded: false,
+      status: 'RESPONSE_LOAD_BLOCKER',
+      reason: 'selected_response_content_did_not_finish_loading',
+      apiEvidence,
+      loadingHidden,
+      fullAnswerVisible,
+    }
+  }
+
+  return {
+    loaded: true,
+    status: 'LOADED',
+    reason: 'selected_response_content_loaded',
+    apiEvidence,
+    loadingHidden,
+    fullAnswerVisible,
+    queryId: probe.queryId,
+  }
 }
 
 async function scrollMetrics(locator: Locator) {
@@ -629,7 +694,30 @@ test.describe('Live App Topics response modal scroll gate', () => {
       }
     })
 
-    const modal = await openResponseAttemptsModal(page, baseUrl, probe)
+    const { modal, responsePromise } = await openResponseAttemptsModal(page, baseUrl, probe)
+    const loadEvidence = await waitForResponseModalLoaded(modal, responsePromise, probe)
+    if (!loadEvidence.loaded) {
+      await modal.screenshot({ path: `${SCREENSHOT_DIR}/response-modal-load-blocked.png` })
+      const loadBlocker = {
+        status: loadEvidence.status,
+        reason: loadEvidence.reason,
+        selectedCandidate: probe.candidateSummary?.selectedCandidate,
+        maxRawTextCandidate: probe.candidateSummary?.maxRawTextCandidate,
+        projectId: probe.projectId,
+        brandId: probe.brandId,
+        topicId: probe.topicId,
+        promptId: probe.promptId,
+        queryId: probe.queryId,
+        rawTextLength: probe.rawTextLength,
+        analyzerFactCount: probe.analyzerFactCount,
+        candidateSummary: probe.candidateSummary,
+        loadEvidence,
+        failedResponses,
+      }
+      await fs.writeFile(`${SCREENSHOT_DIR}/final-blocker.json`, JSON.stringify(loadBlocker, null, 2))
+      console.log(`FINAL_TOPICS_RESPONSE_MODAL_LOAD_BLOCKER ${JSON.stringify(loadBlocker)}`)
+      throw new Error(`${loadEvidence.status}: selected response did not load before scroll measurement. final_blocker=${JSON.stringify(loadBlocker)}`)
+    }
     await modal.screenshot({ path: `${SCREENSHOT_DIR}/response-modal-open.png` })
 
     const modalBox = await modal.boundingBox()
@@ -663,6 +751,7 @@ test.describe('Live App Topics response modal scroll gate', () => {
       rawTextLength: probe.rawTextLength,
       analyzerFactCount: probe.analyzerFactCount,
       candidateSummary: probe.candidateSummary,
+      loadEvidence,
       mainScroll: { before: mainBefore },
       analyzerScroll: { before: analyzerBefore },
     }
@@ -682,6 +771,7 @@ test.describe('Live App Topics response modal scroll gate', () => {
         selectedCandidate: probe.candidateSummary?.selectedCandidate,
         maxRawTextCandidate: probe.candidateSummary?.maxRawTextCandidate,
         candidateSummary: probe.candidateSummary,
+        loadEvidence,
         modalMetrics: {
           main: mainBefore,
           analyzer: analyzerBefore,
@@ -722,6 +812,7 @@ test.describe('Live App Topics response modal scroll gate', () => {
           rawTextLength: probe.rawTextLength,
           analyzerFactCount: probe.analyzerFactCount,
           candidateSummary: probe.candidateSummary,
+          loadEvidence,
           mainScroll: { before: mainBefore, after: mainAfter },
           analyzerScroll: { before: analyzerBefore, after: analyzerAfter },
         },
@@ -740,6 +831,7 @@ test.describe('Live App Topics response modal scroll gate', () => {
           rawTextLength: probe.rawTextLength,
           analyzerFactCount: probe.analyzerFactCount,
           candidateSummary: probe.candidateSummary,
+          loadEvidence,
           mainScrollable: mainBefore.canScroll,
           analyzerScrollable: analyzerBefore.canScroll,
         }),
