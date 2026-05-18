@@ -247,6 +247,165 @@ jobs:
           PY
           echo ""
 
+          echo "=== Clash internals (from host, bypassing UFW) ==="
+          # Pull CLASH_API_SECRET out of the worker env so we use the same
+          # token the production code uses. Mask it from logs.
+          SECRET="$(docker compose exec -T worker sh -c 'printf %s "${CLASH_API_SECRET:-}"' </dev/null 2>/dev/null | tr -d '\r\n')"
+          if [ -z "$SECRET" ]; then
+            echo "(CLASH_API_SECRET empty in worker env — falling back to no-auth probes)"
+            AUTH_HEADER=""
+          else
+            # Length only, never the value.
+            echo "CLASH_API_SECRET length: ${#SECRET}"
+            AUTH_HEADER="Authorization: Bearer $SECRET"
+          fi
+
+          probe () {
+              # $1 = label, $2 = path
+              echo "--- $1 ($2) ---"
+              if [ -n "$AUTH_HEADER" ]; then
+                  curl -sS --max-time 5 -H "$AUTH_HEADER" \
+                       "http://127.0.0.1:9098$2" \
+                       -w "\nhttp_code=%{http_code} time=%{time_total}s\n"
+              else
+                  curl -sS --max-time 5 \
+                       "http://127.0.0.1:9098$2" \
+                       -w "\nhttp_code=%{http_code} time=%{time_total}s\n"
+              fi
+              echo
+          }
+
+          # /version: cheapest health probe, confirms auth works.
+          probe "ninja-mihomo /version" "/version" | head -3
+
+          # /proxies returns the full proxy map; print only the structure
+          # we care about (group names + node count + currently selected).
+          echo "--- /proxies summary (groups: name, type, now, all-count) ---"
+          if [ -n "$AUTH_HEADER" ]; then
+              curl -sS --max-time 8 -H "$AUTH_HEADER" http://127.0.0.1:9098/proxies
+          else
+              curl -sS --max-time 8 http://127.0.0.1:9098/proxies
+          fi 2>&1 | python3 - <<'PY' </dev/null 2>&1 || true
+          import json, sys
+          try:
+              data = json.load(sys.stdin)
+          except Exception as exc:
+              print(f"(json parse failed: {exc})")
+              sys.exit(0)
+          proxies = data.get("proxies", {}) or {}
+          # Group-type entries have type Selector / URLTest / Fallback / LoadBalance.
+          group_types = {"Selector", "URLTest", "Fallback", "LoadBalance", "Relay"}
+          groups = [(n, p) for n, p in proxies.items()
+                    if p.get("type") in group_types]
+          for name, p in sorted(groups, key=lambda kv: kv[0]):
+              all_nodes = p.get("all", []) or []
+              now = p.get("now")
+              print(f"  group={name!r:32s} type={p.get('type'):10s} "
+                    f"now={now!r:24s} all_count={len(all_nodes)}")
+          print()
+          print(f"total_proxies_entries={len(proxies)}  total_groups={len(groups)}")
+          PY
+          echo
+
+          # The two groups production code actually consumes.
+          probe "/proxies/GLOBAL" "/proxies/GLOBAL" | python3 - <<'PY' </dev/null 2>&1 || true
+          import json, sys, re
+          buf = sys.stdin.read()
+          # Trim the trailing 'http_code=...' line so json can parse.
+          buf = re.sub(r"\nhttp_code=.*$", "", buf, flags=re.S)
+          try:
+              d = json.loads(buf)
+          except Exception:
+              print(buf[:600])
+              sys.exit(0)
+          print("name:", d.get("name"))
+          print("type:", d.get("type"))
+          print("now:", d.get("now"))
+          all_ = d.get("all", []) or []
+          print(f"all (count={len(all_)}):")
+          for n in all_[:30]:
+              print(f"  - {n}")
+          if len(all_) > 30:
+              print(f"  ... +{len(all_) - 30} more")
+          PY
+          echo
+
+          # CLASH_PROXY_GROUP from worker env, URL-encoded for /proxies/<group>.
+          PROXY_GROUP="$(docker compose exec -T worker sh -c 'printf %s "${CLASH_PROXY_GROUP:-}"' </dev/null 2>/dev/null | tr -d '\r\n')"
+          if [ -n "$PROXY_GROUP" ]; then
+              ENCODED_GROUP="$(python3 -c "import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=''))" "$PROXY_GROUP")"
+              probe "/proxies/${PROXY_GROUP}" "/proxies/${ENCODED_GROUP}" | python3 - <<'PY' </dev/null 2>&1 || true
+              import json, sys, re
+              buf = sys.stdin.read()
+              buf = re.sub(r"\nhttp_code=.*$", "", buf, flags=re.S)
+              try:
+                  d = json.loads(buf)
+              except Exception:
+                  print(buf[:600])
+                  sys.exit(0)
+              print("name:", d.get("name"))
+              print("type:", d.get("type"))
+              print("now:", d.get("now"))
+              all_ = d.get("all", []) or []
+              print(f"all (count={len(all_)}):")
+              for n in all_[:30]:
+                  print(f"  - {n}")
+              if len(all_) > 30:
+                  print(f"  ... +{len(all_) - 30} more")
+          PY
+          else
+              echo "(CLASH_PROXY_GROUP unset in worker env)"
+          fi
+
+          # Provider health: per-node latency from the last health-check.
+          echo "--- /providers/proxies (provider summaries) ---"
+          if [ -n "$AUTH_HEADER" ]; then
+              curl -sS --max-time 5 -H "$AUTH_HEADER" http://127.0.0.1:9098/providers/proxies
+          else
+              curl -sS --max-time 5 http://127.0.0.1:9098/providers/proxies
+          fi 2>&1 | python3 - <<'PY' </dev/null 2>&1 || true
+          import json, sys
+          try:
+              data = json.load(sys.stdin)
+          except Exception as exc:
+              print(f"(json parse failed: {exc})")
+              sys.exit(0)
+          providers = data.get("providers", {}) or {}
+          for pname, p in providers.items():
+              nodes = p.get("proxies", []) or []
+              healthy = [n for n in nodes
+                         if (n.get("history") or [{}])[-1].get("delay", 0)]
+              dead = [n for n in nodes
+                      if not (n.get("history") or [{}])[-1].get("delay", 0)]
+              print(f"provider={pname!r}: type={p.get('type')} "
+                    f"vehicleType={p.get('vehicleType')} "
+                    f"nodes={len(nodes)} healthy={len(healthy)} dead={len(dead)} "
+                    f"updatedAt={p.get('updatedAt')}")
+              for n in dead[:5]:
+                  hist = n.get("history") or []
+                  last = hist[-1] if hist else {}
+                  print(f"  DEAD: {n.get('name')!r} last_delay={last.get('delay')} "
+                        f"history_len={len(hist)}")
+          PY
+          echo
+
+          # Proxy traffic test: does going OUT through ninja-mihomo to
+          # chatgpt.com actually work? Run inside worker so we exercise
+          # the same network path the executor uses.
+          echo "--- worker -> chatgpt.com via ninja-mihomo proxy 6789 ---"
+          docker compose exec -T worker sh -lc '
+            url="https://chatgpt.com/"
+            echo "url=${url}"
+            echo "QG_PROXY=${QG_PROXY:-<unset>}"
+            echo "--- curl --proxy host.docker.internal:6789 (12s) ---"
+            curl -sS --max-time 12 \
+              --proxy http://host.docker.internal:6789 \
+              -o /dev/null \
+              -w "http_code=%{http_code} time=%{time_total}s\n" \
+              "${url}" || echo "curl_exit=$?"
+          ' </dev/null 2>&1 || true
+          echo
+
           echo "=== Worker log tail (last 40 lines mentioning proxy / clash / chatgpt) ==="
           docker compose logs --tail 800 worker 2>&1 | \
             grep -iE 'proxy_api_unreachable|clash|chatgpt|ensure_global_proxy_route|host\.docker\.internal' | \
