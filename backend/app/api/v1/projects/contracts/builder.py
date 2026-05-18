@@ -31,7 +31,7 @@ from genpano_models import (
     ResponseRelationFact,
     SentimentDriver,
 )
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.projects._mention_rollups import (
@@ -959,6 +959,41 @@ async def build_contract_context(
         ).scalar_one()
         or 0
     )
+    # Issue #1225 (PRD-APP-ANALYTICS-003 revised 2026-05-18): citation_share's
+    # denominator is now ALL citation_sources in the window scoped to the brand's
+    # queries — not just target-mentioning responses. The original "competitive
+    # set" denominator degenerated to 100% when LLM responses for a project did
+    # not cite competitor official domains. The new window total counts every
+    # citation row produced by queries (queries.brand_id) whose responses fell
+    # in the time window, regardless of whether they were target-mentioning or
+    # whose citation_mapper resolved their domains.
+    # Models for `llm_responses` and `queries` live in geo_tracker.db.models and
+    # are not exposed via genpano_models, so the join uses raw SQL — same
+    # pattern as `_pinned_topic_response_ids` and `app/admin/misc/db.py`. Gated
+    # on `has_admin_chain` so test fixtures without the legacy tables (test
+    # DBs that only seed analyzer mirror tables) silently get a 0 instead of
+    # raising `OperationalError: no such table: queries`.
+    window_citation_total = 0
+    if has_admin_chain and await legacy_table_exists(session, "llm_responses"):
+        window_citation_total = int(
+            (
+                await session.execute(
+                    text(
+                        """
+                        SELECT COUNT(*)
+                        FROM citation_sources cs
+                        JOIN llm_responses r ON r.id = cs.response_id
+                        JOIN queries q ON q.id = r.query_id
+                        WHERE q.brand_id = :brand_id
+                          AND cs.created_at >= :from_dt
+                          AND cs.created_at <= :to_dt
+                        """
+                    ),
+                    {"brand_id": brand_id, "from_dt": from_dt, "to_dt": to_dt},
+                )
+            ).scalar_one()
+            or 0
+        )
     raw_response_without_app_facts = (
         has_admin_chain
         and admin_fact_response_count > 0
@@ -1074,6 +1109,7 @@ async def build_contract_context(
         "normalized_brand_mention_count": normalized_mentions,
         "response_analysis_count": len(analysis_rows),
         "citation_source_count": citation_count,
+        "total_citation_count_window": window_citation_total,
         "competitor_brand_count": len(competitor_ids),
         "eligible_response_count": eligible_response_count,
         "admin_fact_response_count": admin_fact_response_count,

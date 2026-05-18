@@ -19,17 +19,19 @@ from app.api.v1.projects._topic_analysis_service import AnalysisFilters
 
 
 def test_admin_fact_citation_rate_target_attributed_over_eligible_project() -> None:
-    """Issue #948 follow-up: the per-day citation metric must compute
-    ``target_attributed_citations / eligible_project_citations``, NOT
-    ``(any target-mentioning response has any citation) /
-    (target-mentioning responses)``. The old set-identity formula
-    collapsed to 1.0 the moment the LLM emitted citations on a
-    target-mentioning response (see live bestCoffer evidence: 引用份额
-    rendered 100% post-PR #980 deploy while project-level attributed
-    was 70/895 ≈ 7.8%).
+    """Issue #948 follow-up + Issue #1225 revision (2026-05-18): the per-day
+    citation metric must compute ``target_attributed_citations /
+    all_window_citations``, NOT ``(any target-mentioning response has any
+    citation) / (target-mentioning responses)``. The old set-identity
+    formula collapsed to 1.0 the moment the LLM emitted citations on a
+    target-mentioning response. The interim #948 denominator
+    (target-mentioning responses' citation_count_sum) ALSO degenerated to
+    100% when LLM responses did not cite competitor official domains —
+    fixed in #1225 by moving the denominator to the window-total citation
+    count provided by ``context.evidence_counts["total_citation_count_window"]``.
 
     This test pins the corrected formula: 5 target-attributed citations
-    out of 10 total → 0.5.
+    out of 10 window-total → 0.5.
     """
     bucket = {
         "response_ids": {101, 102},
@@ -45,13 +47,25 @@ def test_admin_fact_citation_rate_target_attributed_over_eligible_project() -> N
         "ranks": [],
         "sentiment_scores": [],
         "sentiment_label_count": 0,
-        # Issue #948 follow-up: per-day attributed + total sums replace
-        # the previous set-identity ratio.
+        # Issue #1225: per-day target sum is the numerator; the window
+        # total comes from the analytics contract context below.
         "citation_count_sum": 10,
         "target_citation_count_sum": 5,
     }
+    context = AnalyticsContractContext(
+        project_scope=ProjectScope(
+            project_id="project-744",
+            primary_brand_id=24,
+            requested_brand_id=24,
+        ),
+        state="ok",
+        state_reason="data_available",
+        formula_status=FORMULA_OK_STATUS,
+        evidence_counts={"total_citation_count_window": 10},
+        source_provenance=["admin_facts"],
+    )
 
-    assert _fact_metric_value("citation", bucket) == 0.5
+    assert _fact_metric_value("citation", bucket, context=context) == 0.5
 
 
 @pytest.mark.asyncio
@@ -116,7 +130,14 @@ async def test_admin_fact_metric_series_target_attributed_over_eligible_project(
             state="ok",
             state_reason="data_available",
             formula_status=FORMULA_OK_STATUS,
-            evidence_counts={"geo_score_daily_rows": 1},
+            # Issue #1225: per the new citation_share definition the
+            # denominator is the window-total citation count surfaced by
+            # the contract context. 5 + 0 + 5 = 10 citations across the
+            # three fixture responses.
+            evidence_counts={
+                "geo_score_daily_rows": 1,
+                "total_citation_count_window": 10,
+            },
             source_provenance=["admin_facts"],
         )
 

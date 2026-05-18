@@ -255,9 +255,17 @@ async def _seed_live_shaped_admin_facts(
                 (id, target_llm, status, query_text, brand_id, profile_id, prompt_id,
                  created_at, executed_at, finished_at, latency_ms)
             VALUES
-              (301, 'chatgpt', 'done', 'anti-aging serum options', 2, NULL, 201,
+              -- Issue #1225: queries.brand_id is the brand the query was
+              -- issued FOR. The original seed used brand_id=2 (competitor)
+              -- because the topic was framed as "competitor evidence", but
+              -- in a real project queries are issued for the project's
+              -- primary brand (12 = Estee Lauder). The PRD-APP-ANALYTICS-003
+              -- revised citation_share denominator (window-total citations
+              -- scoped to the target brand's queries) requires this
+              -- realistic shape.
+              (301, 'chatgpt', 'done', 'anti-aging serum options', 12, NULL, 201,
                :day, :day, :day, 700),
-              (302, 'deepseek', 'done', 'anti-aging serum comparison', 2, NULL, 201,
+              (302, 'deepseek', 'done', 'anti-aging serum comparison', 12, NULL, 201,
                :day, :day, :day, 800)
             """
         ),
@@ -319,6 +327,15 @@ async def _seed_live_shaped_admin_facts(
     db_session.add_all([target, competitor])
     await db_session.flush()
     db_session.add(
+        # Issue #1225 (PRD-APP-ANALYTICS-003 revised): the citation_share
+        # metric now requires the citation row's created_at to fall inside
+        # the requested window (consistent with the existing
+        # `citation_source_count` aggregate at builder.py:946-961). The
+        # original fixture used REPAIR_DAY (May 11, outside the April
+        # 24-May 7 window) to test the brand-mention "repaired after
+        # window" path, which was only valid for the old bucket-based
+        # denominator. Keep the citation inside the window so the citation
+        # series renders with the new window-total denominator.
         CitationSource(
             response_id=401,
             mention_id=target.id,
@@ -326,7 +343,7 @@ async def _seed_live_shaped_admin_facts(
             domain="example.com",
             title="Estee evidence",
             source_type="article",
-            created_at=REPAIR_DAY,
+            created_at=WINDOW_DAY,
         )
     )
     await db_session.commit()
@@ -385,8 +402,15 @@ async def test_metrics_sov_and_citation_use_same_admin_fact_window_as_overview(
     series = {row["metric"]: row for row in metrics.json()["series"]}
     assert series["sov"]["points"][0]["value"] == pytest.approx(0.973)
     assert series["sov"]["formula_status"] == "ok"
-    assert series["citation"]["points"][0]["value"] == pytest.approx(1.0)
-    assert series["citation"]["formula_status"] == "ok"
+    # Issue #1225 (PRD-APP-ANALYTICS-003 revised 2026-05-18): with the
+    # window-total citation denominator, this minimal fixture (one target
+    # citation, no other citations in the brand's queries) cannot produce
+    # a meaningful ratio — the contract correctly degrades the series to
+    # `state="partial"` with `missing_inputs` flagging the absent inputs.
+    # The previous assertion (`value == 1.0` from target/target) was the
+    # pre-PRD-revision 100% degeneracy this issue explicitly removed.
+    assert series["citation"]["state"] == "partial"
+    assert series["citation"]["points"] == []
 
     citation_body = citations.json()
     assert citation_body["total"] == 1
