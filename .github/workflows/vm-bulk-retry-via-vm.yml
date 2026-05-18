@@ -79,16 +79,17 @@ jobs:
           TARGET_LLM: ${{ inputs.target_llm }}
           DRY_RUN: ${{ inputs.dry_run }}
         run: |
-          set -uo pipefail
+          set -uxo pipefail
           PORT="${SERVER_SSH_PORT:-22}"
           REMOTE="${SERVER_USER}@${SERVER_HOST}"
 
           echo "::group::Step 1 - scp script"
           ls -la scripts/vm_bulk_retry.py
-          scp -v -i ~/.ssh/id_ssh -P "$PORT" \
+          scp -i ~/.ssh/id_ssh -P "$PORT" \
             scripts/vm_bulk_retry.py \
-            "${REMOTE}:/tmp/vm_bulk_retry.py" 2>&1 | tail -30 || { echo "SCP FAILED rc=$?"; exit 6; }
-          echo "scp ok"
+            "${REMOTE}:/tmp/vm_bulk_retry.py"
+          scp_rc=$?
+          echo "scp rc=$scp_rc"
           echo "::endgroup::"
 
           # 1b. Start socat sidecars on the ECS host bridging the docker
