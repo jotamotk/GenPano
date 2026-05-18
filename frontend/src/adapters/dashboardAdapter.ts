@@ -22,6 +22,7 @@ import {
   normalizeRatioLikeOrNull,
   normalizeScore0To100OrNull,
   normalizeSentimentRawOrNull,
+  type ContractListItem,
   type MetricContractFields,
 } from '../api/analyticsContract'
 import type { DiagnosticOut } from '../api/diagnostics'
@@ -69,6 +70,10 @@ export interface BubbleEntry {
   sov: number | null
   sentiment: number | null
   mentions: number
+  endpointState?: string | null
+  stateReason?: string | null
+  missingInputs?: string[]
+  configuredCompetitorCount?: number | null
 }
 
 export interface TrendPoint {
@@ -137,6 +142,18 @@ function normalizeCompetitorSentiment(
   )
   if (!canUseContractMetricValue(metrics.state, definition)) return null
   return normalizeSentimentRawOrNull(value, definition?.value_scale, definition?.unit)
+}
+
+function contractItemText(item: ContractListItem): string {
+  if (typeof item === 'string') return item
+  return String(item.field || item.source || item.reason || '').trim()
+}
+
+function competitorConfiguredCount(metrics: CompetitorMetricsOut): number | null {
+  const scoped = metrics.project_scope?.competitor_brand_ids
+  if (Array.isArray(scoped)) return scoped.length
+  const evidenceCount = asFiniteNumber(metrics.evidence_counts?.competitor_brand_count)
+  return evidenceCount == null ? null : evidenceCount
 }
 
 function labelText(card: ContractKpiCard): string {
@@ -324,6 +341,18 @@ export function adaptCompetitorMetricsToBubble(
     ...(metrics.primary ? [metrics.primary] : []),
     ...(Array.isArray(metrics.competitors) ? metrics.competitors : []),
   ]
+  if (all.length === 0 && metrics.state && metrics.state !== 'ok') {
+    return [{
+      brand: '',
+      sov: null,
+      sentiment: null,
+      mentions: 0,
+      endpointState: metrics.state,
+      stateReason: metrics.state_reason ?? metrics.formula_status ?? null,
+      missingInputs: (metrics.missing_inputs ?? []).map(contractItemText).filter(Boolean),
+      configuredCompetitorCount: competitorConfiguredCount(metrics),
+    }]
+  }
   return all
     .map((row) => ({
       row,

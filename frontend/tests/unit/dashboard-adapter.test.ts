@@ -595,6 +595,45 @@ describe('dashboard adapter', () => {
     ])
   })
 
+  it('preserves competitor endpoint state when partial metrics return no plottable rows', () => {
+    const metrics = {
+      project_id: '95d43022-a5c8-5944-b6d6-34b29faa18b5',
+      primary_brand_id: 12,
+      period: { from: '2026-05-11', to: '2026-05-18' },
+      state: 'partial',
+      state_reason: 'missing_formula_inputs',
+      formula_status: 'missing_required_inputs',
+      missing_inputs: ['eligible_response_denominator'],
+      primary: null,
+      competitors: [],
+      project_scope: {
+        exists: true,
+        project_id: '95d43022-a5c8-5944-b6d6-34b29faa18b5',
+        primary_brand_id: 12,
+        requested_brand_id: 12,
+        competitor_brand_ids: [2],
+      },
+      evidence_counts: {
+        competitor_brand_count: 1,
+        eligible_response_count: 0,
+        competitive_mention_count: 468,
+      },
+    } as CompetitorMetricsOut
+
+    expect(adaptCompetitorMetricsToBubble(metrics)).toEqual([
+      {
+        brand: '',
+        sov: null,
+        sentiment: null,
+        mentions: 0,
+        endpointState: 'partial',
+        stateReason: 'missing_formula_inputs',
+        missingInputs: ['eligible_response_denominator'],
+        configuredCompetitorCount: 1,
+      },
+    ])
+  })
+
   it('uses /metrics mention_rate for competitor trend rows and never rebuilds it from SoV', () => {
     const overview = {
       ...emptyOverview,
