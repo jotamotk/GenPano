@@ -36,6 +36,7 @@ from app.api.v1.projects._analytics_contract import (
     FORMULA_OK_STATUS,
     FORMULA_PARTIAL_STATUS,
     formula_diagnostics_for,
+    sov_competitive_gap_reasons,
 )
 from app.api.v1.projects._charts_dto import (
     AuthorityRadarOut,
@@ -104,7 +105,6 @@ from app.api.v1.projects.charts._common import (
     _dt_range,
     _period,
     _resolve_window,
-    _unique,
 )
 from app.api.v1.projects.charts._contracts import (
     _chart_contract_update,
@@ -591,8 +591,8 @@ def _with_engine_target_only_sov_contract(
     if not target_only_engines:
         return out
 
-    missing_inputs = _unique([*out.missing_inputs, "target_only_sov"])
-    missing_reasons = _unique([*out.missing_reasons, "target_only_sov"])
+    missing_inputs = sov_competitive_gap_reasons([*out.missing_inputs, "target_only_sov"])
+    missing_reasons = sov_competitive_gap_reasons([*out.missing_reasons, "target_only_sov"])
     chart_status = (
         out.formula_status
         if out.formula_status not in {None, FORMULA_OK_STATUS}
@@ -607,7 +607,7 @@ def _with_engine_target_only_sov_contract(
         dict(sov_evidence_value) if isinstance(sov_evidence_value, dict) else {}
     )
     if sov_evidence:
-        sov_evidence["reason_codes"] = _unique(
+        sov_evidence["reason_codes"] = sov_competitive_gap_reasons(
             [*(sov_evidence.get("reason_codes") or []), "target_only_sov"]
         )
         if sov_evidence.get("formula_status") in {None, FORMULA_OK_STATUS}:
