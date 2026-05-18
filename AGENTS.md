@@ -180,6 +180,51 @@ line, PR opens, lint passes because the orchestrator hand-fills the
 ledger from the same hypothesis. CI cannot detect a hypothesis-grounded
 ledger. Only the orchestrator can.
 
+### Coding Discipline (General)
+
+These four principles cover the *generic* coding-quality failure modes for LLM
+agents. They are adapted from
+[Andrej Karpathy's observations on LLM coding pitfalls](https://x.com/karpathy/status/2015883857489522876)
+(packaged at `forrestchang/andrej-karpathy-skills`, MIT-licensed) and rewritten
+to fit this repo's rule precedence.
+
+**Precedence note.** For bug-fix, incident, or contract-change tasks, the
+project-specific rules above (`Evidence-First Debugging`, `Evidence-First
+Shipping`, `Acceptance And Verification Evidence`) are stricter and take
+precedence. The four points below apply to feature work, refactors, and any
+task not gated by an Evidence-First section.
+
+1. **Think before coding.** State assumptions explicitly. If multiple
+   interpretations exist, surface them — do not pick silently. If a simpler
+   approach exists, say so before implementing. If something is unclear,
+   stop and ask. (For bug-fix tasks, "thinking" means executing the
+   Evidence-First Debugging checklist, not free-form reasoning.)
+
+2. **Simplicity first.** Minimum code that solves the stated problem.
+   No features beyond what was asked, no abstractions for single-use code,
+   no "flexibility" or "configurability" that was not requested,
+   no error handling for impossible scenarios. If 200 lines could be 50,
+   rewrite.
+
+3. **Surgical changes.** Touch only what the request requires. Do not
+   "improve" adjacent code, comments, or formatting. Do not refactor things
+   that are not broken. Match existing style even if you would do it
+   differently. If you notice unrelated dead code, mention it — do not
+   delete it. Test: every changed line should trace directly to the
+   request.
+
+4. **Goal-driven execution.** Translate every task into a verifiable goal
+   before starting. "Fix the bug" → "Write a test that reproduces it, then
+   make it pass." "Refactor X" → "Ensure tests pass before and after."
+   For multi-step tasks, state a brief plan with a verification check per
+   step. (For incidents, the `Acceptance Matrix` / `Verification Evidence
+   Ledger` is the canonical form of this; this principle covers the
+   non-incident equivalent.)
+
+**Attribution.** Source: <https://github.com/forrestchang/andrej-karpathy-skills>
+(MIT). Reworded to align with this repo's evidence-first stance and rule
+precedence.
+
 ### Fast Path And Full Path
 
 Not every request needs Epic -> Frontend Visualization -> PRD -> split issues.
