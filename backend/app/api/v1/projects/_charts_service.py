@@ -70,6 +70,11 @@ from app.api.v1.projects._charts_dto import (
     TopicAttributionRow,
     TopicHeatmapOut,
 )
+from app.api.v1.projects._analytics_contract import (
+    FORMULA_OK_STATUS,
+    FORMULA_PARTIAL_STATUS,
+    formula_diagnostics_for,
+)
 from app.api.v1.projects._legacy_lookups import (
     resolve_brand_industry,
     resolve_brand_names,
@@ -85,6 +90,7 @@ from app.api.v1.projects._topic_analysis_service import (
     _as_float,
     _as_int,
     _date_key,
+    _fact_all_mention_count,
     _fact_rows,
     _fact_target_mention_count,
     get_topic_monitoring,
@@ -97,6 +103,7 @@ from app.api.v1.projects.charts._common import (
     _dt_range,
     _period,
     _resolve_window,
+    _unique,
 )
 from app.api.v1.projects.charts._contracts import (
     _chart_contract_update,
@@ -493,6 +500,87 @@ def _sentiment_trend_by_engine_from_facts(
     return engines, items, len(seen)
 
 
+def _target_only_sov_engines(fact_rows: list[dict[str, Any]]) -> set[str]:
+    buckets: dict[str, dict[str, int]] = defaultdict(
+        lambda: {"target_mentions": 0, "all_mentions": 0}
+    )
+    seen: set[int] = set()
+    for row in fact_rows:
+        rid = _as_int(row.get("response_id"))
+        if rid is None or rid in seen:
+            continue
+        seen.add(rid)
+        engine = str(row.get("target_llm") or row.get("response_target_llm") or "unknown")
+        target_mentions = _fact_target_mention_count(row)
+        all_mentions = _fact_all_mention_count(row, target_mentions)
+        buckets[engine]["target_mentions"] += target_mentions
+        buckets[engine]["all_mentions"] += all_mentions
+    return {
+        engine
+        for engine, values in buckets.items()
+        if values["target_mentions"] > 0
+        and values["all_mentions"] <= values["target_mentions"]
+    }
+
+
+def _with_engine_target_only_sov_contract(
+    out: EngineMetricsOut,
+    target_only_engines: set[str],
+) -> EngineMetricsOut:
+    if not target_only_engines:
+        return out
+
+    missing_inputs = _unique([*out.missing_inputs, "target_only_sov"])
+    missing_reasons = _unique([*out.missing_reasons, "target_only_sov"])
+    chart_status = (
+        out.formula_status
+        if out.formula_status not in {None, FORMULA_OK_STATUS}
+        else FORMULA_PARTIAL_STATUS
+    )
+    evidence = {
+        key: dict(value) if isinstance(value, dict) else value
+        for key, value in out.metric_formula_evidence.items()
+    }
+    sov_evidence = (
+        dict(evidence.get("sov"))
+        if isinstance(evidence.get("sov"), dict)
+        else {}
+    )
+    if sov_evidence:
+        sov_evidence["reason_codes"] = _unique(
+            [*(sov_evidence.get("reason_codes") or []), "target_only_sov"]
+        )
+        if sov_evidence.get("formula_status") in {None, FORMULA_OK_STATUS}:
+            sov_evidence["formula_status"] = FORMULA_PARTIAL_STATUS
+        sov_evidence["engine_target_only_sov_engines"] = sorted(target_only_engines)
+        evidence["sov"] = sov_evidence
+
+    return out.model_copy(
+        update={
+            "items": [
+                item.model_copy(update={"sov": None})
+                if item.engine in target_only_engines
+                else item
+                for item in out.items
+            ],
+            "state": "partial",
+            "state_reason": "partial_analyzer_data",
+            "formula_status": chart_status,
+            "formula_diagnostics": formula_diagnostics_for(
+                chart_status,
+                missing_inputs=missing_inputs,
+            ),
+            "missing_inputs": missing_inputs,
+            "missing_reasons": missing_reasons,
+            "evidence_counts": {
+                **out.evidence_counts,
+                "engine_target_only_sov_count": len(target_only_engines),
+            },
+            "metric_formula_evidence": evidence,
+        }
+    )
+
+
 # ── /metrics/by-engine ──────────────────────────────────────────────
 async def get_engine_metrics(
     session: AsyncSession,
@@ -528,6 +616,7 @@ async def get_engine_metrics(
             brand_id_override=brand_id,
         )
         items, evidence_count = _engine_metric_rows_from_facts(fact_rows)
+        target_only_engines = _target_only_sov_engines(fact_rows)
         state = "ok" if items else "empty"
         out = EngineMetricsOut(
             project_id=project.id,
@@ -538,7 +627,7 @@ async def get_engine_metrics(
             evidence_count=evidence_count,
             evidence_counts=_chart_counts(admin_fact_response_count=evidence_count),
         )
-        return await _with_engine_metric_contract(
+        out = await _with_engine_metric_contract(
             out,
             session,
             project,
@@ -547,6 +636,7 @@ async def get_engine_metrics(
             source_provenance=["admin_facts", "brand_mentions", "citation_sources"],
             brand_id=brand_id,
         )
+        return _with_engine_target_only_sov_contract(out, target_only_engines)
     fact_rows = await _admin_fact_rows(
         session,
         project,
@@ -556,6 +646,7 @@ async def get_engine_metrics(
     )
     fact_items, fact_evidence_count = _engine_metric_rows_from_facts(fact_rows)
     if fact_items:
+        target_only_engines = _target_only_sov_engines(fact_rows)
         out = EngineMetricsOut(
             project_id=project.id,
             period=_period(from_d, to_d),
@@ -565,7 +656,7 @@ async def get_engine_metrics(
             evidence_count=fact_evidence_count,
             evidence_counts=_chart_counts(admin_fact_response_count=fact_evidence_count),
         )
-        return await _with_engine_metric_contract(
+        out = await _with_engine_metric_contract(
             out,
             session,
             project,
@@ -574,6 +665,7 @@ async def get_engine_metrics(
             source_provenance=["admin_facts", "brand_mentions", "citation_sources"],
             brand_id=brand_id,
         )
+        return _with_engine_target_only_sov_contract(out, target_only_engines)
     stmt = (
         select(
             GeoScoreDaily.target_llm,
@@ -613,6 +705,7 @@ async def get_engine_metrics(
             brand_id_override=brand_id,
         )
         items, evidence_count = _engine_metric_rows_from_facts(fact_rows)
+        target_only_engines = _target_only_sov_engines(fact_rows)
         state = "ok" if items else "empty"
         out = EngineMetricsOut(
             project_id=project.id,
@@ -623,7 +716,7 @@ async def get_engine_metrics(
             evidence_count=evidence_count,
             evidence_counts=_chart_counts(admin_fact_response_count=evidence_count),
         )
-        return await _with_engine_metric_contract(
+        out = await _with_engine_metric_contract(
             out,
             session,
             project,
@@ -632,6 +725,7 @@ async def get_engine_metrics(
             source_provenance=["admin_facts", "brand_mentions", "citation_sources"],
             brand_id=brand_id,
         )
+        return _with_engine_target_only_sov_contract(out, target_only_engines)
     evidence_count = len(score_rows)
     out = EngineMetricsOut(
         project_id=project.id,

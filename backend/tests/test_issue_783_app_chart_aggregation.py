@@ -707,6 +707,68 @@ async def test_engine_metrics_marks_target_only_sov_partial_and_keeps_mention_ra
 
 
 @pytest.mark.asyncio
+async def test_engine_metrics_marks_mixed_engine_target_only_sov_row_partial(
+    client,
+    user: User,
+    db_session: AsyncSession,
+) -> None:
+    project = await _project(db_session, user)
+    await _seed_admin_chain_tables(db_session)
+    await _seed_issue_1152_engine_facts(
+        db_session,
+        topic_id=115231,
+        prompt_id=115232,
+        query_id=115233,
+        response_id=115234,
+        engine="chatgpt",
+        target_mentions=2,
+        competitor_mentions=0,
+        target_citation=True,
+    )
+    await _seed_issue_1152_engine_facts(
+        db_session,
+        topic_id=115241,
+        prompt_id=115242,
+        query_id=115243,
+        response_id=115244,
+        engine="doubao",
+        target_mentions=0,
+        competitor_mentions=3,
+    )
+    _seed_issue_1152_geo_daily(
+        db_session,
+        mention_rate=0.33,
+        sov=1.0,
+        citation_rate=0.88,
+    )
+    await db_session.commit()
+
+    response = await client.get(
+        f"/api/v1/projects/{project.id}/metrics/by-engine",
+        headers=_bearer(user),
+        params={"from": DAY.date().isoformat(), "to": DAY.date().isoformat()},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["state"] == "partial"
+    assert body["state_reason"] == "partial_analyzer_data"
+    assert body["formula_status"] == "partial"
+    assert "target_only_sov" in body["missing_inputs"]
+    assert body["evidence_counts"]["admin_fact_response_count"] == 2
+    assert body["evidence_counts"]["engine_target_only_sov_count"] == 1
+    sov_evidence = body["metric_formula_evidence"]["sov"]
+    assert sov_evidence["formula_status"] == "partial"
+    assert "target_only_sov" in sov_evidence["reason_codes"]
+
+    rows = {row["engine"]: row for row in body["items"]}
+    assert rows["chatgpt"]["mention_rate"] == 1.0
+    assert rows["chatgpt"]["sov"] is None
+    assert rows["doubao"]["mention_rate"] == 0.0
+    assert rows["doubao"]["sov"] == 0.0
+
+
+@pytest.mark.asyncio
 async def test_engine_metrics_empty_response_keeps_explicit_contract_metadata(
     client,
     user: User,
