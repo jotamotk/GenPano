@@ -1,0 +1,174 @@
+name: Evidence Pano BestCoffer (one-shot)
+
+# Throwaway workflow. Triggered only when this file itself is pushed
+# to claude/fix-pano-score-6Hbv3. Runs the existing readonly evidence
+# script against the bestCoffer project, then commits the raw output
+# back into _evidence/ so the orchestrator can read it via the GitHub
+# Contents API. Delete this file and the committed log when the
+# investigation is complete.
+
+on:
+  push:
+    branches:
+      - claude/fix-pano-score-6Hbv3
+    paths:
+      - .github/workflows/_evidence-pano-bestcoffer.yml
+
+concurrency:
+  group: evidence-pano-bestcoffer
+  cancel-in-progress: false
+
+jobs:
+  evidence:
+    name: Capture pano evidence and commit back
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    env:
+      PROJECT_ID: 95d43022-a5c8-5944-b6d6-34b29faa18b5
+      BRAND_ID: "12"
+      COMPETITOR_BRAND_IDS: "2"
+      DATE_FROM: "2026-04-18"
+      DATE_TO: "2026-05-18"
+      BASE_URL: http://116.62.36.173
+      SERVER_HOST: ${{ secrets.SERVER_HOST }}
+      SERVER_USER: ${{ secrets.SERVER_USER }}
+      SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+      APP_ANALYTICS_BEARER_TOKEN: ${{ secrets.APP_ANALYTICS_BEARER_TOKEN }}
+      USER_JWT_SECRET: ${{ secrets.USER_JWT_SECRET || secrets.JWT_SECRET }}
+      OWNER_USER_ID: fe25eff1-8462-43eb-a027-bc8eb2c3db81
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: claude/fix-pano-score-6Hbv3
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Mask tokens
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "${APP_ANALYTICS_BEARER_TOKEN}" ]; then
+            echo "::add-mask::${APP_ANALYTICS_BEARER_TOKEN}"
+          fi
+          if [ -n "${USER_JWT_SECRET}" ]; then
+            echo "::add-mask::${USER_JWT_SECRET}"
+          fi
+
+      - name: Preflight
+        id: preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          db_ready=true
+          api_ready=true
+          for s in SERVER_HOST SERVER_USER SERVER_SSH_KEY; do
+            if [ -z "${!s}" ]; then
+              echo "::notice::Missing required secret for DB probe: ${s}"
+              db_ready=false
+            fi
+          done
+          if [ -z "${APP_ANALYTICS_BEARER_TOKEN}" ] && [ -z "${USER_JWT_SECRET}" ]; then
+            echo "::notice::Missing API auth source (APP_ANALYTICS_BEARER_TOKEN or USER_JWT_SECRET/JWT_SECRET)"
+            api_ready=false
+          fi
+          echo "db_ready=${db_ready}" >> "${GITHUB_OUTPUT}"
+          echo "api_ready=${api_ready}" >> "${GITHUB_OUTPUT}"
+
+      - name: Generate SELECT SQL
+        shell: bash
+        run: |
+          set -euo pipefail
+          python backend/scripts/app_analytics_readonly_evidence.py db-sql \
+            --project-id "${PROJECT_ID}" \
+            --brand-id "${BRAND_ID}" \
+            --competitor-brand-ids "${COMPETITOR_BRAND_IDS}" \
+            --date-from "${DATE_FROM}" \
+            --date-to "${DATE_TO}" \
+            > "${RUNNER_TEMP}/evidence.sql"
+
+      - name: Run DB SELECT probes
+        if: steps.preflight.outputs.db_ready == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          install -m 600 /dev/null "${RUNNER_TEMP}/server_key"
+          printf '%s\n' "${SERVER_SSH_KEY}" > "${RUNNER_TEMP}/server_key"
+          {
+            echo "### Runtime container evidence"
+            ssh -i "${RUNNER_TEMP}/server_key" \
+              -o BatchMode=yes \
+              -o StrictHostKeyChecking=no \
+              "${SERVER_USER}@${SERVER_HOST}" \
+              "cd /opt/genpano && docker compose ps && docker compose ps -q | xargs -r docker inspect --format '{{.Name}} image={{.Config.Image}} started={{.State.StartedAt}} status={{.State.Status}} restart_count={{.RestartCount}}'"
+            echo
+            echo "### SELECT probe evidence"
+            ssh -i "${RUNNER_TEMP}/server_key" \
+              -o BatchMode=yes \
+              -o StrictHostKeyChecking=no \
+              "${SERVER_USER}@${SERVER_HOST}" \
+              "cd /opt/genpano && docker compose exec -T postgres psql -U genpano -d genpano -v ON_ERROR_STOP=1 -X" \
+              < "${RUNNER_TEMP}/evidence.sql"
+          } | tee "${RUNNER_TEMP}/evidence_db.log"
+
+      - name: Run authenticated GET probes
+        if: steps.preflight.outputs.api_ready == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python backend/scripts/app_analytics_readonly_evidence.py api-probes \
+            --project-id "${PROJECT_ID}" \
+            --brand-id "${BRAND_ID}" \
+            --competitor-brand-ids "${COMPETITOR_BRAND_IDS}" \
+            --date-from "${DATE_FROM}" \
+            --date-to "${DATE_TO}" \
+            --base-url "${BASE_URL}" \
+            --bearer-token-env APP_ANALYTICS_BEARER_TOKEN \
+            --jwt-secret-env USER_JWT_SECRET \
+            --owner-user-id "${OWNER_USER_ID}" \
+            | tee "${RUNNER_TEMP}/evidence_api.jsonl"
+
+      - name: Commit evidence back to branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p _evidence
+          stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+          out_dir="_evidence/pano-bestcoffer-${stamp}"
+          mkdir -p "${out_dir}"
+          if [ -f "${RUNNER_TEMP}/evidence_db.log" ]; then
+            cp "${RUNNER_TEMP}/evidence_db.log" "${out_dir}/db.log"
+          else
+            echo "DB probe blocked or skipped (preflight db_ready=${{ steps.preflight.outputs.db_ready }})" > "${out_dir}/db.log"
+          fi
+          if [ -f "${RUNNER_TEMP}/evidence_api.jsonl" ]; then
+            cp "${RUNNER_TEMP}/evidence_api.jsonl" "${out_dir}/api.jsonl"
+          else
+            echo "API probe blocked or skipped (preflight api_ready=${{ steps.preflight.outputs.api_ready }})" > "${out_dir}/api.txt"
+          fi
+          {
+            echo "project_id=${PROJECT_ID}"
+            echo "brand_id=${BRAND_ID}"
+            echo "competitor_brand_ids=${COMPETITOR_BRAND_IDS}"
+            echo "date_from=${DATE_FROM}"
+            echo "date_to=${DATE_TO}"
+            echo "base_url=${BASE_URL}"
+            echo "captured_at=${stamp}"
+            echo "commit=${GITHUB_SHA}"
+          } > "${out_dir}/inputs.txt"
+
+          git config user.email "actions@github.com"
+          git config user.name "github-actions[bot]"
+          git add "${out_dir}"
+          git commit -m "evidence: capture pano-bestcoffer ${stamp} [skip ci]" || {
+            echo "Nothing to commit"
+            exit 0
+          }
+          for attempt in 1 2 3 4; do
+            if git push origin HEAD:claude/fix-pano-score-6Hbv3; then
+              break
+            fi
+            sleep $((2 ** attempt))
+          done
