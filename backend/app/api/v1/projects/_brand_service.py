@@ -1349,7 +1349,7 @@ async def get_competitor_trends(
         else brand_ids
     )
     series_by_brand: dict[int, list[CompetitorTrendPoint]] = {bid: [] for bid in sql_brand_ids}
-    rows: list = []
+    rows: list[Any] = []
     if sql_brand_ids:
         stmt = (
             select(
