@@ -9,13 +9,8 @@ import { AuthProvider } from './contexts/AuthContext'
 import { LanguageProvider } from './contexts/LanguageContext'
 import ErrorBoundary from './components/ErrorBoundary'
 import { queryClient } from './lib/queryClient'
-import { hydrateDemoMode } from './lib/demoMode'
 import App from './App'
 import './index.css'
-
-// Reflect ?demo=1 URL param into sessionStorage before any component
-// mounts so the first React Query fetch already sees demo state.
-hydrateDemoMode()
 
 // Router basename must match Vite's BASE_URL so routes work under /preview/.
 // Strip trailing slash — BrowserRouter expects basename without one.
