@@ -260,116 +260,118 @@ jobs:
             AUTH_HEADER="Authorization: Bearer $SECRET"
           fi
 
-          probe () {
-              # $1 = label, $2 = path
+          # The previous pass had a python heredoc + pipe bug: `curl | python3
+          # - <<'PY'` makes python read its SCRIPT from stdin (via heredoc) so
+          # the curl JSON never reaches the script. Fix: write curl output to
+          # a tmpfile first, then have python read from the file.
+          fetch () {
+              # $1 = label, $2 = path, $3 = output file
               echo "--- $1 ($2) ---"
               if [ -n "$AUTH_HEADER" ]; then
-                  curl -sS --max-time 5 -H "$AUTH_HEADER" \
+                  curl -sS --max-time 8 -H "$AUTH_HEADER" \
                        "http://127.0.0.1:9098$2" \
-                       -w "\nhttp_code=%{http_code} time=%{time_total}s\n"
+                       -o "$3" \
+                       -w "http_code=%{http_code} time=%{time_total}s\n" || true
               else
-                  curl -sS --max-time 5 \
+                  curl -sS --max-time 8 \
                        "http://127.0.0.1:9098$2" \
-                       -w "\nhttp_code=%{http_code} time=%{time_total}s\n"
+                       -o "$3" \
+                       -w "http_code=%{http_code} time=%{time_total}s\n" || true
               fi
-              echo
           }
 
           # /version: cheapest health probe, confirms auth works.
-          probe "ninja-mihomo /version" "/version" | head -3
+          fetch "ninja-mihomo /version" "/version" /tmp/clash_version.json
+          head -c 300 /tmp/clash_version.json 2>/dev/null && echo
 
-          # /proxies returns the full proxy map; print only the structure
-          # we care about (group names + node count + currently selected).
-          echo "--- /proxies summary (groups: name, type, now, all-count) ---"
-          if [ -n "$AUTH_HEADER" ]; then
-              curl -sS --max-time 8 -H "$AUTH_HEADER" http://127.0.0.1:9098/proxies
-          else
-              curl -sS --max-time 8 http://127.0.0.1:9098/proxies
-          fi 2>&1 | python3 - <<'PY' </dev/null 2>&1 || true
-          import json, sys
+          # /proxies: full proxy map, summarized in python.
+          fetch "/proxies summary" "/proxies" /tmp/clash_proxies.json
+          PROXIES_FILE=/tmp/clash_proxies.json python3 <<'PY'
+          import json, os
+          path = os.environ["PROXIES_FILE"]
           try:
-              data = json.load(sys.stdin)
+              with open(path) as f:
+                  data = json.load(f)
           except Exception as exc:
               print(f"(json parse failed: {exc})")
-              sys.exit(0)
+              raise SystemExit(0)
           proxies = data.get("proxies", {}) or {}
-          # Group-type entries have type Selector / URLTest / Fallback / LoadBalance.
           group_types = {"Selector", "URLTest", "Fallback", "LoadBalance", "Relay"}
           groups = [(n, p) for n, p in proxies.items()
                     if p.get("type") in group_types]
           for name, p in sorted(groups, key=lambda kv: kv[0]):
               all_nodes = p.get("all", []) or []
               now = p.get("now")
-              print(f"  group={name!r:32s} type={p.get('type'):10s} "
+              print(f"  group={name!r:34s} type={p.get('type'):10s} "
                     f"now={now!r:24s} all_count={len(all_nodes)}")
           print()
           print(f"total_proxies_entries={len(proxies)}  total_groups={len(groups)}")
           PY
           echo
 
-          # The two groups production code actually consumes.
-          probe "/proxies/GLOBAL" "/proxies/GLOBAL" | python3 - <<'PY' </dev/null 2>&1 || true
-          import json, sys, re
-          buf = sys.stdin.read()
-          # Trim the trailing 'http_code=...' line so json can parse.
-          buf = re.sub(r"\nhttp_code=.*$", "", buf, flags=re.S)
+          # /proxies/GLOBAL — what production hits first.
+          fetch "/proxies/GLOBAL" "/proxies/GLOBAL" /tmp/clash_global.json
+          GROUP_FILE=/tmp/clash_global.json python3 <<'PY'
+          import json, os
+          path = os.environ["GROUP_FILE"]
           try:
-              d = json.loads(buf)
-          except Exception:
-              print(buf[:600])
-              sys.exit(0)
+              with open(path) as f:
+                  d = json.load(f)
+          except Exception as exc:
+              print(f"(json parse failed: {exc})")
+              raise SystemExit(0)
           print("name:", d.get("name"))
           print("type:", d.get("type"))
           print("now:", d.get("now"))
           all_ = d.get("all", []) or []
           print(f"all (count={len(all_)}):")
-          for n in all_[:30]:
+          for n in all_[:40]:
               print(f"  - {n}")
-          if len(all_) > 30:
-              print(f"  ... +{len(all_) - 30} more")
+          if len(all_) > 40:
+              print(f"  ... +{len(all_) - 40} more")
           PY
           echo
 
-          # CLASH_PROXY_GROUP from worker env, URL-encoded for /proxies/<group>.
+          # /proxies/<CLASH_PROXY_GROUP> — what production picks as source.
           PROXY_GROUP="$(docker compose exec -T worker sh -c 'printf %s "${CLASH_PROXY_GROUP:-}"' </dev/null 2>/dev/null | tr -d '\r\n')"
           if [ -n "$PROXY_GROUP" ]; then
               ENCODED_GROUP="$(python3 -c "import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=''))" "$PROXY_GROUP")"
-              probe "/proxies/${PROXY_GROUP}" "/proxies/${ENCODED_GROUP}" | python3 - <<'PY' </dev/null 2>&1 || true
-              import json, sys, re
-              buf = sys.stdin.read()
-              buf = re.sub(r"\nhttp_code=.*$", "", buf, flags=re.S)
-              try:
-                  d = json.loads(buf)
-              except Exception:
-                  print(buf[:600])
-                  sys.exit(0)
-              print("name:", d.get("name"))
-              print("type:", d.get("type"))
-              print("now:", d.get("now"))
-              all_ = d.get("all", []) or []
-              print(f"all (count={len(all_)}):")
-              for n in all_[:30]:
-                  print(f"  - {n}")
-              if len(all_) > 30:
-                  print(f"  ... +{len(all_) - 30} more")
+              fetch "/proxies/${PROXY_GROUP}" "/proxies/${ENCODED_GROUP}" /tmp/clash_pg.json
+              GROUP_FILE=/tmp/clash_pg.json python3 <<'PY'
+          import json, os
+          path = os.environ["GROUP_FILE"]
+          try:
+              with open(path) as f:
+                  d = json.load(f)
+          except Exception as exc:
+              print(f"(json parse failed: {exc})")
+              raise SystemExit(0)
+          print("name:", d.get("name"))
+          print("type:", d.get("type"))
+          print("now:", d.get("now"))
+          all_ = d.get("all", []) or []
+          print(f"all (count={len(all_)}):")
+          for n in all_[:40]:
+              print(f"  - {n}")
+          if len(all_) > 40:
+              print(f"  ... +{len(all_) - 40} more")
           PY
           else
               echo "(CLASH_PROXY_GROUP unset in worker env)"
           fi
+          echo
 
-          # Provider health: per-node latency from the last health-check.
-          echo "--- /providers/proxies (provider summaries) ---"
-          if [ -n "$AUTH_HEADER" ]; then
-              curl -sS --max-time 5 -H "$AUTH_HEADER" http://127.0.0.1:9098/providers/proxies
-          else
-              curl -sS --max-time 5 http://127.0.0.1:9098/providers/proxies
-          fi 2>&1 | python3 - <<'PY' </dev/null 2>&1 || true
-          import json, sys
+          # /providers/proxies — node health from the last URL test.
+          fetch "/providers/proxies" "/providers/proxies" /tmp/clash_providers.json
+          PROV_FILE=/tmp/clash_providers.json python3 <<'PY'
+          import json, os
+          path = os.environ["PROV_FILE"]
           try:
-              data = json.load(sys.stdin)
+              with open(path) as f:
+                  data = json.load(f)
           except Exception as exc:
               print(f"(json parse failed: {exc})")
-              sys.exit(0)
+              raise SystemExit(0)
           providers = data.get("providers", {}) or {}
           for pname, p in providers.items():
               nodes = p.get("proxies", []) or []

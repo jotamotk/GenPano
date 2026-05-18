@@ -24,18 +24,29 @@ sleep 1
 socat TCP-LISTEN:9098,bind=0.0.0.0,fork,reuseaddr TCP:127.0.0.1:9097 &
 echo "API forwarding started on 0.0.0.0:9098"
 
-# Allow docker bridge subnets to reach the socat forwarder.
-# UFW default-deny incoming silently drops SYN packets from the worker
-# container (genpano_default bridge, 172.18.0.0/16) to host:9098, which
-# causes proxy_api_unreachable on every ChatGPT proxy_route_preflight.
+# Allow docker bridge subnets to reach the socat forwarder (9098) AND
+# the ninja-mihomo proxy port (6789). UFW default-deny incoming silently
+# drops SYN packets from the worker container (genpano_default bridge,
+# 172.18.0.0/16) to either port, which causes:
+#   - port 9098: proxy_api_unreachable during proxy_route_preflight
+#   - port 6789: browser navigation to chatgpt.com surfaces as
+#     page_load_failed / no_response / browser_timeout
 # 172.16.0.0/12 covers every default docker bridge (172.17-172.31).
 # Idempotent: skip if already allowed; no-op if ufw isn't installed/active.
-if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "^Status: active"; then
-    if ufw status 2>/dev/null | grep -qE '9098/tcp\s+ALLOW IN\s+172\.16\.0\.0/12'; then
-        echo "ufw: 172.16.0.0/12 -> :9098/tcp already allowed"
-    else
-        ufw allow proto tcp from 172.16.0.0/12 to any port 9098 >/dev/null 2>&1 \
-            && echo "ufw: allowed 172.16.0.0/12 -> :9098/tcp" \
-            || echo "ufw: failed to add allow rule (run as root?)"
+ufw_allow_docker_to_port () {
+    local port="$1"
+    if ufw status 2>/dev/null | grep -qE "${port}/tcp\\s+ALLOW IN\\s+172\\.16\\.0\\.0/12"; then
+        echo "ufw: 172.16.0.0/12 -> :${port}/tcp already allowed"
+        return 0
     fi
+    if ufw allow proto tcp from 172.16.0.0/12 to any port "${port}" >/dev/null 2>&1; then
+        echo "ufw: allowed 172.16.0.0/12 -> :${port}/tcp"
+    else
+        echo "ufw: failed to add allow rule for :${port}/tcp (run as root?)"
+    fi
+}
+
+if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "^Status: active"; then
+    ufw_allow_docker_to_port 9098
+    ufw_allow_docker_to_port 6789
 fi

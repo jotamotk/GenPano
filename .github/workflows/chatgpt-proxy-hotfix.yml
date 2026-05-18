@@ -61,17 +61,21 @@ jobs:
             "$SERVER_USER@$SERVER_HOST" 'bash -s' <<'REMOTE'
           set -uo pipefail
 
-          echo "=== Pre-fix UFW state (9098) ==="
-          ufw status 2>&1 | grep -E '9098|To' || echo "(no 9098 rule present)"
+          echo "=== Pre-fix UFW state (9098 + 6789) ==="
+          ufw status 2>&1 | grep -E '9098|6789|To' || echo "(no 9098/6789 rule present)"
 
           echo ""
-          echo "=== Apply UFW allow rule (idempotent) ==="
+          echo "=== Apply UFW allow rules (idempotent, both ports) ==="
+          # 9098: socat forwarder for ninja-mihomo external-controller API
+          # 6789: ninja-mihomo proxy port (the actual HTTP/SOCKS proxy)
           # 172.16.0.0/12 covers every default docker bridge (172.17-172.31).
-          if ufw status 2>/dev/null | grep -qE '9098/tcp\s+ALLOW IN\s+172\.16\.0\.0/12'; then
-            echo "ufw: 172.16.0.0/12 -> :9098/tcp already allowed (no change)"
-          else
-            ufw allow proto tcp from 172.16.0.0/12 to any port 9098
-          fi
+          for port in 9098 6789; do
+            if ufw status 2>/dev/null | grep -qE "${port}/tcp\s+ALLOW IN\s+172\.16\.0\.0/12"; then
+              echo "ufw: 172.16.0.0/12 -> :${port}/tcp already allowed (no change)"
+            else
+              ufw allow proto tcp from 172.16.0.0/12 to any port "${port}"
+            fi
+          done
 
           echo ""
           echo "=== Replace /usr/local/bin/vninja-allow-lan.sh ==="
@@ -84,29 +88,34 @@ jobs:
           ls -la /usr/local/bin/vninja-allow-lan.sh*
 
           echo ""
-          echo "=== Post-fix UFW state (9098) ==="
-          ufw status 2>&1 | grep -E '9098|To' || echo "(unexpected: no 9098 rule)"
+          echo "=== Post-fix UFW state (9098 + 6789) ==="
+          ufw status 2>&1 | grep -E '9098|6789|To' || echo "(unexpected: no 9098/6789 rule)"
 
           echo ""
-          echo "=== Verify worker -> host.docker.internal:9098 ==="
+          echo "=== Verify worker -> host.docker.internal:9098 (Clash API) ==="
           cd /opt/genpano
           docker compose exec -T worker sh -lc '
             curl -sS --max-time 5 -o /dev/null \
-              -w "http_code=%{http_code} time=%{time_total}s\n" \
+              -w "api_no_auth: http_code=%{http_code} time=%{time_total}s\n" \
               http://host.docker.internal:9098/proxies || echo "curl_exit=$?"
-          ' </dev/null 2>&1 || true
-
-          echo ""
-          echo "=== Verify worker -> host.docker.internal:9098 with auth ==="
-          docker compose exec -T worker sh -lc '
             if [ -n "${CLASH_API_SECRET:-}" ]; then
               curl -sS --max-time 5 -o /dev/null \
                 -H "Authorization: Bearer ${CLASH_API_SECRET}" \
-                -w "http_code=%{http_code} time=%{time_total}s\n" \
+                -w "api_auth:    http_code=%{http_code} time=%{time_total}s\n" \
                 http://host.docker.internal:9098/proxies || echo "curl_exit=$?"
-            else
-              echo "(CLASH_API_SECRET unset in worker env)"
             fi
+          ' </dev/null 2>&1 || true
+
+          echo ""
+          echo "=== Verify worker -> host.docker.internal:6789 (proxy port) ==="
+          # 6789 is the actual HTTP proxy port. A working proxy to chatgpt.com
+          # returns 403 (Cloudflare JS challenge) — that means the TCP path
+          # to the proxy is OPEN. 000/timeout means UFW still blocking.
+          docker compose exec -T worker sh -lc '
+            curl -sS --max-time 12 -o /dev/null \
+              --proxy http://host.docker.internal:6789 \
+              -w "proxy:       http_code=%{http_code} time=%{time_total}s\n" \
+              https://chatgpt.com/ || echo "curl_exit=$?"
           ' </dev/null 2>&1 || true
 
           echo ""
@@ -125,12 +134,17 @@ jobs:
 
           echo "$output" > /tmp/hotfix-output.txt
 
-          # PASS gate: post-fix curl must return http_code that's NOT 000.
-          # 401 (auth required) or 200 (success) both mean the TCP path now works.
-          if echo "$output" | grep -qE 'http_code=(200|401)'; then
-            echo "::notice::Hotfix verification PASSED: worker can now reach :9098"
+          # PASS gate: both ports must respond with a non-000 http_code.
+          # :9098 -> 200/401 (API up or auth required). :6789 -> any non-000
+          # (typically 403 from Cloudflare JS-challenge, but proxy CONNECT
+          # working is what matters here, not chatgpt.com's response).
+          api_ok=$(echo "$output" | grep -E '^api_(no_auth|auth):' | grep -cE 'http_code=(200|401)')
+          proxy_ok=$(echo "$output" | grep -E '^proxy:' | grep -cvE 'http_code=000')
+          echo "api_ok_lines=${api_ok} proxy_ok_lines=${proxy_ok}"
+          if [ "${api_ok}" -ge 1 ] && [ "${proxy_ok}" -ge 1 ]; then
+            echo "::notice::Hotfix verification PASSED: worker can now reach :9098 AND :6789"
           else
-            echo "::error::Hotfix verification FAILED: post-fix curl did not return 200/401 from worker -> :9098. See step summary."
+            echo "::error::Hotfix verification FAILED: worker cannot reach :9098 or :6789 post-fix. See step summary."
             exit 1
           fi
 
