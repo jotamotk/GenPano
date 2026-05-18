@@ -470,3 +470,124 @@ def test_route_module_is_wired_into_queries_router():
     paths = {r.path for r in app.routes}
     assert "/api/queries/{query_id}/retry_via_vm" in paths
     assert "/admin/api/queries/{query_id}/retry_via_vm" in paths
+
+
+# ── Refs Epic #1110: DeepSeek happy-path acceptance ──────────────
+
+
+@pytest_asyncio.fixture
+async def existing_deepseek_query(db_session: AsyncSession, _patch_table_exists) -> int:
+    """Insert a deepseek queries row and return its id.
+
+    Mirrors the doubao ``existing_query`` fixture but pins
+    ``target_llm='deepseek'`` so the test exercises the new engine
+    dispatcher path in vm_quick_retry.py without faking the column
+    value.
+    """
+    await db_session.execute(
+        sa_text(
+            "CREATE TABLE IF NOT EXISTS queries ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "target_llm TEXT, "
+            "query_text TEXT, "
+            "status TEXT, "
+            "retry_count INTEGER DEFAULT 0)"
+        )
+    )
+    await db_session.execute(
+        sa_text(
+            "INSERT INTO queries (target_llm, query_text, status) "
+            "VALUES (:llm, :text, 'failed')"
+        ),
+        {"llm": "deepseek", "text": "DeepSeek 是否支持金融行业脱敏？"},
+    )
+    await db_session.commit()
+    row = (
+        await db_session.execute(sa_text("SELECT id FROM queries ORDER BY id DESC LIMIT 1"))
+    ).first()
+    return int(row[0])
+
+
+@pytest.mark.asyncio
+async def test_retry_via_vm_accepts_deepseek_target_llm(
+    client,
+    admin_operator,
+    existing_deepseek_query: int,
+    existing_llm_responses_table,
+    monkeypatch,
+):
+    """Refs Epic #1110: route MUST accept target_llm='deepseek' queries.
+
+    Prior behavior (Issue #1144 Phase 0) hardcoded doubao-only in the
+    helper, raising QuickRetryError(cdp_unreachable, "engine not
+    supported"). Epic #1110 architecture decision: DeepSeek shares the
+    same Chrome profile in doubao-01 / doubao-02 — operator logs in
+    DeepSeek in a separate tab of the same noVNC Chrome. The
+    helper now dispatches per-engine; the route must not block.
+
+    This test stubs ``run_quick_retry`` and verifies:
+      1. The route returns 200 (no engine-based 4xx).
+      2. The stub was called with ``target_llm="deepseek"`` — proving
+         the route forwarded the queries row's value unchanged.
+    """
+    m = _vm_quick_retry_module()
+    captured = {}
+
+    async def _stub_run(**kwargs):
+        captured.update(kwargs)
+        return {
+            "raw_text": "DeepSeek says: yes, it supports finance.",
+            "raw_text_chars": 40,
+            "attempt_n": 1,
+            "vm_id": "doubao-01",
+            "execution_mode": "vm_session_quick",
+            "started_at": "2026-05-18T18:00:00+00:00",
+            "completed_at": "2026-05-18T18:00:03+00:00",
+            "screenshot_path": "/tmp/q_deepseek_test.png",
+        }
+
+    monkeypatch.setattr(m, "run_quick_retry", _stub_run)
+
+    resp = await client.post(
+        f"/api/queries/{existing_deepseek_query}/retry_via_vm",
+        json={},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body.get("status") == "ok"
+    assert body.get("success") is True
+    # Acceptance: the route received the deepseek query and ran it via
+    # the same VM helper that handles doubao — no engine-based refusal.
+    assert captured.get("target_llm") == "deepseek"
+    assert captured.get("query_id") == existing_deepseek_query
+
+
+def test_vm_quick_retry_engine_config_dispatcher_supports_doubao_and_deepseek():
+    """Refs Epic #1110: ``_engine_config(target_llm)`` returns the
+    right URL/selectors for both engines. The selectors are duplicated
+    verbatim from guest_executor.py's GUEST_LLM_CONFIG — a rename here
+    is a sync break and must come with a guest_executor.py update."""
+    m = _vm_quick_retry_module()
+
+    doubao_cfg = m._engine_config("doubao")
+    assert doubao_cfg["url"] == "https://www.doubao.com/chat"
+    assert "semi-input-textarea" in doubao_cfg["input_selector"]
+    assert "passport.volcengine.com" in doubao_cfg["login_redirect_domains"]
+
+    # Case-insensitive (queries.target_llm may be stored uppercase).
+    doubao_upper_cfg = m._engine_config("DOUBAO")
+    assert doubao_upper_cfg["url"] == "https://www.doubao.com/chat"
+
+    deepseek_cfg = m._engine_config("deepseek")
+    assert deepseek_cfg["url"] == "https://chat.deepseek.com"
+    assert "ds-markdown" in deepseek_cfg["response_selector"]
+    assert "login.deepseek.com" in deepseek_cfg["login_redirect_domains"]
+    # DeepSeek shares the URL-detect login path; guest_executor.py
+    # provides no keyword list, so DeepSeek's keyword tuple is empty.
+    assert deepseek_cfg["login_keywords"] == ()
+
+    # Unsupported engine surfaces as cdp_unreachable per the route's
+    # 503 contract.
+    with pytest.raises(m.QuickRetryError) as excinfo:
+        m._engine_config("claude")
+    assert excinfo.value.code == m.ERR_CDP_UNREACHABLE
