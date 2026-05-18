@@ -22,7 +22,10 @@ from genpano_models import (
 )
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.v1.projects import _metrics_service
+from app.api.v1.projects._metrics_dto import MetricSeries, MetricSeriesPoint
 from app.api.v1.projects.contracts.builder import _first_class_analyzer_fact_rollup
+from app.api.v1.projects.contracts.models import AnalyticsContractContext, ProjectScope
 from app.user_auth.jwt import sign_user_access_token
 
 os.environ.setdefault("USER_JWT_SECRET", "x" * 64)
@@ -32,9 +35,64 @@ def _new_id() -> str:
     return str(uuid.uuid4())
 
 
+def _partial_package_gap_context(metric_key: str = "coverage") -> AnalyticsContractContext:
+    return AnalyticsContractContext(
+        project_scope=ProjectScope(
+            project_id=_new_id(),
+            primary_brand_id=42,
+            requested_brand_id=42,
+        ),
+        state="partial",
+        state_reason="partial_analyzer_data",
+        missing_inputs=["missing_analyzer_fact_packages"],
+        missing_sources=[
+            "response_analyses.raw_analysis_json.analyzer_fact_package_v3",
+            "response_analyses.raw_analysis_json.analyzer_fact_packages",
+        ],
+        missing_reasons=["missing_analyzer_fact_packages"],
+        evidence_counts={
+            "geo_score_daily_rows": 30,
+            "brand_mention_count": 48,
+            "brand_mentioned_response_count": 48,
+            "admin_fact_response_count": 70,
+        },
+        formula_status="partial",
+        metric_formula_evidence={
+            metric_key: {
+                "metric_key": metric_key,
+                "formula_status": "partial",
+                "reason_codes": ["missing_analyzer_fact_packages"],
+                "source_tables": [
+                    "response_analyses.raw_analysis_json.analyzer_fact_package_v3",
+                    "response_analyses.raw_analysis_json.analyzer_fact_packages",
+                ],
+            }
+        },
+    )
+
+
 def _bearer(user: User) -> dict[str, str]:
     token, _ = sign_user_access_token(user_id=user.id, email=user.email)
     return {"Authorization": f"Bearer {token}"}
+
+
+def test_metrics_series_contract_marks_aggregate_points_ok_when_only_package_metadata_missing():
+    series = [
+        MetricSeries(
+            metric="mention_rate",
+            points=[MetricSeriesPoint(date=date(2026, 5, 11), value=0.814)],
+            formula_status="ok",
+        )
+    ]
+
+    out = _metrics_service._apply_metric_series_contract(
+        series,
+        _partial_package_gap_context("coverage"),
+    )
+
+    assert out[0].points == series[0].points
+    assert out[0].formula_status == "ok"
+    assert out[0].state == "ok"
 
 
 @pytest_asyncio.fixture
@@ -261,9 +319,9 @@ async def test_metric_series_with_evidence_survives_peripheral_missing_inputs(
     itself was computed from real `GeoScoreDaily` rows and all per-metric
     primary sources (brand_mentions, citation_sources) were populated.
 
-    The fix keeps `points` populated and downgrades `formula_status` from
-    `missing_required_inputs` to `partial` so the frontend's
-    `canUseContractMetricValue` gate still surfaces the value rather than
+    The fix keeps `points` populated and reports metric-level
+    `formula_status=ok` when aggregate evidence proves the displayed value,
+    so the frontend E2E has a concrete metric-level ok KPI to assert instead of
     rendering `—`.
 
     Critical missing inputs (denominator missing, primary source missing,
@@ -286,6 +344,11 @@ async def test_metric_series_with_evidence_survives_peripheral_missing_inputs(
         assert len(by_metric[metric]["points"]) == 30, (
             f"{metric} should keep points when GeoScoreDaily evidence + "
             f"primary sources exist (only analyzer fact packages missing)"
+        )
+        assert by_metric[metric]["formula_status"] == "ok", (
+            f"{metric} formula_status should be ok when GeoScoreDaily points "
+            f"and primary sources back the displayed values (got "
+            f"{by_metric[metric]['formula_status']})"
         )
         assert by_metric[metric]["formula_status"] != "missing_required_inputs", (
             f"{metric} formula_status should not be missing_required_inputs "
