@@ -816,10 +816,17 @@ async def analyze_single_response(
 
         # Stage 3: Citation mapping. Use both rule-detected and LLM-only
         # brands so unconfigured competitors can still receive attribution.
+        # Pass the configured competitor list so citations on a
+        # competitor's official website map back to the competitor
+        # (Refs #1225 — without this, e.g. larocheposay.com.cn citations
+        # for a bestCoffer query land in the unresolved bucket and
+        # ``competitive_citation_count`` rolls up to 0, which then
+        # collapses citation_share to 100%).
         citation_mappings = citation_mapper.map_citations(
             response.citations_json,
             _citation_brand_hints(detected, llm_result.brands),
             brand,
+            competitor_brands=competitors,
         )
         logger.info(f"  Stage 3: mapped {len(citation_mappings)} citations")
 

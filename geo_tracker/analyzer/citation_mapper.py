@@ -62,6 +62,7 @@ class CitationMapper:
         citations_json: list[dict] | None,
         detected_brands: list[DetectedBrand],
         target_brand: Brand,
+        competitor_brands: list[Brand] | None = None,
     ) -> list[CitationMapping]:
         """
         Map citation URLs to brands and classify source types.
@@ -70,11 +71,28 @@ class CitationMapper:
             citations_json: [{url, title, index}] from LLMResponse
             detected_brands: brands detected in the response
             target_brand: the monitored brand
+            competitor_brands: configured competitor brand records whose
+                ``website`` is also a legitimate official domain for
+                attribution. Iterables of either ``Brand`` (target side)
+                or ``Competitor`` (project side) work — the loop only
+                reads ``.name`` and ``.website``, both of which exist on
+                both ORM models. Defaults to ``None`` for backward
+                compatibility with call sites that have not yet plumbed
+                the list through. Refs #1225: without this, citations
+                on a competitor's own website (e.g. ``larocheposay.com.cn``)
+                fall through to either the title-match branch or the
+                target-only response-level fallback, leaving competitor
+                citation_sources unattributed and collapsing the
+                citation_share denominator to ``target_sum``.
         """
         if not citations_json:
             return []
 
-        # Build domain → brand mapping from target brand website
+        # Build domain → brand mapping from target brand website plus any
+        # competitor websites the caller provided. Both arms feed the
+        # same ``brand_domains`` and ``official_domains`` containers so
+        # ``_match_brand`` and ``_classify_source`` treat target and
+        # competitor official domains symmetrically.
         brand_domains: dict[str, str] = {}
         official_domains: set[str] = set()
         if target_brand.website:
@@ -82,6 +100,26 @@ class CitationMapper:
             if domain:
                 brand_domains[domain] = target_brand.name
                 official_domains.add(domain)
+        for competitor in competitor_brands or ():
+            website = getattr(competitor, "website", None)
+            if not website:
+                # Skip competitors whose website is NULL/empty — the
+                # bestCoffer probe (#1225) found three such rows
+                # (loreal/esteelauder/bestCoffer itself). Companion
+                # migration 20260518_backfill_brand_websites backfills
+                # them, but the loop must stay resilient to future rows
+                # that have not yet been filled in.
+                continue
+            comp_domain = self._extract_domain(website)
+            if not comp_domain:
+                continue
+            # Target's own domain wins if there's a collision (target
+            # was seeded first). Skipping rather than overwriting keeps
+            # the existing target attribution stable.
+            if comp_domain in brand_domains:
+                continue
+            brand_domains[comp_domain] = competitor.name
+            official_domains.add(comp_domain)
 
         # Response-level proximity flag (#948 / #570 attribution gap):
         # if the target brand was detected anywhere in this response,
