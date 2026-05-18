@@ -92,27 +92,18 @@ jobs:
           echo "scp rc=$scp_rc"
           echo "::endgroup::"
 
-          # 1b. Start socat sidecars on the ECS host bridging the docker
-          # bridge gateway (172.17.0.1, which is what `host.docker.internal`
-          # resolves to from inside worker) -> 127.0.0.1:9222/9223 (where
-          # doubao-NN containers expose CDP). Without this, worker can't
-          # reach the loopback-bound CDP ports. Idempotent: kill any
-          # previous socat first, then re-start in background.
-          # Bind socat to 0.0.0.0 (not 172.17.0.1) so it's reachable from
-          # ALL docker networks' gateways — the genpano_default network
-          # has its own bridge IP (172.18+) different from the default
-          # bridge. ufw rules deny public 9222-9232, so 0.0.0.0 binding
-          # is safe: container traffic comes via the docker bridges,
-          # not the public interface.
+          # 1b. Attach doubao-01 / doubao-02 to the genpano_default docker
+          # network so worker containers can reach them by container name
+          # (DNS). `docker network connect` is idempotent if container
+          # already on network — but errors loud; tolerate with || true.
+          echo "::group::Step 1b - bridge doubao containers to genpano network"
           ssh -i ~/.ssh/id_ssh -p "$PORT" "$REMOTE" \
-            "sudo pkill -f 'socat TCP-LISTEN:9222' || true; \
-             sudo pkill -f 'socat TCP-LISTEN:9223' || true; \
-             sleep 0.5; \
-             sudo nohup socat TCP-LISTEN:9222,reuseaddr,fork TCP:127.0.0.1:9222 > /tmp/host-socat-9222.log 2>&1 < /dev/null & \
-             sudo nohup socat TCP-LISTEN:9223,reuseaddr,fork TCP:127.0.0.1:9223 > /tmp/host-socat-9223.log 2>&1 < /dev/null & \
-             sleep 1; \
-             echo '=== socat status ==='; \
-             sudo ss -tlnp 2>/dev/null | grep -E '\\*:(9222|9223)|0\\.0\\.0\\.0:(9222|9223)' || echo 'WARN socat not visible'"
+            "sudo docker network connect genpano_default doubao-01 2>&1 | grep -v 'already exists in network' || true"
+          ssh -i ~/.ssh/id_ssh -p "$PORT" "$REMOTE" \
+            "sudo docker network connect genpano_default doubao-02 2>&1 | grep -v 'already exists in network' || true"
+          ssh -i ~/.ssh/id_ssh -p "$PORT" "$REMOTE" \
+            "sudo docker network inspect genpano_default --format '{{range .Containers}}{{.Name}} {{end}}'"
+          echo "::endgroup::"
 
           # 2. Identify the worker image (geo_tracker + playwright only ship
           #    in worker), its docker network, and the .env file path on

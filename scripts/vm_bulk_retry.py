@@ -91,15 +91,15 @@ async def _main() -> int:
         return 4
 
     half = len(ids) // 2
-    # Worker runs inside its own docker-compose project (genpano), not the
-    # vm-per-account project hosting doubao-01/02. From worker, 127.0.0.1
-    # is worker's own loopback. The doubao containers' CDP ports are bound
-    # to the ECS HOST's loopback, reachable from worker via the
-    # `host.docker.internal` extra_hosts entry (see docker-compose.yml
-    # worker.extra_hosts).
-    plan = [
-        (qid, "doubao-01", "http://host.docker.internal:9222") for qid in ids[:half]
-    ] + [(qid, "doubao-02", "http://host.docker.internal:9223") for qid in ids[half:]]
+    # The doubao-NN containers are attached to genpano_default network by
+    # the workflow before this script runs, so we can reach them via
+    # docker DNS using container name. Internal CDP port is 9222 inside
+    # both containers (different external ports are docker-compose port
+    # mapping artifacts, not the actual listening port). When we connect
+    # via the docker network we bypass the port mapping entirely.
+    plan = [(qid, "doubao-01", "http://doubao-01:9222") for qid in ids[:half]] + [
+        (qid, "doubao-02", "http://doubao-02:9222") for qid in ids[half:]
+    ]
 
     results: list[dict] = []
     for qid, vm_id, cdp in plan:
