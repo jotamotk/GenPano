@@ -496,8 +496,7 @@ async def existing_deepseek_query(db_session: AsyncSession, _patch_table_exists)
     )
     await db_session.execute(
         sa_text(
-            "INSERT INTO queries (target_llm, query_text, status) "
-            "VALUES (:llm, :text, 'failed')"
+            "INSERT INTO queries (target_llm, query_text, status) VALUES (:llm, :text, 'failed')"
         ),
         {"llm": "deepseek", "text": "DeepSeek 是否支持金融行业脱敏？"},
     )
