@@ -690,11 +690,14 @@ async def test_engine_metrics_marks_target_only_sov_partial_and_keeps_mention_ra
     assert body["state_reason"] == "partial_analyzer_data"
     assert body["formula_status"] == "partial"
     assert "target_only_sov" in body["missing_inputs"]
+    assert "brand_mentions.competitive_set" in body["missing_inputs"]
     assert body["metric_formula_evidence"]["coverage"]["formula_status"] == "ok"
     sov_evidence = body["metric_formula_evidence"]["sov"]
     assert sov_evidence["formula_status"] == "missing_required_inputs"
     assert sov_evidence["numerator_count"] == 2
     assert sov_evidence["denominator_count"] == 2
+    assert "target_only_sov" in sov_evidence["reason_codes"]
+    assert "brand_mentions.competitive_set" in sov_evidence["reason_codes"]
     assert body["items"] == [
         {
             "engine": "chatgpt",
@@ -755,11 +758,13 @@ async def test_engine_metrics_marks_mixed_engine_target_only_sov_row_partial(
     assert body["state_reason"] == "partial_analyzer_data"
     assert body["formula_status"] == "partial"
     assert "target_only_sov" in body["missing_inputs"]
+    assert "brand_mentions.competitive_set" in body["missing_inputs"]
     assert body["evidence_counts"]["admin_fact_response_count"] == 2
     assert body["evidence_counts"]["engine_target_only_sov_count"] == 1
     sov_evidence = body["metric_formula_evidence"]["sov"]
     assert sov_evidence["formula_status"] == "partial"
     assert "target_only_sov" in sov_evidence["reason_codes"]
+    assert "brand_mentions.competitive_set" in sov_evidence["reason_codes"]
 
     rows = {row["engine"]: row for row in body["items"]}
     assert rows["chatgpt"]["mention_rate"] == 1.0

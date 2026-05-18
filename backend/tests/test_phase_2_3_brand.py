@@ -51,8 +51,45 @@ async def user(db_session: AsyncSession) -> User:
     return u
 
 
+async def _seed_brands_with_industry(
+    db_session: AsyncSession, rows: list[tuple[int, str, str | None]]
+) -> None:
+    """Seed the bare test ``brands`` table with the ``industry`` column.
+
+    Issue #1185 / #1192 added a fail-closed industry filter to the
+    competitor-metrics endpoint: when the primary brand has no industry
+    recorded the response is forced to ``state="empty"``. The legacy
+    Phase 2.3 fixtures pre-date that contract and never set
+    ``brands.industry``, so they would now trip the gate even though
+    they are testing unrelated behavior. Calling this helper from each
+    fixture keeps the assertions intact under the new contract.
+    """
+    for col in ("industry", "name_zh", "name_en", "name", "primary_name"):
+        try:
+            await db_session.execute(text(f"ALTER TABLE brands ADD COLUMN {col} TEXT"))
+        except Exception:
+            pass
+    for bid, industry, display in rows:
+        if display is None:
+            await db_session.execute(
+                text("INSERT INTO brands (id, industry) VALUES (:id, :ind)"),
+                {"id": bid, "ind": industry},
+            )
+        else:
+            await db_session.execute(
+                text("INSERT INTO brands (id, industry, name_en) VALUES (:id, :ind, :name)"),
+                {"id": bid, "ind": industry, "name": display},
+            )
+
+
 @pytest_asyncio.fixture
 async def project_with_data(db_session: AsyncSession, user: User) -> Project:
+    # Issue #1185 / #1192: primary + competitor must share industry so the
+    # new fail-closed gate keeps the response-entity SoV path active.
+    await _seed_brands_with_industry(
+        db_session,
+        [(42, "Beauty", None), (99, "Beauty", None)],
+    )
     p = Project(user_id=user.id, name="Brand 2.3", primary_brand_id=42, industry_id=1)
     db_session.add(p)
     await db_session.commit()
@@ -450,6 +487,14 @@ async def test_competitor_metrics_includes_primary_and_competitors(client, user,
 async def test_competitor_metrics_brand_override_keeps_missing_rollup_values_partial(
     client, user, db_session
 ):
+    # Issue #1185 / #1192: brands 12 ("Estée Lauder") + 99 ("Clinique") both
+    # need an industry so the fail-closed gate keeps the SoV bucketing path
+    # live. Tested behavior (override rolls up brand_name when FK absent) is
+    # unchanged.
+    await _seed_brands_with_industry(
+        db_session,
+        [(12, "Beauty", "Estee Lauder"), (99, "Beauty", "Clinique")],
+    )
     p = Project(user_id=user.id, name="Override Mentions", primary_brand_id=42, industry_id=1)
     db_session.add(p)
     await db_session.commit()
@@ -512,6 +557,8 @@ async def test_competitor_metrics_brand_override_keeps_missing_rollup_values_par
 
 @pytest.mark.asyncio
 async def test_brand_override_uses_brand_name_when_mentions_lack_fk(client, user, db_session):
+    # Original schema setup preserved (name_zh / name_en / name on brand 12)
+    # — fixture sets up the legacy name-resolution columns first.
     for col in ("name_zh TEXT", "name_en TEXT", "name TEXT"):
         await db_session.execute(text(f"ALTER TABLE brands ADD COLUMN {col}"))
     await db_session.execute(
@@ -519,6 +566,18 @@ async def test_brand_override_uses_brand_name_when_mentions_lack_fk(client, user
             "INSERT INTO brands (id, name_zh, name_en, name) "
             "VALUES (12, '雅诗兰黛', 'Estee Lauder', 'Estee Lauder')"
         )
+    )
+    # Issue #1185 / #1192: add industry column + same-industry attribution
+    # for brands 12 and 99 so the new fail-closed gate keeps the response-
+    # entity SoV path live. Brand 12 already exists from the rows above; the
+    # helper's INSERT for it would conflict, so add the industry separately.
+    try:
+        await db_session.execute(text("ALTER TABLE brands ADD COLUMN industry TEXT"))
+    except Exception:
+        pass
+    await db_session.execute(text("UPDATE brands SET industry = 'Beauty' WHERE id = 12"))
+    await db_session.execute(
+        text("INSERT INTO brands (id, industry, name_en) VALUES (99, 'Beauty', 'Clinique')")
     )
 
     p = Project(user_id=user.id, name="Name Matched Brand", primary_brand_id=42, industry_id=1)
@@ -603,6 +662,15 @@ async def test_brand_override_uses_brand_name_when_mentions_lack_fk(client, user
 
 @pytest.mark.asyncio
 async def test_competitor_metrics_uses_response_extracted_brand_entities(client, user, db_session):
+    # Issue #1185 / #1192: primary (42) + brand_id-resolved competitor (99)
+    # + name-only competitor "Null Rival" all share industry "Beauty" so the
+    # new fail-closed gate keeps the name-only bucket alive. This pins that
+    # the response-entity SoV path still bubbles name-only buckets when
+    # they resolve to the primary's industry (case (b) in the new spec).
+    await _seed_brands_with_industry(
+        db_session,
+        [(42, "Beauty", "Primary"), (99, "Beauty", "Clinique"), (777, "Beauty", "Null Rival")],
+    )
     p = Project(user_id=user.id, name="Response Entity SoV", primary_brand_id=42, industry_id=1)
     db_session.add(p)
     await db_session.commit()

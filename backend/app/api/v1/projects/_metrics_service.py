@@ -34,6 +34,7 @@ from app.api.v1.projects._analytics_contract import (
     AnalyticsContractContext,
     build_contract_context,
     context_update,
+    context_with_sov_competitive_gap,
     formula_diagnostics_for,
     metric_definition,
     metric_evidence_for,
@@ -311,6 +312,12 @@ def _series_has_real_evidence(
     return context.evidence_counts.get("geo_score_daily_rows", 0) > 0
 
 
+def _only_peripheral_package_inputs(missing_inputs: list[str]) -> bool:
+    return bool(missing_inputs) and all(
+        item in _PERIPHERAL_PACKAGE_INPUTS for item in missing_inputs
+    )
+
+
 def _apply_metric_series_contract(
     series: list[MetricSeries],
     context: AnalyticsContractContext,
@@ -347,13 +354,27 @@ def _apply_metric_series_contract(
         if _series_has_real_evidence(
             item, context, missing_inputs, evidence_source=evidence_source
         ):
+            formula_status = (
+                FORMULA_OK_STATUS
+                if _only_peripheral_package_inputs(missing_inputs)
+                else FORMULA_PARTIAL_STATUS
+            )
+            state = "ok" if formula_status == FORMULA_OK_STATUS else "partial"
+            state_reason = (
+                "data_available" if formula_status == FORMULA_OK_STATUS else "partial_analyzer_data"
+            )
+            item_missing_inputs = (
+                item.missing_inputs
+                if formula_status == FORMULA_OK_STATUS
+                else _unique([*item.missing_inputs, *missing_inputs])
+            )
             out.append(
                 item.model_copy(
                     update={
-                        "formula_status": FORMULA_PARTIAL_STATUS,
-                        "missing_inputs": _unique([*item.missing_inputs, *missing_inputs]),
-                        "state": "partial",
-                        "state_reason": "partial_analyzer_data",
+                        "formula_status": formula_status,
+                        "missing_inputs": item_missing_inputs,
+                        "state": state,
+                        "state_reason": state_reason,
                     }
                 )
             )
@@ -613,9 +634,11 @@ async def _metrics_from_admin_facts(
         )
     series_missing_inputs = _series_contract_missing_inputs(
         out_series,
-        context,
+        context_with_sov_competitive_gap(context),
         evidence_source="admin_facts",
     )
+    if series_missing_inputs:
+        context = context_with_sov_competitive_gap(context)
     if series_missing_inputs and context.formula_status == FORMULA_OK_STATUS:
         context = await build_contract_context(
             session,
@@ -630,6 +653,7 @@ async def _metrics_from_admin_facts(
             base_missing_sources=series_missing_inputs,
             formula_status=FORMULA_MISSING_INPUTS_STATUS,
         )
+        context = context_with_sov_competitive_gap(context)
     elif (
         context.formula_status == FORMULA_OK_STATUS
         and context.evidence_counts.get("geo_score_daily_rows", 0) <= 0
@@ -646,6 +670,9 @@ async def _metrics_from_admin_facts(
             formula_status=FORMULA_PENDING_STATUS,
             source_provenance=["admin_facts"],
         )
+        context = context_with_sov_competitive_gap(context)
+    else:
+        context = context_with_sov_competitive_gap(context)
     out_series = _apply_metric_series_contract(
         out_series,
         context,
@@ -774,6 +801,7 @@ async def get_metrics(
         has_data=has_data,
         base_state=out.state,
     )
+    context = context_with_sov_competitive_gap(context)
     series_missing_inputs = _series_contract_missing_inputs(out_series, context)
     if series_missing_inputs and context.formula_status == FORMULA_OK_STATUS:
         context = await build_contract_context(
@@ -789,6 +817,7 @@ async def get_metrics(
             base_missing_sources=series_missing_inputs,
             formula_status=FORMULA_MISSING_INPUTS_STATUS,
         )
+        context = context_with_sov_competitive_gap(context)
     out = out.model_copy(update={"series": _apply_metric_series_contract(out_series, context)})
     return out.model_copy(update=context_update(context))
 

@@ -248,6 +248,12 @@ def _kpi_has_real_evidence(
     return context.evidence_counts.get("geo_score_daily_rows", 0) > 0
 
 
+def _only_peripheral_package_inputs(missing_inputs: list[str]) -> bool:
+    return bool(missing_inputs) and all(
+        item in _PERIPHERAL_PACKAGE_INPUTS for item in missing_inputs
+    )
+
+
 def _apply_kpi_contract(
     cards: list[KpiCard],
     context: AnalyticsContractContext,
@@ -287,10 +293,15 @@ def _apply_kpi_contract(
         # unbound) still null the value per the no-fallback contract — see
         # `_kpi_has_real_evidence`.
         if _kpi_has_real_evidence(card, context, missing_inputs, evidence_source=evidence_source):
+            formula_status = (
+                FORMULA_OK_STATUS
+                if _only_peripheral_package_inputs(missing_inputs)
+                else FORMULA_PARTIAL_STATUS
+            )
             out.append(
                 card.model_copy(
                     update={
-                        "formula_status": FORMULA_PARTIAL_STATUS,
+                        "formula_status": formula_status,
                     }
                 )
             )

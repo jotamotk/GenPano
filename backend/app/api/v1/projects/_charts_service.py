@@ -36,6 +36,7 @@ from app.api.v1.projects._analytics_contract import (
     FORMULA_OK_STATUS,
     FORMULA_PARTIAL_STATUS,
     formula_diagnostics_for,
+    sov_competitive_gap_reasons,
 )
 from app.api.v1.projects._charts_dto import (
     AuthorityRadarOut,
@@ -104,7 +105,6 @@ from app.api.v1.projects.charts._common import (
     _dt_range,
     _period,
     _resolve_window,
-    _unique,
 )
 from app.api.v1.projects.charts._contracts import (
     _chart_contract_update,
@@ -312,6 +312,67 @@ def _sentiment_by_engine_from_facts(
         if v["positive"] or v["neutral"] or v["negative"]
     ]
     return items, len(seen)
+
+
+_SENTIMENT_ENGINE_ATTRIBUTION_MISSING_INPUTS = [
+    "llm_responses.target_llm",
+    "queries.target_llm",
+]
+
+
+async def _sentiment_engine_attribution_gap_from_mentions(
+    session: AsyncSession,
+    brand_id: int,
+    from_d: date,
+    to_d: date,
+) -> tuple[int, dict[str, int], list[str]]:
+    from_dt, to_dt = _dt_range(from_d, to_d)
+    engine_source_count = int(
+        (
+            await session.execute(
+                select(func.count(GeoScoreDaily.id)).where(
+                    and_(
+                        GeoScoreDaily.brand_id == brand_id,
+                        GeoScoreDaily.date >= from_dt,
+                        GeoScoreDaily.date <= to_dt,
+                        GeoScoreDaily.target_llm.isnot(None),
+                    )
+                )
+            )
+        ).scalar_one()
+        or 0
+    )
+    if engine_source_count > 0:
+        return 0, {}, []
+
+    brand_filter = await brand_mention_match_condition(session, brand_id)
+    label_expr = func.lower(func.trim(func.coalesce(BrandMention.sentiment, "")))
+    evidence_count = int(
+        (
+            await session.execute(
+                select(func.count(BrandMention.id)).where(
+                    and_(
+                        brand_filter,
+                        BrandMention.created_at >= from_dt,
+                        BrandMention.created_at <= to_dt,
+                        BrandMention.sentiment_score.isnot(None),
+                        label_expr.in_(["positive", "neutral", "negative"]),
+                    )
+                )
+            )
+        ).scalar_one()
+        or 0
+    )
+    if evidence_count <= 0:
+        return 0, {}, []
+    return (
+        evidence_count,
+        _chart_counts(
+            sentiment_label_count=evidence_count,
+            engine_missing_sentiment_label_count=evidence_count,
+        ),
+        _SENTIMENT_ENGINE_ATTRIBUTION_MISSING_INPUTS,
+    )
 
 
 async def _sentiment_by_engine_from_response_window(
@@ -530,8 +591,8 @@ def _with_engine_target_only_sov_contract(
     if not target_only_engines:
         return out
 
-    missing_inputs = _unique([*out.missing_inputs, "target_only_sov"])
-    missing_reasons = _unique([*out.missing_reasons, "target_only_sov"])
+    missing_inputs = sov_competitive_gap_reasons([*out.missing_inputs, "target_only_sov"])
+    missing_reasons = sov_competitive_gap_reasons([*out.missing_reasons, "target_only_sov"])
     chart_status = (
         out.formula_status
         if out.formula_status not in {None, FORMULA_OK_STATUS}
@@ -546,7 +607,7 @@ def _with_engine_target_only_sov_contract(
         dict(sov_evidence_value) if isinstance(sov_evidence_value, dict) else {}
     )
     if sov_evidence:
-        sov_evidence["reason_codes"] = _unique(
+        sov_evidence["reason_codes"] = sov_competitive_gap_reasons(
             [*(sov_evidence.get("reason_codes") or []), "target_only_sov"]
         )
         if sov_evidence.get("formula_status") in {None, FORMULA_OK_STATUS}:
@@ -1257,6 +1318,34 @@ async def get_sentiment_by_engine(
                 source_provenance=["admin_facts", "brand_mentions", "response_analyses"],
                 brand_id=brand_id,
             )
+        if not items:
+            (
+                attribution_gap_count,
+                attribution_gap_counts,
+                attribution_gap_missing,
+            ) = await _sentiment_engine_attribution_gap_from_mentions(
+                session,
+                brand_id,
+                from_d,
+                to_d,
+            )
+            if attribution_gap_missing:
+                out = _sentiment_by_engine_missing_out(
+                    project_id=project.id,
+                    period=_period(from_d, to_d),
+                    evidence_count=attribution_gap_count,
+                    evidence_counts=attribution_gap_counts,
+                    missing_inputs=attribution_gap_missing,
+                )
+                return await _with_sentiment_by_engine_contract(
+                    out,
+                    session,
+                    project,
+                    from_d,
+                    to_d,
+                    source_provenance=["brand_mentions", "llm_responses", "queries"],
+                    brand_id=brand_id,
+                )
         state = "ok" if items else "empty"
         out = SentimentByEngineOut(
             project_id=project.id,

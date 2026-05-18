@@ -105,16 +105,13 @@ from app.api.v1.projects.contracts.format import (
     score_0_100 as score_0_100,
 )
 from app.api.v1.projects.contracts.metrics import (
-    metric_blocking_inputs_from_evidence as metric_blocking_inputs_from_evidence,
+    metric_blocking_inputs_from_evidence as _metric_blocking_inputs_from_evidence,
 )
 from app.api.v1.projects.contracts.metrics import (
     metric_evidence_for as metric_evidence_for,
 )
 from app.api.v1.projects.contracts.metrics import (
     metric_formula_status as metric_formula_status,
-)
-from app.api.v1.projects.contracts.metrics import (
-    metric_missing_inputs as metric_missing_inputs,
 )
 from app.api.v1.projects.contracts.models import (
     AnalyticsContractContext as AnalyticsContractContext,
@@ -194,3 +191,86 @@ from app.api.v1.projects.contracts.rollups import (
 from app.api.v1.projects.contracts.rollups import (
     _rollup_sov as _rollup_sov,
 )
+
+SOV_COMPETITIVE_SET_REASON = "brand_mentions.competitive_set"
+SOV_COMPETITIVE_GAP_REASON_CODES = frozenset(
+    {
+        "target_only_sov",
+        "missing_competitive_extraction",
+        "sov_missing_required_inputs",
+        SOV_COMPETITIVE_SET_REASON,
+    }
+)
+
+
+def sov_competitive_gap_reasons(reasons: list[str] | tuple[str, ...] | set[str]) -> list[str]:
+    """Add the explicit competitive-set gap beside compact SoV reason codes."""
+    out: list[str] = []
+    seen: set[str] = set()
+    has_competitive_gap = False
+    for reason in reasons or []:
+        value = str(reason or "")
+        if not value or value in seen:
+            continue
+        out.append(value)
+        seen.add(value)
+        if value in SOV_COMPETITIVE_GAP_REASON_CODES:
+            has_competitive_gap = True
+    if has_competitive_gap and SOV_COMPETITIVE_SET_REASON not in seen:
+        out.append(SOV_COMPETITIVE_SET_REASON)
+    return out
+
+
+def metric_blocking_inputs_from_evidence(
+    metric_key: str | None,
+    evidence: dict[str, object] | None,
+) -> list[str]:
+    missing = _metric_blocking_inputs_from_evidence(metric_key, evidence)
+    if metric_key in {"sov", "avg_sov"}:
+        return sov_competitive_gap_reasons(missing)
+    return missing
+
+
+def metric_missing_inputs(
+    context: AnalyticsContractContext,
+    metric_key: str | None,
+) -> list[str]:
+    evidence = metric_evidence_for(context, metric_key)
+    return metric_blocking_inputs_from_evidence(metric_key, evidence)
+
+
+def context_with_sov_competitive_gap(
+    context: AnalyticsContractContext,
+) -> AnalyticsContractContext:
+    evidence = context.metric_formula_evidence
+    sov_evidence = evidence.get("sov")
+    if not isinstance(sov_evidence, dict):
+        return context
+
+    reason_codes = sov_competitive_gap_reasons(
+        [str(reason) for reason in (sov_evidence.get("reason_codes") or [])]
+    )
+    if reason_codes == list(sov_evidence.get("reason_codes") or []):
+        return context
+
+    updated_evidence = {
+        key: (dict(value) if isinstance(value, dict) else value) for key, value in evidence.items()
+    }
+    updated_evidence["sov"] = {
+        **dict(sov_evidence),
+        "reason_codes": reason_codes,
+    }
+    return context.model_copy(
+        update={
+            "metric_formula_evidence": updated_evidence,
+            "missing_inputs": sov_competitive_gap_reasons([*context.missing_inputs, *reason_codes]),
+            "missing_sources": sov_competitive_gap_reasons(
+                [*context.missing_sources, SOV_COMPETITIVE_SET_REASON]
+            )
+            if SOV_COMPETITIVE_SET_REASON in reason_codes
+            else context.missing_sources,
+            "missing_reasons": sov_competitive_gap_reasons(
+                [*context.missing_reasons, *reason_codes]
+            ),
+        }
+    )

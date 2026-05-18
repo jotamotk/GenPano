@@ -12,6 +12,8 @@ from genpano_models import BrandMention, GeoScoreDaily, Project, User
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.projects import _overview_service
+from app.api.v1.projects._overview_dto import KpiCard
+from app.api.v1.projects.contracts.models import AnalyticsContractContext, ProjectScope
 from app.user_auth.jwt import sign_user_access_token
 
 os.environ.setdefault("USER_JWT_SECRET", "x" * 64)
@@ -19,6 +21,42 @@ os.environ.setdefault("USER_JWT_SECRET", "x" * 64)
 
 def _new_id() -> str:
     return str(uuid.uuid4())
+
+
+def _partial_package_gap_context(metric_key: str = "coverage") -> AnalyticsContractContext:
+    return AnalyticsContractContext(
+        project_scope=ProjectScope(
+            project_id=_new_id(),
+            primary_brand_id=42,
+            requested_brand_id=42,
+        ),
+        state="partial",
+        state_reason="partial_analyzer_data",
+        missing_inputs=["missing_analyzer_fact_packages"],
+        missing_sources=[
+            "response_analyses.raw_analysis_json.analyzer_fact_package_v3",
+            "response_analyses.raw_analysis_json.analyzer_fact_packages",
+        ],
+        missing_reasons=["missing_analyzer_fact_packages"],
+        evidence_counts={
+            "geo_score_daily_rows": 30,
+            "brand_mention_count": 48,
+            "brand_mentioned_response_count": 48,
+            "admin_fact_response_count": 70,
+        },
+        formula_status="partial",
+        metric_formula_evidence={
+            metric_key: {
+                "metric_key": metric_key,
+                "formula_status": "partial",
+                "reason_codes": ["missing_analyzer_fact_packages"],
+                "source_tables": [
+                    "response_analyses.raw_analysis_json.analyzer_fact_package_v3",
+                    "response_analyses.raw_analysis_json.analyzer_fact_packages",
+                ],
+            }
+        },
+    )
 
 
 @pytest_asyncio.fixture
@@ -41,6 +79,26 @@ async def user(db_session: AsyncSession) -> User:
 def _bearer(user: User) -> dict[str, str]:
     token, _ = sign_user_access_token(user_id=user.id, email=user.email)
     return {"Authorization": f"Bearer {token}"}
+
+
+def test_overview_kpi_contract_marks_aggregate_value_ok_when_only_package_metadata_missing():
+    cards = [
+        KpiCard(
+            label_zh="Mention Rate",
+            label_en="Mention Rate",
+            metric_key="mention_rate",
+            value=81.4,
+            formula_status="ok",
+        )
+    ]
+
+    out = _overview_service._apply_kpi_contract(
+        cards,
+        _partial_package_gap_context("coverage"),
+    )
+
+    assert out[0].value == 81.4
+    assert out[0].formula_status == "ok"
 
 
 @pytest_asyncio.fixture
@@ -265,10 +323,10 @@ async def test_overview_kpi_cards_with_evidence_survive_peripheral_missing_input
     primary sources (brand_mentions for target + competitor) were
     populated.
 
-    The fix keeps `card.value` populated and downgrades `formula_status`
-    to `partial` so the frontend's `canUseContractMetricValue` gate still
-    surfaces the number. Critical missing inputs (denominator missing,
-    primary source missing) still null the value per the no-fallback
+    The fix keeps `card.value` populated and reports metric-level
+    `formula_status=ok` when aggregate evidence proves the displayed value.
+    Critical missing inputs (denominator missing, primary source missing)
+    still null the value per the no-fallback
     contract — see
     `test_overview_marks_brand_mentions_partial_when_daily_rollups_missing`.
     """
@@ -283,6 +341,11 @@ async def test_overview_kpi_cards_with_evidence_survive_peripheral_missing_input
         assert card["value"] is not None, (
             f"{card['label_en']} value should survive peripheral missing "
             f"inputs when geo_score_daily evidence + primary sources back it"
+        )
+        assert card["formula_status"] == "ok", (
+            f"{card['label_en']} formula_status should be ok when the displayed "
+            f"value is backed by geo_score_daily and the only gap is analyzer "
+            f"package metadata (got {card['formula_status']})"
         )
         assert card["formula_status"] != "missing_required_inputs", (
             f"{card['label_en']} formula_status should not be "

@@ -178,6 +178,15 @@ function compactText(value: unknown) {
   return String(value ?? '').replace(/\s+/g, ' ').trim()
 }
 
+function normalizedVisibleReasonText(value: unknown) {
+  return compactText(value)
+    .toLowerCase()
+    .replace(/[_./-]+/g, ' ')
+    .replace(/[^a-z0-9\u4e00-\u9fff]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
 function expectedBrandLabels(brandId: number, configuredBrandName?: string) {
   const labels = [configuredBrandName]
   if (brandId === 12) labels.push('Estée Lauder', 'Estee Lauder', '雅诗兰黛')
@@ -418,9 +427,10 @@ function assertVisibleOverviewRendering(
     )
   } else if (!isOkState(competitors)) {
     const reasons = visibleReasonParts(competitors)
+    const normalizedBody = normalizedVisibleReasonText(body)
     assertCondition(reasons.length > 0, 'competitors/metrics is non-ok without explicit reason metadata')
     assertCondition(
-      reasons.some(reason => body.toLowerCase().includes(reason.toLowerCase())),
+      reasons.some(reason => normalizedBody.includes(normalizedVisibleReasonText(reason))),
       `${rendered.route} did not render an explicit competitor partial reason; expected one of ${JSON.stringify(reasons)}`,
     )
   }
@@ -1162,6 +1172,79 @@ test.describe('App analytics business completeness assertion', () => {
     ).not.toThrow()
   })
 
+  test('accepts humanized competitor partial reason labels from raw API reason codes', () => {
+    const competitors = {
+      state: 'partial',
+      state_reason: 'partial_analyzer_data',
+      missing_reasons: ['eligible_response_denominator', 'missing_optional_collection'],
+    }
+    const expectations = deriveVisibleOverviewExpectations({
+      overview: {
+        state: 'partial',
+        kpi_cards: [
+          { metric_key: 'mention_rate', value: 0.42, value_scale: 'decimal', formula_status: 'ok' },
+        ],
+      },
+      metrics: {
+        state: 'ok',
+        series: [],
+      },
+      competitors,
+    })
+
+    expect(() =>
+      assertVisibleOverviewRendering(
+        {
+          route: '/brand/overview?brandId=24&range=30d&profileGroup=all',
+          url: 'http://example.test/brand/overview?brandId=24&range=30d&profileGroup=all',
+          bodyText:
+            'bestCoffer Mention Rate 42% Competitor coverage Partial Analyzer Data Eligible Response Denominator Missing Optional Collection',
+          kpiCardTexts: ['Mention Rate 42%'],
+          chartTexts: [],
+          genericEmptyTexts: [],
+        },
+        expectations,
+        competitors,
+      ),
+    ).not.toThrow()
+  })
+
+  test('flags missing visible competitor partial reason evidence', () => {
+    const competitors = {
+      state: 'partial',
+      state_reason: 'partial_analyzer_data',
+      missing_reasons: ['eligible_response_denominator', 'missing_optional_collection'],
+    }
+    const expectations = deriveVisibleOverviewExpectations({
+      overview: {
+        state: 'partial',
+        kpi_cards: [
+          { metric_key: 'mention_rate', value: 0.42, value_scale: 'decimal', formula_status: 'ok' },
+        ],
+      },
+      metrics: {
+        state: 'ok',
+        series: [],
+      },
+      competitors,
+    })
+
+    expect(() =>
+      assertVisibleOverviewRendering(
+        {
+          route: '/brand/overview?brandId=24&range=30d&profileGroup=all',
+          url: 'http://example.test/brand/overview?brandId=24&range=30d&profileGroup=all',
+          bodyText: 'bestCoffer Mention Rate 42% Competitor coverage Limited data',
+          kpiCardTexts: ['Mention Rate 42%'],
+          chartTexts: [],
+          genericEmptyTexts: [],
+        },
+        expectations,
+        competitors,
+      ),
+    ).toThrow(/did not render an explicit competitor partial reason/)
+  })
+
   test('accepts configured BestCoffer brand context for live rendered routes', () => {
     expect(
       renderedPageHasExpectedBrandContext(
@@ -1658,11 +1741,26 @@ test.describe('Live App analytics business completeness gate', () => {
     await fs.mkdir(SCREENSHOT_DIR, { recursive: true })
     const failedResponses: string[] = []
     const runtimeErrors: string[] = []
+    let capturedMentionSamplesPayload: ContractPayload | null = null
     page.on('response', response => {
       const url = response.url()
       const status = response.status()
       if (url.includes('/api/') && (status === 401 || status >= 500)) {
         failedResponses.push(`${status} ${url}`)
+      }
+      // #1175: capture the mention-samples payload the BrandSentimentPage actually consumes so the
+      // DOM-rendered response_text can be compared against the live API value below.
+      if (
+        status === 200 &&
+        url.includes(`/api/v1/projects/${projectId}/mention-samples`) &&
+        capturedMentionSamplesPayload === null
+      ) {
+        response
+          .json()
+          .then(json => {
+            capturedMentionSamplesPayload = json as ContractPayload
+          })
+          .catch(() => {})
       }
     })
     page.on('pageerror', error => runtimeErrors.push(`pageerror: ${error.message}`))
@@ -1680,6 +1778,14 @@ test.describe('Live App analytics business completeness gate', () => {
       expected: TopicReadabilityExpectation[]
       modal?: RenderedAnalyzerFactsSummary
     }> = []
+    // #1175: traceability record proving the BrandSentimentPage rendered the live API response_text.
+    let sentimentResponseExpansionEvidence: {
+      route: string
+      apiItemCount: number
+      apiResponseTextPreview: string
+      apiResponseTextLength: number
+      renderedMatchesApi: boolean
+    } | null = null
 
     const routes = [
       `/brand/overview?brandId=${brandId}&range=30d&profileGroup=all`,
@@ -1726,6 +1832,52 @@ test.describe('Live App analytics business completeness gate', () => {
           expected: topicReadabilityExpectations,
           modal: modalSummary,
         })
+      } else if (route.startsWith('/brand/sentiment?')) {
+        // #1175 acceptance evidence: prove the response row expansion renders the live API response_text.
+        // Wait briefly for the captured mention-samples payload (the page already finished networkidle above,
+        // but the JSON .then() resolves on the next microtask). No flake-retry per AGENTS.md — single attempt.
+        const waitDeadline = Date.now() + 10_000
+        while (capturedMentionSamplesPayload === null && Date.now() < waitDeadline) {
+          await page.waitForTimeout(250)
+        }
+        assertCondition(
+          capturedMentionSamplesPayload !== null,
+          '#1175 expected /api/v1/projects/{id}/mention-samples response to be captured on /brand/sentiment',
+        )
+        const samplesPayload = capturedMentionSamplesPayload as ContractPayload
+        const samplesItems = Array.isArray(samplesPayload.items) ? samplesPayload.items : []
+        assertCondition(
+          samplesItems.length >= 1,
+          '#1175 expected at least one sentiment response item on /brand/sentiment',
+        )
+        const firstItem = samplesItems[0] as ContractPayload
+        const firstResponseText = firstItem?.response_text
+        assertCondition(
+          typeof firstResponseText === 'string' && firstResponseText.length > 0,
+          '#1175 first response item must have non-empty response_text',
+        )
+        // Click the first row's Inspect control. The page uses a plain <button> labelled "Inspect" with
+        // aria-label="Inspect full response for ...". Using the visible name keeps test scope to this file
+        // (no product code testid needed). See BrandSentimentPage.tsx:570-591.
+        const inspectButton = page.getByRole('button', { name: /^Inspect full response for / }).first()
+        await inspectButton.waitFor({ state: 'visible', timeout: 10_000 })
+        await inspectButton.click()
+        // Wait for the expanded panel header to appear, then assert the rendered text contains the exact API value.
+        const expandedPanel = page.getByText('Full response inspection').first()
+        await expandedPanel.waitFor({ state: 'visible', timeout: 10_000 })
+        const expandedContainer = expandedPanel.locator('..')
+        const expandedText = await expandedContainer.innerText({ timeout: 10_000 })
+        assertCondition(
+          expandedText.includes(firstResponseText),
+          '#1175 expanded row must render exact API response_text on /brand/sentiment',
+        )
+        sentimentResponseExpansionEvidence = {
+          route,
+          apiItemCount: samplesItems.length,
+          apiResponseTextPreview: firstResponseText.slice(0, 200),
+          apiResponseTextLength: firstResponseText.length,
+          renderedMatchesApi: true,
+        }
       }
       pageSummaries.push({ route, path, surfaceCount })
     }
@@ -1781,6 +1933,21 @@ test.describe('Live App analytics business completeness gate', () => {
                 }
               : null,
           })),
+        },
+        null,
+        2,
+      ),
+    )
+    // #1175: persist the captured response_text preview so the acceptance evidence is traceable from the artifact.
+    await fs.writeFile(
+      `${SCREENSHOT_DIR}/sentiment-response-expansion-summary.json`,
+      JSON.stringify(
+        {
+          projectId,
+          brandId,
+          window: { from: fromDate, to: toDate },
+          issue: '#1175',
+          evidence: sentimentResponseExpansionEvidence,
         },
         null,
         2,
@@ -1855,5 +2022,104 @@ test.describe('Live App analytics business completeness gate', () => {
       },
       pageSummaries,
     }))
+  })
+
+  test('#1175 sentiment-only acceptance: /brand/sentiment response row expansion', async ({ page }) => {
+    // Self-contained replay for the #1175 user symptom ("情感分析中看不到具体的response").
+    // The sibling iterated test above can short-circuit on an earlier /brand/overview assertion
+    // before reaching /brand/sentiment (see Epic #1175 evidence-gap notes). This test boots a
+    // fresh page, navigates ONLY to /brand/sentiment, and proves response_text reaches the DOM.
+    // No flake-retry: single attempt per AGENTS.md `### Acceptance And Verification Evidence`.
+    const baseUrl = process.env.PLAYWRIGHT_BASE_URL || process.env.BASE_URL || 'http://116.62.36.173'
+    const projectId = process.env.PROJECT_ID || DEFAULT_PROJECT_ID
+    const brandId = Number(process.env.BRAND_ID || DEFAULT_BRAND_ID)
+    const competitorId = Number(process.env.COMPETITOR_ID || DEFAULT_COMPETITOR_ID)
+    const userId = process.env.OWNER_USER_ID || DEFAULT_OWNER_USER_ID
+    const secret = process.env.USER_JWT_SECRET || process.env.JWT_SECRET || ''
+    const brandLabels = expectedBrandLabels(brandId, process.env.BRAND_NAME || process.env.BRAND_QUERY)
+    const primaryBrandName = brandLabels[0] || `Brand ${brandId}`
+
+    assertCondition(Buffer.byteLength(secret, 'utf8') >= 32, 'USER_JWT_SECRET/JWT_SECRET is missing or too short')
+    const token = signJwt(userId, secret)
+    console.log('::add-mask::' + token)
+
+    let capturedMentionSamplesPayload: ContractPayload | null = null
+    page.on('response', response => {
+      const url = response.url()
+      if (
+        response.status() === 200 &&
+        url.includes(`/api/v1/projects/${projectId}/mention-samples`) &&
+        capturedMentionSamplesPayload === null
+      ) {
+        response
+          .json()
+          .then(json => {
+            capturedMentionSamplesPayload = json as ContractPayload
+          })
+          .catch(() => {})
+      }
+    })
+
+    await seedLiveAuth(page, token, projectId, brandId, primaryBrandName, competitorId)
+
+    const route = `/brand/sentiment?brandId=${brandId}&range=30d&profileGroup=all`
+    await page.goto(`${baseUrl}${route}`, { waitUntil: 'domcontentloaded', timeout: 60_000 })
+    await page.waitForLoadState('networkidle', { timeout: 25_000 }).catch(() => {})
+
+    const waitDeadline = Date.now() + 10_000
+    while (capturedMentionSamplesPayload === null && Date.now() < waitDeadline) {
+      await page.waitForTimeout(250)
+    }
+    assertCondition(
+      capturedMentionSamplesPayload !== null,
+      '#1175 expected /api/v1/projects/{id}/mention-samples response to be captured on /brand/sentiment',
+    )
+    const samplesPayload = capturedMentionSamplesPayload as ContractPayload
+    const samplesItems = Array.isArray(samplesPayload.items) ? samplesPayload.items : []
+    assertCondition(
+      samplesItems.length >= 1,
+      '#1175 expected at least one sentiment response item on /brand/sentiment',
+    )
+    const firstItem = samplesItems[0] as ContractPayload
+    const firstResponseText = firstItem?.response_text
+    assertCondition(
+      typeof firstResponseText === 'string' && firstResponseText.length > 0,
+      '#1175 first response item must have non-empty response_text',
+    )
+
+    const inspectButton = page.getByRole('button', { name: /^Inspect full response for / }).first()
+    await inspectButton.waitFor({ state: 'visible', timeout: 10_000 })
+    await inspectButton.click()
+
+    const expandedPanel = page.getByText('Full response inspection').first()
+    await expandedPanel.waitFor({ state: 'visible', timeout: 10_000 })
+    const expandedContainer = expandedPanel.locator('..')
+    const expandedText = await expandedContainer.innerText({ timeout: 10_000 })
+    assertCondition(
+      expandedText.includes(firstResponseText),
+      '#1175 expanded row must render exact API response_text on /brand/sentiment',
+    )
+
+    const deployedSha = await page
+      .evaluate(() => document.querySelector('meta[name="genpano-deploy-sha"]')?.getAttribute('content') ?? null)
+      .catch(() => null)
+
+    await fs.mkdir(SCREENSHOT_DIR, { recursive: true })
+    await fs.writeFile(
+      `${SCREENSHOT_DIR}/issue-1175-sentiment-only-acceptance.json`,
+      JSON.stringify(
+        {
+          issue: '#1175',
+          route,
+          response_text_length: firstResponseText.length,
+          response_text_preview: firstResponseText.slice(0, 200),
+          rendered_matches_api: true,
+          deployed_sha: deployedSha,
+          api_item_count: samplesItems.length,
+        },
+        null,
+        2,
+      ),
+    )
   })
 })

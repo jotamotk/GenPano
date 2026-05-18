@@ -1134,6 +1134,13 @@ def _coerce_list(value: Any) -> list[Any]:
     return []
 
 
+def _relation_scalar(value: Any) -> str | None:
+    if value is None or isinstance(value, (dict, list, tuple, set)):
+        return None
+    text_value = str(value).strip()
+    return text_value or None
+
+
 def _relation_response_matches(item: dict[str, Any], response_id: int) -> bool:
     raw_id = item.get("response_id") or item.get("responseId") or item.get("llm_response_id")
     if raw_id is None:
@@ -1165,12 +1172,16 @@ def _relation_from_mapping(
         return None
     return ResponseRelationDetail(
         source=source,
-        entity_kind=item.get("entity_kind") or item.get("entityKind"),
+        entity_kind=_relation_scalar(item.get("entity_kind") or item.get("entityKind")),
         type=str(relation_type),
         a_id=_as_int(item.get("a_id") or item.get("source_id") or item.get("from_id")),
         b_id=_as_int(item.get("b_id") or item.get("target_id") or item.get("to_id")),
-        a_name=item.get("a_name") or item.get("source_name") or item.get("from_name"),
-        b_name=item.get("b_name") or item.get("target_name") or item.get("to_name"),
+        a_name=_relation_scalar(
+            item.get("a_name") or item.get("source_name") or item.get("from_name")
+        ),
+        b_name=_relation_scalar(
+            item.get("b_name") or item.get("target_name") or item.get("to_name")
+        ),
         confidence=_round(item.get("confidence")),
         evidence=item.get("evidence") or item.get("quote") or item,
         response_id=response_id,
