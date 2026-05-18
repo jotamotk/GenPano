@@ -13,6 +13,7 @@ from genpano_models import (
     CitationSource,
     Profile,
     Project,
+    ProjectCompetitor,
     ResponseAnalysis,
     Segment,
     User,
@@ -1281,6 +1282,7 @@ async def test_brand_override_uses_admin_fact_text_when_query_brand_fk_is_wrong(
     client, db_session, user
 ):
     project = await _seed_admin_chain(db_session, user)
+    db_session.add(ProjectCompetitor(project_id=project.id, brand_id=12, pinned_by=user.id))
     now = datetime.now()
     await db_session.execute(
         text(
@@ -1426,6 +1428,7 @@ async def test_brand_override_counts_text_matched_facts_without_analysis_or_ment
     client, db_session, user
 ):
     project = await _seed_admin_chain(db_session, user)
+    db_session.add(ProjectCompetitor(project_id=project.id, brand_id=12, pinned_by=user.id))
     now = datetime.now()
     await db_session.execute(
         text(

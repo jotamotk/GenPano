@@ -171,23 +171,17 @@ async def test_overview_no_auth_returns_401(client, project_with_data):
 
 
 @pytest.mark.asyncio
-async def test_overview_brand_id_override_swaps_brand(client, user, project_with_data):
-    """`?brand_id=X` overrides the project's primary brand. Drives the
-    DashboardPage brand picker (cross-industry brand viewing). The
-    project still scopes industry and ownership; only brand_id changes
-    in the response and downstream queries."""
+async def test_overview_rejects_unpinned_brand_id_override(client, user, project_with_data):
+    """`?brand_id=X` must stay within the current Project brand scope."""
     resp = await client.get(
         f"/api/v1/projects/{project_with_data.id}/overview?brand_id=99",
         headers=_bearer(user),
     )
-    assert resp.status_code == 200
-    body = resp.json()
-    # Override took effect even though no geo_score_daily rows exist for
-    # brand_id=99 in the fixture — state collapses to 'empty', brand_id
-    # echoes the override.
-    assert body["brand_id"] == 99
-    assert body["state"] == "empty"
-    assert all(c["value"] is None for c in body["kpi_cards"])
+    assert resp.status_code == 422
+    detail = resp.json()["detail"]
+    assert detail["code"] == "validation_error"
+    assert detail["field"] == "brand_id"
+    assert detail["reason"] == "must match project primary brand or pinned competitor"
 
 
 @pytest.mark.asyncio

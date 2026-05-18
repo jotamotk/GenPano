@@ -25,7 +25,8 @@ from datetime import date
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, status
-from genpano_models import User
+from genpano_models import Project, ProjectCompetitor, User
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.projects import service
@@ -134,6 +135,29 @@ def _parse_date(value: str | None, field: str) -> date | None:
         return date.fromisoformat(value)
     except ValueError as exc:
         raise validation_error(field, "must be ISO date YYYY-MM-DD") from exc
+
+
+async def _project_scoped_brand_id(
+    session: AsyncSession,
+    project: Project,
+    brand_id: int | None,
+) -> int | None:
+    if brand_id is None:
+        return None
+    if project.primary_brand_id == brand_id:
+        return brand_id
+
+    stmt = select(ProjectCompetitor.brand_id).where(
+        ProjectCompetitor.project_id == project.id,
+        ProjectCompetitor.brand_id == brand_id,
+    )
+    if (await session.execute(stmt)).scalar_one_or_none() == brand_id:
+        return brand_id
+
+    raise validation_error(
+        "brand_id",
+        "must match project primary brand or pinned competitor",
+    )
 
 
 def _analysis_filters(
@@ -266,13 +290,13 @@ async def project_overview(
 ) -> BrandOverviewOut:
     """Brand Overview composite — KPI cards + 30d trends + top prompts.
 
-    Optional `brand_id` overrides the project's primary brand for the
-    duration of this request — feeds the dashboard's brand picker
-    (cross-industry brand viewing). Project ownership is still
-    enforced; the override only swaps which brand's metrics are pulled.
+    Optional `brand_id` may select the project's primary brand or a
+    pinned competitor. Arbitrary brand overrides are rejected so stale
+    Brand Mode URLs cannot replace the current Project's brand truth.
     """
     project = await service.get_project_for_user(session, user, project_id)
-    return await get_brand_overview(session, project, brand_id_override=brand_id)
+    scoped_brand_id = await _project_scoped_brand_id(session, project, brand_id)
+    return await get_brand_overview(session, project, brand_id_override=scoped_brand_id)
 
 
 # ── Phase 2.2 ────────────────────────────────────────────────────
@@ -297,6 +321,7 @@ async def project_metrics(
     """Optional `brand_id` overrides the project's primary brand —
     same semantics as `/overview` (dashboard brand picker)."""
     project = await service.get_project_for_user(session, user, project_id)
+    scoped_brand_id = await _project_scoped_brand_id(session, project, brand_id)
     return await get_metrics(
         session,
         project,
@@ -304,7 +329,7 @@ async def project_metrics(
         from_date=_parse_date(from_, "from"),
         to_date=_parse_date(to, "to"),
         engines=_parse_csv(engine),
-        brand_id_override=brand_id,
+        brand_id_override=scoped_brand_id,
         filters=_analysis_filters(
             from_=from_,
             to=to,
@@ -575,12 +600,13 @@ async def project_competitor_metrics(
 ) -> CompetitorMetricsOut:
     """Primary brand vs each pinned competitor across 4 metrics (PRD §4.6.1g)."""
     project = await service.get_project_for_user(session, user, project_id)
+    scoped_brand_id = await _project_scoped_brand_id(session, project, brand_id)
     return await get_competitor_metrics(
         session,
         project,
         from_date=_parse_date(from_, "from"),
         to_date=_parse_date(to, "to"),
-        brand_id_override=brand_id,
+        brand_id_override=scoped_brand_id,
         filters=_analysis_filters(
             from_=from_,
             to=to,
@@ -619,13 +645,14 @@ async def project_competitor_trends(
     pipeline data with one series per available competitor.
     """
     project = await service.get_project_for_user(session, user, project_id)
+    scoped_brand_id = await _project_scoped_brand_id(session, project, brand_id)
     return await get_competitor_trends(
         session,
         project,
         metric=metric,
         from_date=_parse_date(from_, "from"),
         to_date=_parse_date(to, "to"),
-        brand_id_override=brand_id,
+        brand_id_override=scoped_brand_id,
     )
 
 
