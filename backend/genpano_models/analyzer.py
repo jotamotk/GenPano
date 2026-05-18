@@ -142,7 +142,13 @@ class ResponseAnalysis(Base):
     )
     sov_score: Mapped[float | None] = mapped_column(Float, nullable=True, server_default="0.0")
     citation_score: Mapped[float | None] = mapped_column(Float, nullable=True, server_default="0.0")
-    geo_score: Mapped[float | None] = mapped_column(Float, nullable=True, server_default="0.0")
+    # No server_default: when the analyzer computes geo_score=None (target
+    # not mentioned, or any GEOScorer component missing), N/A must stay NULL
+    # so downstream means (e.g. _overview_from_admin_facts) can distinguish
+    # "no data" from "scored zero". A `server_default="0.0"` previously
+    # coerced None → 0.0 on INSERT, producing the bestCoffer brand-overview
+    # GeoScore dilution fixed in PR #1207.
+    geo_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     analyzed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=False), nullable=True, server_default=func.now()
     )
