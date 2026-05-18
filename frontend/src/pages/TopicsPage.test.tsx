@@ -694,6 +694,15 @@ describe('TopicsPage live brand override', () => {
     expect(within(modal).getByText(/Products and features/i)).toBeInTheDocument()
     expect(within(modal).getByText(/Response relations/i)).toBeInTheDocument()
     expect(within(modal).getByText(/Sentiment drivers/i)).toBeInTheDocument()
+
+    expect(modal).toHaveClass('h-[88vh]', 'max-h-[88vh]', 'overflow-hidden', 'flex', 'flex-col')
+    const modalGrid = modal.querySelector('.grid')
+    expect(modalGrid).toHaveClass('flex-1', 'min-h-0', 'overflow-hidden')
+    expect(modalGrid?.querySelector('main')).toHaveClass('min-h-0', 'overflow-y-auto')
+    expect(modalGrid?.querySelector('aside:last-child')).toHaveClass(
+      'min-h-0',
+      'overflow-y-auto',
+    )
   })
 
   it('renders current response analyzer facts when future enrichment lists are absent', () => {

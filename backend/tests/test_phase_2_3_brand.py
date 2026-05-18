@@ -454,6 +454,7 @@ async def test_competitor_metrics_brand_override_keeps_missing_rollup_values_par
     db_session.add(p)
     await db_session.commit()
     await db_session.refresh(p, ["competitors"])
+    db_session.add(ProjectCompetitor(project_id=p.id, brand_id=12, pinned_by=user.id))
 
     now = datetime.now()
     for i in range(6):
@@ -524,6 +525,7 @@ async def test_brand_override_uses_brand_name_when_mentions_lack_fk(client, user
     db_session.add(p)
     await db_session.commit()
     await db_session.refresh(p, ["competitors"])
+    db_session.add(ProjectCompetitor(project_id=p.id, brand_id=12, pinned_by=user.id))
 
     now = datetime.now()
     for i in range(6):

@@ -1,0 +1,112 @@
+name: VM Backfill query_attempts
+
+# One-off backfill for queries whose response was written by the VM bulk
+# path (vm-bulk-via-runner.yml prior to its query_attempts patch). The VM
+# bulk path used to write only ``llm_responses`` + ``UPDATE queries SET
+# status='success'`` — it skipped ``query_attempts``, so the Admin
+# /admin/execution-tracker (tracker-attempts) page showed no attempt
+# metadata for those queries.
+#
+# This workflow inserts ONE ``query_attempts`` row per ``llm_responses``
+# row that exists for matching queries but has no existing successful
+# ``query_attempts`` row. Schema columns match the proven working set in
+# geo_tracker/agent/vm_quick_retry.py: (query_id, outcome, created_at,
+# metadata).
+#
+# Refs Epic #1110.
+
+on:
+  workflow_dispatch:
+    inputs:
+      query_text_filter:
+        description: 'SQL ILIKE pattern for queries.query_text'
+        required: true
+        default: '%bestCoffer%'
+        type: string
+      since_minutes:
+        description: 'Only consider llm_responses.collected_at within last N minutes'
+        required: true
+        default: '120'
+        type: string
+
+jobs:
+  backfill:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Setup SSH
+        env:
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_SSH_PORT: ${{ secrets.SERVER_SSH_PORT }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 0700 ~/.ssh
+          printf '%s\n' "$SERVER_SSH_KEY" > ~/.ssh/id_ssh
+          chmod 0600 ~/.ssh/id_ssh
+          PORT="${SERVER_SSH_PORT:-22}"
+          ssh-keyscan -p "$PORT" -H "$SERVER_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Preview targets
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_SSH_PORT: ${{ secrets.SERVER_SSH_PORT }}
+          QUERY_FILTER: ${{ inputs.query_text_filter }}
+          SINCE_MINUTES: ${{ inputs.since_minutes }}
+        run: |
+          set -euo pipefail
+          PORT="${SERVER_SSH_PORT:-22}"
+          REMOTE="${SERVER_USER}@${SERVER_HOST}"
+          SQL_PREVIEW="SELECT count(*) AS targets FROM llm_responses r JOIN queries q ON q.id = r.query_id WHERE q.query_text ILIKE '${QUERY_FILTER}' AND r.collected_at >= NOW() - INTERVAL '${SINCE_MINUTES} minutes' AND r.raw_text IS NOT NULL AND length(r.raw_text) >= 200 AND NOT EXISTS (SELECT 1 FROM query_attempts qa WHERE qa.query_id = r.query_id AND qa.outcome = 'success');"
+          echo "=== preview: candidate rows ==="
+          ssh -i ~/.ssh/id_ssh -p "$PORT" "$REMOTE" \
+            "sudo docker exec genpano-postgres-1 psql -U genpano -d genpano -c \"${SQL_PREVIEW}\""
+
+      - name: Backfill query_attempts
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_SSH_PORT: ${{ secrets.SERVER_SSH_PORT }}
+          QUERY_FILTER: ${{ inputs.query_text_filter }}
+          SINCE_MINUTES: ${{ inputs.since_minutes }}
+        run: |
+          set -euo pipefail
+          PORT="${SERVER_SSH_PORT:-22}"
+          REMOTE="${SERVER_USER}@${SERVER_HOST}"
+          # Schema columns match the proven working set in
+          # geo_tracker/agent/vm_quick_retry.py:
+          # (query_id, outcome, created_at, metadata).
+          # Production query_attempts may have additional NOT NULL columns
+          # (e.g. account_id); the cookie-inject path populates those,
+          # this backfill has no account context, so the INSERT mirrors
+          # vm_quick_retry.py. If the production schema has hard NOT NULL
+          # constraints on columns we cannot populate, the INSERT will
+          # raise — surface that error rather than silently swallow.
+          SQL_BACKFILL="WITH targets AS (SELECT r.query_id, r.collected_at, length(r.raw_text) AS chars FROM llm_responses r JOIN queries q ON q.id = r.query_id WHERE q.query_text ILIKE '${QUERY_FILTER}' AND r.collected_at >= NOW() - INTERVAL '${SINCE_MINUTES} minutes' AND r.raw_text IS NOT NULL AND length(r.raw_text) >= 200 AND NOT EXISTS (SELECT 1 FROM query_attempts qa WHERE qa.query_id = r.query_id AND qa.outcome = 'success')) INSERT INTO query_attempts (query_id, outcome, created_at, metadata) SELECT query_id, 'success', collected_at, jsonb_build_object('execution_mode','vm_bulk_via_runner_backfill','vm_id','doubao-01-or-02','raw_text_chars',chars) FROM targets;"
+          echo "=== running backfill ==="
+          ssh -i ~/.ssh/id_ssh -p "$PORT" "$REMOTE" \
+            "sudo docker exec genpano-postgres-1 psql -U genpano -d genpano -c \"${SQL_BACKFILL}\""
+
+      - name: Show inserted count and per-query summary
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_SSH_PORT: ${{ secrets.SERVER_SSH_PORT }}
+          QUERY_FILTER: ${{ inputs.query_text_filter }}
+          SINCE_MINUTES: ${{ inputs.since_minutes }}
+        run: |
+          set -euo pipefail
+          PORT="${SERVER_SSH_PORT:-22}"
+          REMOTE="${SERVER_USER}@${SERVER_HOST}"
+          SQL_COUNT="SELECT count(*) AS backfilled_rows FROM query_attempts qa WHERE qa.metadata->>'execution_mode' = 'vm_bulk_via_runner_backfill';"
+          SQL_DETAIL="SELECT qa.query_id, qa.outcome, qa.created_at, qa.metadata->>'raw_text_chars' AS chars FROM query_attempts qa JOIN queries q ON q.id = qa.query_id WHERE qa.metadata->>'execution_mode' = 'vm_bulk_via_runner_backfill' AND q.query_text ILIKE '${QUERY_FILTER}' AND qa.created_at >= NOW() - INTERVAL '${SINCE_MINUTES} minutes' ORDER BY qa.query_id DESC LIMIT 50;"
+          echo "=== total backfilled rows (all-time, by metadata.execution_mode) ==="
+          ssh -i ~/.ssh/id_ssh -p "$PORT" "$REMOTE" \
+            "sudo docker exec genpano-postgres-1 psql -U genpano -d genpano -c \"${SQL_COUNT}\""
+          echo
+          echo "=== per-query detail (matching filter + window) ==="
+          ssh -i ~/.ssh/id_ssh -p "$PORT" "$REMOTE" \
+            "sudo docker exec genpano-postgres-1 psql -U genpano -d genpano -c \"${SQL_DETAIL}\""

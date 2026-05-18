@@ -1,0 +1,41 @@
+name: Peek genpano-worker-analysis Logs
+
+on:
+  workflow_dispatch:
+    inputs:
+      tail:
+        description: 'Tail N lines'
+        required: false
+        default: '100'
+        type: string
+
+jobs:
+  peek:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - name: Setup SSH
+        env:
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_SSH_PORT: ${{ secrets.SERVER_SSH_PORT }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 0700 ~/.ssh
+          printf '%s\n' "$SERVER_SSH_KEY" > ~/.ssh/id_ssh
+          chmod 0600 ~/.ssh/id_ssh
+          PORT="${SERVER_SSH_PORT:-22}"
+          ssh-keyscan -p "$PORT" -H "$SERVER_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: docker logs genpano-worker-analysis-1
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_SSH_PORT: ${{ secrets.SERVER_SSH_PORT }}
+          TAIL: ${{ inputs.tail }}
+        run: |
+          set -euo pipefail
+          PORT="${SERVER_SSH_PORT:-22}"
+          REMOTE="${SERVER_USER}@${SERVER_HOST}"
+          ssh -i ~/.ssh/id_ssh -p "$PORT" "$REMOTE" \
+            "sudo docker logs --tail=${TAIL} genpano-worker-analysis-1 2>&1 | tail -${TAIL}"

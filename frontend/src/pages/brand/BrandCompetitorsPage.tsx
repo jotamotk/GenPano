@@ -50,6 +50,16 @@ function positiveGap(left, right) {
   return Math.max(0, a - b);
 }
 
+function labelizeContractValue(value) {
+  if (value == null) return '';
+  const raw = typeof value === 'string'
+    ? value
+    : value.field || value.source || value.reason || '';
+  return String(raw)
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
 /* ─────────────────────────────────────────────────────────────
    BrandCompetitorsPage — /brand/competitors (§4.6-IA-v2.C.2.2 + M)
    ─────────────────────────────────────────────────────────────
@@ -106,6 +116,20 @@ export default function BrandCompetitorsPage() {
             .slice(0, 6),
     [activeProject, isLive, liveCompetitors],
   );
+  const liveCompetitorEvidenceState = useMemo(() => {
+    const payload = competitorsQ.data;
+    if (!isLive || !payload || !payload.state || payload.state === 'ok') return null;
+    const scopedCompetitors = payload.project_scope?.competitor_brand_ids;
+    const configuredCompetitorCount = Array.isArray(scopedCompetitors)
+      ? scopedCompetitors.length
+      : finiteNumberOrNull(payload.evidence_counts?.competitor_brand_count);
+    return {
+      state: payload.state,
+      reason: labelizeContractValue(payload.state_reason || payload.formula_status),
+      missingInputs: (payload.missing_inputs || []).map(labelizeContractValue).filter(Boolean),
+      configuredCompetitorCount,
+    };
+  }, [competitorsQ.data, isLive]);
 
   // ──────────────────────────────────────────────────────────────
   // ① Threat scoring. We rank competitors by a composite threat score:
@@ -116,6 +140,7 @@ export default function BrandCompetitorsPage() {
   // Higher = more threatening.
   // ──────────────────────────────────────────────────────────────
   const threatCards = useMemo(() => {
+    if (liveCompetitorEvidenceState) return [];
     const bubbleByName = isLive
       ? new Map()
       : new Map((COMPETITOR_SENTIMENT_BUBBLE || []).map((b) => [b.brand, b]));
@@ -149,12 +174,14 @@ export default function BrandCompetitorsPage() {
       .filter((card) => !isLive || card.threatScore != null)
       .sort((a, b) => (b.threatScore ?? -Infinity) - (a.threatScore ?? -Infinity))
       .slice(0, 3);
-  }, [competitors, analyticsPrimary, isLive]);
+  }, [competitors, analyticsPrimary, isLive, liveCompetitorEvidenceState]);
 
   const [focusCompetitorId, setFocusCompetitorId] = useState(
     threatCards[0]?.brand?.id || competitors[0]?.id,
   );
-  const focus = competitors.find((c) => c.id === focusCompetitorId) || threatCards[0]?.brand || competitors[0];
+  const focus = liveCompetitorEvidenceState
+    ? null
+    : competitors.find((c) => c.id === focusCompetitorId) || threatCards[0]?.brand || competitors[0];
 
   // ──────────────────────────────────────────────────────────────
   // ②a Authority Radar — 1:1 我 vs 所选竞品 vs 行业中位
@@ -296,7 +323,27 @@ export default function BrandCompetitorsPage() {
         </div>
         {threatCards.length === 0 ? (
           <Card className="p-3">
-            <p className="text-xs text-themed-muted">暂未配置竞品，可在 Settings · 品牌 中添加 3-5 个竞品开始对比。</p>
+            {liveCompetitorEvidenceState ? (
+              <div className="space-y-1.5">
+                <p className="text-xs font-medium text-themed-primary">
+                  Competitor comparison is {liveCompetitorEvidenceState.state}
+                </p>
+                <p className="text-xs text-themed-muted">
+                  The configured competitive set is not ready for trustworthy SoV and sentiment scoring.
+                </p>
+                <p className="text-[11px] leading-relaxed text-themed-muted">
+                  {[
+                    liveCompetitorEvidenceState.reason,
+                    ...liveCompetitorEvidenceState.missingInputs,
+                    liveCompetitorEvidenceState.configuredCompetitorCount == null
+                      ? ''
+                      : `${liveCompetitorEvidenceState.configuredCompetitorCount} configured competitor${liveCompetitorEvidenceState.configuredCompetitorCount === 1 ? '' : 's'}`,
+                  ].filter(Boolean).join(' · ')}
+                </p>
+              </div>
+            ) : (
+              <p className="text-xs text-themed-muted">暂未配置竞品，可在 Settings · 品牌 中添加 3-5 个竞品开始对比。</p>
+            )}
           </Card>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
