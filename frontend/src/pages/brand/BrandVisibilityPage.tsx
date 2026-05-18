@@ -1,5 +1,8 @@
 import React from 'react';
 import { useSearchParams } from 'react-router-dom';
+import {
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
+} from 'recharts';
 import { useLocale } from '../../contexts/LocaleContext';
 import { useProject } from '../../contexts/ProjectContext';
 import { Card, Badge, MockDataBadge, InfoTooltip, MetricLabel } from '../../components/ui';
@@ -278,63 +281,56 @@ function EngineVisibilityBreakdown({
             Engine visibility data unavailable
           </div>
         ) : (
-          <div className="space-y-2">
-            {rows.map((row) => {
-              const mentionTrust = engineMetricTrust(source, 'mention_rate', row.mentionRate);
-              const sovTrust = engineMetricTrust(source, 'sov', row.sov);
-              const citationTrust = engineMetricTrust(source, 'citation', row.citationShare);
-              const citationText = formatEnginePercent(row.citationShare);
-              const citationStatus = row.citationShare == null
-                ? 'Unavailable'
-                : citationTrust?.tone === 'partial'
-                  ? citationTrust.label
-                  : null;
-
-              return (
-                <div
-                  key={row.engine}
-                  className="rounded-btn border border-themed-subtle bg-themed-subtle p-2.5"
-                >
-                  <div className="mb-2 flex items-center justify-between gap-2">
-                    <div className="text-sm font-semibold text-themed-primary">{row.engine}</div>
-                    {(row.mentionRate == null || row.sov == null) && (
-                      <span className="rounded-pill bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-900">
-                        Primary metrics need evidence
-                      </span>
-                    )}
-                  </div>
-
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                    <EnginePrimaryMetric
-                      label="Mention Rate"
-                      value={row.mentionRate}
-                      color="var(--color-accent)"
-                      trust={mentionTrust}
-                    />
-                    <EnginePrimaryMetric
-                      label="SoV"
-                      value={row.sov}
-                      color="var(--color-chart-7)"
-                      trust={sovTrust}
-                    />
-                  </div>
-
-                  <div className="mt-2 border-t border-themed-card pt-2">
-                    <div className="flex items-center justify-between gap-2 text-[11px]">
-                      <span className="font-medium text-themed-muted">Citation share</span>
-                      <span className="tabular-nums text-themed-muted">
-                        {citationText ?? '--'}
-                        {citationStatus ? ` · ${citationStatus}` : ''}
-                      </span>
-                    </div>
-                    <p className="mt-1 text-[11px] leading-snug text-themed-muted">
-                      Citation share is secondary context; it does not fill missing Mention Rate or SoV.
-                    </p>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
+          <ResponsiveContainer width="100%" height={200}>
+            <BarChart data={rows} margin={{ top: 4, right: 12, bottom: 4, left: 0 }}>
+              <CartesianGrid stroke="var(--color-chart-line-grid)" strokeDasharray="3 3" vertical={false} />
+              <XAxis
+                dataKey="engine"
+                tick={{ fontSize: 10, fill: 'var(--color-chart-axis-text)' }}
+                axisLine={{ stroke: 'var(--color-border-subtle)' }}
+                tickLine={false}
+              />
+              <YAxis
+                tick={{ fontSize: 10, fill: 'var(--color-chart-axis-text)' }}
+                axisLine={{ stroke: 'var(--color-border-subtle)' }}
+                tickLine={false}
+                tickFormatter={(v) => `${Math.round(v)}%`}
+              />
+              <Tooltip
+                contentStyle={{
+                  background: 'var(--color-tooltip-bg)',
+                  border: '1px solid var(--color-border-subtle)',
+                  borderRadius: 'var(--radius-btn)',
+                  fontSize: 12,
+                }}
+                formatter={(v: unknown) =>
+                  v == null ? '—' : `${Math.round(Number(v))}%`
+                }
+              />
+              <Legend
+                wrapperStyle={{ fontSize: 11, color: 'var(--color-text-muted)' }}
+                iconType="square"
+              />
+              <Bar
+                dataKey="mentionRate"
+                fill="var(--color-accent)"
+                name="Mention Rate"
+                radius={[3, 3, 0, 0]}
+              />
+              <Bar
+                dataKey="sov"
+                fill="var(--color-chart-7)"
+                name="SoV"
+                radius={[3, 3, 0, 0]}
+              />
+              <Bar
+                dataKey="citationShare"
+                fill="var(--color-chart-3)"
+                name="Citation share"
+                radius={[3, 3, 0, 0]}
+              />
+            </BarChart>
+          </ResponsiveContainer>
         )}
       </Card>
     </div>
