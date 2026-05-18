@@ -73,6 +73,7 @@ describe('dashboard adapter', () => {
           value: 80,
           unit: 'score',
           value_scale: 'score_0_100',
+          formula_status: 'ok',
           delta_30d_pct: null,
           direction: null,
         },
@@ -83,6 +84,7 @@ describe('dashboard adapter', () => {
           value: 0.72,
           unit: 'score',
           value_scale: 'raw_-1_1',
+          formula_status: 'ok',
           delta_30d_pct: null,
           direction: null,
         },
@@ -93,6 +95,7 @@ describe('dashboard adapter', () => {
           value: 3,
           unit: 'rank',
           value_scale: 'ordinal',
+          formula_status: 'ok',
           delta_30d_pct: null,
           direction: null,
         },
@@ -120,6 +123,7 @@ describe('dashboard adapter', () => {
           label_en: 'Sentiment',
           value: 72,
           unit: null,
+          formula_status: 'ok',
           delta_30d_pct: null,
           direction: null,
         },
@@ -303,6 +307,7 @@ describe('dashboard adapter', () => {
           metric: 'mention_rate',
           unit: 'ratio',
           value_scale: 'decimal',
+          formula_status: 'ok',
           denominator_label: 'eligible non-brand/category responses',
           points: [{ date: '2026-05-11', value: 0.162 }],
         },
@@ -310,6 +315,7 @@ describe('dashboard adapter', () => {
           metric: 'sov',
           unit: 'percent',
           value_scale: 'percent',
+          formula_status: 'ok',
           denominator_label: 'competitive-set brand-mentioned responses',
           points: [{ date: '2026-05-11', value: 38.4 }],
         },
@@ -317,6 +323,7 @@ describe('dashboard adapter', () => {
           metric: 'citation',
           unit: 'ratio',
           value_scale: 'decimal',
+          formula_status: 'ok',
           points: [{ date: '2026-05-11', value: 0.125 }],
         },
       ],
@@ -349,10 +356,17 @@ describe('dashboard adapter', () => {
       period: { from: '2026-05-01', to: '2026-05-11' },
       state: 'ok',
       metric_definitions: {
+        avg_sov: {
+          metric_key: 'avg_sov',
+          unit: 'ratio',
+          value_scale: 'decimal',
+          formula_status: 'ok',
+        },
         avg_sentiment: {
           metric_key: 'avg_sentiment',
           unit: 'score',
           value_scale: 'score_0_100',
+          formula_status: 'ok',
         },
       },
       primary: {
@@ -402,7 +416,7 @@ describe('dashboard adapter', () => {
     } as BrandOverviewOut
 
     expect(adaptOverviewToTrend(overview)).toEqual([
-      { day: 1, panoScore: 80, mentionRate: null, sentiment: 0.72 },
+      { day: 1, date: '2026-05-11', name: '2026-05-11', panoScore: 80, mentionRate: null, sentiment: 0.72 },
     ])
   })
 
@@ -556,6 +570,12 @@ describe('dashboard adapter', () => {
       metric: 'geo_score',
       period: { from: '2026-05-01', to: '2026-05-11' },
       state: 'ok',
+      metric_definition: {
+        metric_key: 'geo_score',
+        unit: 'score',
+        value_scale: 'score_0_100',
+        formula_status: 'ok',
+      },
       series: [
         {
           brand_id: 12,
@@ -584,6 +604,7 @@ describe('dashboard adapter', () => {
           metric: 'mention_rate',
           unit: 'ratio',
           value_scale: 'decimal',
+          formula_status: 'ok',
           denominator_label: 'eligible non-brand/category responses',
           points: [{ date: '2026-05-11', value: 0.162 }],
         },
@@ -591,10 +612,10 @@ describe('dashboard adapter', () => {
     } as MetricsOut
 
     expect(adaptCompetitorTrendsToTrendData(trends, overview, metrics)).toEqual([
-      { day: 1, panoScore: 80, mentionRate: 16.2, sentiment: 0.72, Lancome: 73 },
+      { day: 1, date: '2026-05-11', name: '2026-05-11', panoScore: 80, mentionRate: 16.2, sentiment: 0.72, Lancome: 73 },
     ])
     expect(adaptCompetitorTrendsToTrendData(trends, overview)).toEqual([
-      { day: 1, panoScore: 80, mentionRate: null, sentiment: 0.72, Lancome: 73 },
+      { day: 1, date: '2026-05-11', name: '2026-05-11', panoScore: 80, mentionRate: null, sentiment: 0.72, Lancome: 73 },
     ])
   })
 
@@ -629,6 +650,12 @@ describe('dashboard adapter', () => {
       metric: 'geo_score',
       period: { from: '2026-05-01', to: '2026-05-11' },
       state: 'ok',
+      metric_definition: {
+        metric_key: 'geo_score',
+        unit: 'score',
+        value_scale: 'score_0_100',
+        formula_status: 'ok',
+      },
       series: [
         {
           brand_id: 12,
@@ -656,8 +683,8 @@ describe('dashboard adapter', () => {
     const trend = adaptCompetitorTrendsToVisibilityPanoTrend(trends, 'Estee Lauder')
 
     expect(trend.rows).toEqual([
-      { name: 'D1', day: 1, panoScore: 80, mentionRate: null, sentiment: null, Lancome: 73 },
-      { name: 'D2', day: 2, panoScore: null, mentionRate: null, sentiment: null, Lancome: null },
+      { name: '2026-05-10', day: 1, date: '2026-05-10', panoScore: 80, mentionRate: null, sentiment: null, Lancome: 73 },
+      { name: '2026-05-11', day: 2, date: '2026-05-11', panoScore: null, mentionRate: null, sentiment: null, Lancome: null },
     ])
     expect(trend.lines.map((line) => line.key)).toEqual(['panoScore', 'Lancome'])
   })
@@ -668,6 +695,14 @@ describe('dashboard adapter', () => {
       primary_brand_id: 12,
       period: { from: '2026-05-01', to: '2026-05-11' },
       state: 'ok',
+      metric_definitions: {
+        avg_sov: {
+          metric_key: 'avg_sov',
+          unit: 'ratio',
+          value_scale: 'decimal',
+          formula_status: 'ok',
+        },
+      },
       primary: {
         brand_id: 12,
         brand_key: 'estee_lauder',
