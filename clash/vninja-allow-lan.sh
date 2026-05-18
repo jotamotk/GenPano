@@ -23,3 +23,19 @@ pkill -f "socat.*TCP-LISTEN:9098" 2>/dev/null || true
 sleep 1
 socat TCP-LISTEN:9098,bind=0.0.0.0,fork,reuseaddr TCP:127.0.0.1:9097 &
 echo "API forwarding started on 0.0.0.0:9098"
+
+# Allow docker bridge subnets to reach the socat forwarder.
+# UFW default-deny incoming silently drops SYN packets from the worker
+# container (genpano_default bridge, 172.18.0.0/16) to host:9098, which
+# causes proxy_api_unreachable on every ChatGPT proxy_route_preflight.
+# 172.16.0.0/12 covers every default docker bridge (172.17-172.31).
+# Idempotent: skip if already allowed; no-op if ufw isn't installed/active.
+if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "^Status: active"; then
+    if ufw status 2>/dev/null | grep -qE '9098/tcp\s+ALLOW IN\s+172\.16\.0\.0/12'; then
+        echo "ufw: 172.16.0.0/12 -> :9098/tcp already allowed"
+    else
+        ufw allow proto tcp from 172.16.0.0/12 to any port 9098 >/dev/null 2>&1 \
+            && echo "ufw: allowed 172.16.0.0/12 -> :9098/tcp" \
+            || echo "ufw: failed to add allow rule (run as root?)"
+    fi
+fi

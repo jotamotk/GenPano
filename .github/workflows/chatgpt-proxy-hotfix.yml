@@ -1,0 +1,166 @@
+name: ChatGPT proxy_api_unreachable hotfix (manual)
+
+# Refs PR #1209 / branch claude/fix-chatgpt-error-fjyfb.
+# Applies the host-side fix for `retry_reason=proxy_api_unreachable`:
+#   1. Add idempotent UFW allow rule  172.16.0.0/12 -> :9098/tcp
+#   2. Sync repo clash/vninja-allow-lan.sh -> /usr/local/bin/ on host
+#   3. Verify by curling host.docker.internal:9098/proxies from
+#      genpano-worker-1 (expect http_code=401, not 000/timeout)
+#
+# Manual trigger only — host mutation requires explicit confirmation.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "yes" to apply UFW rule + sync script to production host'
+        required: true
+        default: 'no'
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  hotfix:
+    name: Apply ChatGPT proxy UFW hotfix
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Guard
+        run: |
+          if [ "${{ inputs.confirm }}" != "yes" ]; then
+            echo "::error::Refusing to mutate production host: input 'confirm' must be literal 'yes' (got '${{ inputs.confirm }}')."
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Apply hotfix on host
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s' "$SERVER_SSH_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H "$SERVER_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+          # 1. Sync the updated script onto the host.
+          scp -i ~/.ssh/id_rsa -o StrictHostKeyChecking=accept-new \
+            clash/vninja-allow-lan.sh \
+            "$SERVER_USER@$SERVER_HOST:/usr/local/bin/vninja-allow-lan.sh.new"
+
+          # 2. Apply UFW rule + replace the script atomically, then re-run it
+          # so the new socat + UFW rule take effect immediately.
+          output=$(ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=accept-new \
+            "$SERVER_USER@$SERVER_HOST" 'bash -s' <<'REMOTE'
+          set -uo pipefail
+
+          echo "=== Pre-fix UFW state (9098) ==="
+          ufw status 2>&1 | grep -E '9098|To' || echo "(no 9098 rule present)"
+
+          echo ""
+          echo "=== Apply UFW allow rule (idempotent) ==="
+          # 172.16.0.0/12 covers every default docker bridge (172.17-172.31).
+          if ufw status 2>/dev/null | grep -qE '9098/tcp\s+ALLOW IN\s+172\.16\.0\.0/12'; then
+            echo "ufw: 172.16.0.0/12 -> :9098/tcp already allowed (no change)"
+          else
+            ufw allow proto tcp from 172.16.0.0/12 to any port 9098
+          fi
+
+          echo ""
+          echo "=== Replace /usr/local/bin/vninja-allow-lan.sh ==="
+          if [ -f /usr/local/bin/vninja-allow-lan.sh ]; then
+            cp -p /usr/local/bin/vninja-allow-lan.sh /usr/local/bin/vninja-allow-lan.sh.bak.$(date +%s)
+          fi
+          chmod +x /usr/local/bin/vninja-allow-lan.sh.new
+          mv /usr/local/bin/vninja-allow-lan.sh.new /usr/local/bin/vninja-allow-lan.sh
+          echo "installed:"
+          ls -la /usr/local/bin/vninja-allow-lan.sh*
+
+          echo ""
+          echo "=== Post-fix UFW state (9098) ==="
+          ufw status 2>&1 | grep -E '9098|To' || echo "(unexpected: no 9098 rule)"
+
+          echo ""
+          echo "=== Verify worker -> host.docker.internal:9098 ==="
+          cd /opt/genpano
+          docker compose exec -T worker sh -lc '
+            curl -sS --max-time 5 -o /dev/null \
+              -w "http_code=%{http_code} time=%{time_total}s\n" \
+              http://host.docker.internal:9098/proxies || echo "curl_exit=$?"
+          ' </dev/null 2>&1 || true
+
+          echo ""
+          echo "=== Verify worker -> host.docker.internal:9098 with auth ==="
+          docker compose exec -T worker sh -lc '
+            if [ -n "${CLASH_API_SECRET:-}" ]; then
+              curl -sS --max-time 5 -o /dev/null \
+                -H "Authorization: Bearer ${CLASH_API_SECRET}" \
+                -w "http_code=%{http_code} time=%{time_total}s\n" \
+                http://host.docker.internal:9098/proxies || echo "curl_exit=$?"
+            else
+              echo "(CLASH_API_SECRET unset in worker env)"
+            fi
+          ' </dev/null 2>&1 || true
+
+          echo ""
+          echo "=== End of hotfix ==="
+          REMOTE
+          )
+
+          echo "$output"
+          {
+            echo "## ChatGPT proxy_api_unreachable hotfix"
+            echo ""
+            echo '```'
+            echo "$output"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "$output" > /tmp/hotfix-output.txt
+
+          # PASS gate: post-fix curl must return http_code that's NOT 000.
+          # 401 (auth required) or 200 (success) both mean the TCP path now works.
+          if echo "$output" | grep -qE 'http_code=(200|401)'; then
+            echo "::notice::Hotfix verification PASSED: worker can now reach :9098"
+          else
+            echo "::error::Hotfix verification FAILED: post-fix curl did not return 200/401 from worker -> :9098. See step summary."
+            exit 1
+          fi
+
+      - name: Post hotfix output as PR comment
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let body = '## ChatGPT proxy_api_unreachable hotfix\n\n';
+            try {
+              const out = fs.readFileSync('/tmp/hotfix-output.txt', 'utf-8');
+              const max = 40000;
+              const trimmed = out.length > max ? out.slice(0, max) + '\n…[truncated]' : out;
+              body += '```\n' + trimmed + '\n```';
+            } catch (e) {
+              body += 'failed to read output: ' + String(e);
+            }
+            const sha = context.sha;
+            const prs = await github.rest.search.issuesAndPullRequests({
+              q: `repo:${context.repo.owner}/${context.repo.repo} is:pr is:open ${sha}`,
+            });
+            if (prs.data.items.length > 0) {
+              await github.rest.issues.createComment({
+                issue_number: prs.data.items[0].number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body,
+              });
+              core.notice(`Posted hotfix dump to PR #${prs.data.items[0].number}`);
+            } else {
+              core.notice('No PR context; hotfix dump available in step summary only.');
+            }
