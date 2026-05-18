@@ -178,6 +178,15 @@ function compactText(value: unknown) {
   return String(value ?? '').replace(/\s+/g, ' ').trim()
 }
 
+function normalizedVisibleReasonText(value: unknown) {
+  return compactText(value)
+    .toLowerCase()
+    .replace(/[_./-]+/g, ' ')
+    .replace(/[^a-z0-9\u4e00-\u9fff]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
 function expectedBrandLabels(brandId: number, configuredBrandName?: string) {
   const labels = [configuredBrandName]
   if (brandId === 12) labels.push('Estée Lauder', 'Estee Lauder', '雅诗兰黛')
@@ -418,9 +427,10 @@ function assertVisibleOverviewRendering(
     )
   } else if (!isOkState(competitors)) {
     const reasons = visibleReasonParts(competitors)
+    const normalizedBody = normalizedVisibleReasonText(body)
     assertCondition(reasons.length > 0, 'competitors/metrics is non-ok without explicit reason metadata')
     assertCondition(
-      reasons.some(reason => body.toLowerCase().includes(reason.toLowerCase())),
+      reasons.some(reason => normalizedBody.includes(normalizedVisibleReasonText(reason))),
       `${rendered.route} did not render an explicit competitor partial reason; expected one of ${JSON.stringify(reasons)}`,
     )
   }
@@ -1154,6 +1164,43 @@ test.describe('App analytics business completeness assertion', () => {
           bodyText: 'Est\u00e9e Lauder Mention Rate 42% SoV 31% Sentiment 0% Lanc\u00f4me',
           kpiCardTexts: ['Mention Rate 42%', 'SoV 31%', 'Sentiment 0%'],
           chartTexts: ['Est\u00e9e Lauder Lanc\u00f4me'],
+          genericEmptyTexts: [],
+        },
+        expectations,
+        competitors,
+      ),
+    ).not.toThrow()
+  })
+
+  test('accepts humanized competitor partial reason labels from raw API reason codes', () => {
+    const competitors = {
+      state: 'partial',
+      state_reason: 'partial_analyzer_data',
+      missing_reasons: ['eligible_response_denominator', 'missing_optional_collection'],
+    }
+    const expectations = deriveVisibleOverviewExpectations({
+      overview: {
+        state: 'partial',
+        kpi_cards: [
+          { metric_key: 'mention_rate', value: 0.42, value_scale: 'decimal', formula_status: 'ok' },
+        ],
+      },
+      metrics: {
+        state: 'ok',
+        series: [],
+      },
+      competitors,
+    })
+
+    expect(() =>
+      assertVisibleOverviewRendering(
+        {
+          route: '/brand/overview?brandId=24&range=30d&profileGroup=all',
+          url: 'http://example.test/brand/overview?brandId=24&range=30d&profileGroup=all',
+          bodyText:
+            'bestCoffer Mention Rate 42% Competitor coverage Partial Analyzer Data Eligible Response Denominator Missing Optional Collection',
+          kpiCardTexts: ['Mention Rate 42%'],
+          chartTexts: [],
           genericEmptyTexts: [],
         },
         expectations,
