@@ -80,6 +80,7 @@ async def bestcoffer_project(db_session: AsyncSession, user: User) -> Project:
     "path",
     [
         "overview",
+        "metrics",
         "competitors/metrics",
         "competitors/trends",
     ],
@@ -102,6 +103,35 @@ async def test_project_endpoints_reject_unrelated_brand_override(
     assert detail["code"] == "validation_error"
     assert detail["field"] == "brand_id"
     assert detail["reason"] == "must match project primary brand or pinned competitor"
+
+
+@pytest.mark.asyncio
+async def test_project_metrics_allow_project_competitor_override(
+    client,
+    user: User,
+    bestcoffer_project: Project,
+) -> None:
+    resp = await client.get(
+        f"/api/v1/projects/{bestcoffer_project.id}/metrics",
+        headers=_bearer(user),
+        params={
+            "brand_id": 99,
+            "series": "mention_rate",
+            "from": "2026-05-11",
+            "to": "2026-05-13",
+        },
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["project_id"] == bestcoffer_project.id
+    assert body["brand_id"] == 99
+    points = body["series"][0]["points"]
+    assert [point["date"] for point in points] == [
+        "2026-05-11",
+        "2026-05-12",
+        "2026-05-13",
+    ]
 
 
 @pytest.mark.asyncio

@@ -321,6 +321,7 @@ async def project_metrics(
     """Optional `brand_id` overrides the project's primary brand —
     same semantics as `/overview` (dashboard brand picker)."""
     project = await service.get_project_for_user(session, user, project_id)
+    scoped_brand_id = await _project_scoped_brand_id(session, project, brand_id)
     return await get_metrics(
         session,
         project,
@@ -328,7 +329,7 @@ async def project_metrics(
         from_date=_parse_date(from_, "from"),
         to_date=_parse_date(to, "to"),
         engines=_parse_csv(engine),
-        brand_id_override=brand_id,
+        brand_id_override=scoped_brand_id,
         filters=_analysis_filters(
             from_=from_,
             to=to,
