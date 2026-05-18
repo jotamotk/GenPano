@@ -2023,4 +2023,103 @@ test.describe('Live App analytics business completeness gate', () => {
       pageSummaries,
     }))
   })
+
+  test('#1175 sentiment-only acceptance: /brand/sentiment response row expansion', async ({ page }) => {
+    // Self-contained replay for the #1175 user symptom ("情感分析中看不到具体的response").
+    // The sibling iterated test above can short-circuit on an earlier /brand/overview assertion
+    // before reaching /brand/sentiment (see Epic #1175 evidence-gap notes). This test boots a
+    // fresh page, navigates ONLY to /brand/sentiment, and proves response_text reaches the DOM.
+    // No flake-retry: single attempt per AGENTS.md `### Acceptance And Verification Evidence`.
+    const baseUrl = process.env.PLAYWRIGHT_BASE_URL || process.env.BASE_URL || 'http://116.62.36.173'
+    const projectId = process.env.PROJECT_ID || DEFAULT_PROJECT_ID
+    const brandId = Number(process.env.BRAND_ID || DEFAULT_BRAND_ID)
+    const competitorId = Number(process.env.COMPETITOR_ID || DEFAULT_COMPETITOR_ID)
+    const userId = process.env.OWNER_USER_ID || DEFAULT_OWNER_USER_ID
+    const secret = process.env.USER_JWT_SECRET || process.env.JWT_SECRET || ''
+    const brandLabels = expectedBrandLabels(brandId, process.env.BRAND_NAME || process.env.BRAND_QUERY)
+    const primaryBrandName = brandLabels[0] || `Brand ${brandId}`
+
+    assertCondition(Buffer.byteLength(secret, 'utf8') >= 32, 'USER_JWT_SECRET/JWT_SECRET is missing or too short')
+    const token = signJwt(userId, secret)
+    console.log('::add-mask::' + token)
+
+    let capturedMentionSamplesPayload: ContractPayload | null = null
+    page.on('response', response => {
+      const url = response.url()
+      if (
+        response.status() === 200 &&
+        url.includes(`/api/v1/projects/${projectId}/mention-samples`) &&
+        capturedMentionSamplesPayload === null
+      ) {
+        response
+          .json()
+          .then(json => {
+            capturedMentionSamplesPayload = json as ContractPayload
+          })
+          .catch(() => {})
+      }
+    })
+
+    await seedLiveAuth(page, token, projectId, brandId, primaryBrandName, competitorId)
+
+    const route = `/brand/sentiment?brandId=${brandId}&range=30d&profileGroup=all`
+    await page.goto(`${baseUrl}${route}`, { waitUntil: 'domcontentloaded', timeout: 60_000 })
+    await page.waitForLoadState('networkidle', { timeout: 25_000 }).catch(() => {})
+
+    const waitDeadline = Date.now() + 10_000
+    while (capturedMentionSamplesPayload === null && Date.now() < waitDeadline) {
+      await page.waitForTimeout(250)
+    }
+    assertCondition(
+      capturedMentionSamplesPayload !== null,
+      '#1175 expected /api/v1/projects/{id}/mention-samples response to be captured on /brand/sentiment',
+    )
+    const samplesPayload = capturedMentionSamplesPayload as ContractPayload
+    const samplesItems = Array.isArray(samplesPayload.items) ? samplesPayload.items : []
+    assertCondition(
+      samplesItems.length >= 1,
+      '#1175 expected at least one sentiment response item on /brand/sentiment',
+    )
+    const firstItem = samplesItems[0] as ContractPayload
+    const firstResponseText = firstItem?.response_text
+    assertCondition(
+      typeof firstResponseText === 'string' && firstResponseText.length > 0,
+      '#1175 first response item must have non-empty response_text',
+    )
+
+    const inspectButton = page.getByRole('button', { name: /^Inspect full response for / }).first()
+    await inspectButton.waitFor({ state: 'visible', timeout: 10_000 })
+    await inspectButton.click()
+
+    const expandedPanel = page.getByText('Full response inspection').first()
+    await expandedPanel.waitFor({ state: 'visible', timeout: 10_000 })
+    const expandedContainer = expandedPanel.locator('..')
+    const expandedText = await expandedContainer.innerText({ timeout: 10_000 })
+    assertCondition(
+      expandedText.includes(firstResponseText),
+      '#1175 expanded row must render exact API response_text on /brand/sentiment',
+    )
+
+    const deployedSha = await page
+      .evaluate(() => document.querySelector('meta[name="genpano-deploy-sha"]')?.getAttribute('content') ?? null)
+      .catch(() => null)
+
+    await fs.mkdir(SCREENSHOT_DIR, { recursive: true })
+    await fs.writeFile(
+      `${SCREENSHOT_DIR}/issue-1175-sentiment-only-acceptance.json`,
+      JSON.stringify(
+        {
+          issue: '#1175',
+          route,
+          response_text_length: firstResponseText.length,
+          response_text_preview: firstResponseText.slice(0, 200),
+          rendered_matches_api: true,
+          deployed_sha: deployedSha,
+          api_item_count: samplesItems.length,
+        },
+        null,
+        2,
+      ),
+    )
+  })
 })
