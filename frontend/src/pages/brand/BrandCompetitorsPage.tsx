@@ -123,11 +123,29 @@ export default function BrandCompetitorsPage() {
     const configuredCompetitorCount = Array.isArray(scopedCompetitors)
       ? scopedCompetitors.length
       : finiteNumberOrNull(payload.evidence_counts?.competitor_brand_count);
+    // Issue #1185 follow-up — when the partial state only signals
+    // "data is partial" but `competitors[]` already carries scoped rows
+    // (e.g. bestCoffer's recent window: state=partial,
+    // state_reason=partial_competitor_data, 11 same-industry rows from
+    // #1236's brands backfill), fall through to the normal render and
+    // surface the partiality as a small badge instead of suppressing
+    // the whole panel. Metric-trust failures (missing_formula_inputs,
+    // missing_required_inputs, missing_analyzer_rows) keep the full
+    // suppression because the numbers themselves can't be displayed.
+    const stateReason = String(payload.state_reason || '').toLowerCase();
+    const partialReasonsThatStillRenderData = new Set([
+      'partial_competitor_data',
+      'partial_data',
+      'partial_analyzer_data',
+    ]);
+    const hasCompetitorRows = Array.isArray(payload.competitors) && payload.competitors.length > 0;
+    const renderableDespitePartial = hasCompetitorRows && partialReasonsThatStillRenderData.has(stateReason);
     return {
       state: payload.state,
       reason: labelizeContractValue(payload.state_reason || payload.formula_status),
       missingInputs: (payload.missing_inputs || []).map(labelizeContractValue).filter(Boolean),
       configuredCompetitorCount,
+      renderable: renderableDespitePartial,
     };
   }, [competitorsQ.data, isLive]);
 
@@ -140,7 +158,7 @@ export default function BrandCompetitorsPage() {
   // Higher = more threatening.
   // ──────────────────────────────────────────────────────────────
   const threatCards = useMemo(() => {
-    if (liveCompetitorEvidenceState) return [];
+    if (liveCompetitorEvidenceState && !liveCompetitorEvidenceState.renderable) return [];
     const bubbleByName = isLive
       ? new Map()
       : new Map((COMPETITOR_SENTIMENT_BUBBLE || []).map((b) => [b.brand, b]));
@@ -179,7 +197,7 @@ export default function BrandCompetitorsPage() {
   const [focusCompetitorId, setFocusCompetitorId] = useState(
     threatCards[0]?.brand?.id || competitors[0]?.id,
   );
-  const focus = liveCompetitorEvidenceState
+  const focus = (liveCompetitorEvidenceState && !liveCompetitorEvidenceState.renderable)
     ? null
     : competitors.find((c) => c.id === focusCompetitorId) || threatCards[0]?.brand || competitors[0];
 
@@ -346,7 +364,15 @@ export default function BrandCompetitorsPage() {
             )}
           </Card>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <div className="space-y-2">
+            {liveCompetitorEvidenceState && liveCompetitorEvidenceState.renderable ? (
+              <p className="text-[11px] text-themed-muted px-1">
+                <Badge variant="muted" size="xs">数据为 partial</Badge>{' '}
+                {liveCompetitorEvidenceState.reason || 'Partial Competitor Data'} —
+                {' '}竞品和指标已按当前可用证据计算，部分分析器质量信号尚未补齐。
+              </p>
+            ) : null}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
             {threatCards.map((card, idx) => {
               const isFocus = card.brand.id === focusCompetitorId;
               return (
@@ -387,6 +413,7 @@ export default function BrandCompetitorsPage() {
                 </Card>
               );
             })}
+            </div>
           </div>
         )}
       </div>
