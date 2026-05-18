@@ -105,7 +105,6 @@ from app.api.v1.projects.charts._common import (
     _dt_range,
     _period,
     _resolve_window,
-    _unique,
 )
 from app.api.v1.projects.charts._contracts import (
     _chart_contract_update,

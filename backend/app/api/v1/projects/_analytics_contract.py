@@ -192,7 +192,6 @@ from app.api.v1.projects.contracts.rollups import (
     _rollup_sov as _rollup_sov,
 )
 
-
 SOV_COMPETITIVE_SET_REASON = "brand_mentions.competitive_set"
 SOV_COMPETITIVE_GAP_REASON_CODES = frozenset(
     {
