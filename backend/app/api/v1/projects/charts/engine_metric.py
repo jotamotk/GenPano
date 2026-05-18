@@ -143,7 +143,7 @@ def _engine_metric_rows_from_facts(
             if values["denominator_response_ids"]
             else None,
             sov=round(values["target_mentions"] / values["all_mentions"], 4)
-            if values["all_mentions"]
+            if values["all_mentions"] and values["all_mentions"] > values["target_mentions"]
             else None,
             citation_rate=round(
                 len(values["cited_target_response_ids"]) / len(values["target_response_ids"]),

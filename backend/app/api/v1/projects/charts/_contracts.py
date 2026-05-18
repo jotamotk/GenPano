@@ -131,6 +131,7 @@ async def _chart_contract_update(
         require_analyzer_package
         and not evidence
         and has_data
+        and context.evidence_counts.get("canonical_alias_repair_count", 0) == 0
         and not (allow_geo_score_daily_without_analyzer and has_aggregate_metric_rows)
     ):
         evidence = _missing_analyzer_metric_evidence(metric_keys)
