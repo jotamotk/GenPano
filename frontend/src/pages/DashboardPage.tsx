@@ -8,7 +8,7 @@ import BrandPanoramaPanel from '../components/dashboard/BrandPanoramaPanel';
 import { BRANDS, INDUSTRIES } from '../data/mock';
 import { useProjects } from '../hooks/useProjects';
 import { useBrandOverview, isLiveProjectId } from '../hooks/useBrandOverview';
-import { resolveLiveProjectId } from '../lib/liveProject';
+import { resolveLiveProjectIdForBrand } from '../lib/liveProject';
 import {
   useBrandMetrics,
   useCompetitorMetrics,
@@ -79,14 +79,17 @@ export default function DashboardPage() {
     return <DashboardEmptyState />;
   }
 
-  const liveProjectId = resolveLiveProjectId(liveProjects, activeProject);
-  const isLive = isLiveProjectId(liveProjectId);
-
   /* ?brandId=X URL param lets the BrandPicker (sidebar) view this
      dashboard for a different brand than the project's primary, e.g.
      viewing 雅诗兰黛's panorama from a sports-shoes project. The
      backend resolves the override against the same project context. */
   const brandIdOverride = brandIdFromSearchParams(searchParams);
+  const liveProjectId = resolveLiveProjectIdForBrand(liveProjects, activeProject, brandIdOverride);
+  const isLive = isLiveProjectId(liveProjectId);
+  const resolvedLiveProject = useMemo(
+    () => liveProjects?.find((project) => project.id === liveProjectId) ?? null,
+    [liveProjects, liveProjectId],
+  );
   const analysisFilters = useMemo<ProjectAnalysisParams>(() => {
     const range = searchParams.get('range') || '30d';
     const days = range === '7d' ? 7 : range === '90d' ? 90 : 30;
@@ -248,10 +251,10 @@ export default function DashboardPage() {
   // unavailable unless the backend supplied usable values.
   const liveEmptyPrimary = {
     ...defaultPrimary,
-    id: String(activeProject?.primaryBrandId || liveProjectId || 'live-brand'),
-    name: activeProject?.primaryBrandName || activeProject?.name || 'Brand',
-    nameZh: activeProject?.primaryBrandName || activeProject?.name || 'Brand',
-    nameEn: activeProject?.primaryBrandName || activeProject?.name || 'Brand',
+    id: String(resolvedLiveProject?.primary_brand_id || activeProject?.primaryBrandId || liveProjectId || 'live-brand'),
+    name: resolvedLiveProject?.name || activeProject?.primaryBrandName || activeProject?.name || 'Brand',
+    nameZh: resolvedLiveProject?.name || activeProject?.primaryBrandName || activeProject?.name || 'Brand',
+    nameEn: resolvedLiveProject?.name || activeProject?.primaryBrandName || activeProject?.name || 'Brand',
     panoScore: null,
     mentionRate: null,
     sentiment: null,

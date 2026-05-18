@@ -56,6 +56,7 @@ vi.mock('../hooks/useTopicAnalysis', () => ({
 vi.mock('../lib/liveProject', () => ({
   isLiveProjectId: () => true,
   resolveLiveProjectId: () => '95d43022-a5c8-5944-b6d6-34b29faa18b5',
+  resolveLiveProjectIdForBrand: () => '95d43022-a5c8-5944-b6d6-34b29faa18b5',
 }))
 
 vi.mock('../hooks/useBrandOverview', () => ({
