@@ -88,15 +88,19 @@ jobs:
             scripts/vm_bulk_retry.py \
             "${REMOTE}:/tmp/vm_bulk_retry.py"
 
-          # 2. Identify backend container name on ECS.
+          # 2. Identify worker container name on ECS. geo_tracker (and
+          #    therefore vm_quick_retry) only ships in the worker image,
+          #    not the backend image — backend imports geo_tracker lazily
+          #    and would also fail at request time with ModuleNotFoundError
+          #    (see deploy.yml: only 'worker' has context=./geo_tracker).
           CN=$(ssh -i ~/.ssh/id_ssh -p "$PORT" "$REMOTE" \
-            "sudo docker ps --format '{{.Names}}' | grep -E '^genpano-backend|backend' | head -1")
+            "sudo docker ps --format '{{.Names}}' | grep -E '^genpano-worker[-_]1|^genpano_worker_1|worker' | grep -v analysis | head -1")
           if [ -z "$CN" ]; then
-            echo "FATAL: no backend container running on ECS" >&2
+            echo "FATAL: no worker container running on ECS" >&2
             ssh -i ~/.ssh/id_ssh -p "$PORT" "$REMOTE" "sudo docker ps" >&2 || true
             exit 5
           fi
-          echo "running bulk-retry inside container: $CN"
+          echo "running bulk-retry inside worker container: $CN"
 
           # 3. Copy script into the container then exec it. Propagate
           #    the script's exit code as the workflow step's exit code,
