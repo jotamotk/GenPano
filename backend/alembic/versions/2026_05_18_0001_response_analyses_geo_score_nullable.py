@@ -43,7 +43,7 @@ from alembic import op
 from sqlalchemy import inspect
 
 revision: str = "20260518_pano_geo_nullable"
-down_revision: str | Sequence[str] | None = "20260517_expired_trans_count"
+down_revision: str | Sequence[str] | None = "20260517_exec_mode"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
@@ -67,14 +67,22 @@ def upgrade() -> None:
     if not insp.has_table(TABLE):
         return
 
-    # Step 1: drop the column default (idempotent — skip if already gone).
+    # Step 1: drop the column default. Postgres takes a plain ALTER COLUMN.
+    # SQLite cannot ALTER COLUMN DROP DEFAULT in place; the usual escape
+    # is batch_alter_table, but that reflects every FK target (including
+    # llm_responses which is owned by the legacy migrations directory and
+    # not present at this point in the alembic chain on a fresh DB), so it
+    # raises NoSuchTableError on SQLite. Tests build the schema via
+    # ``Base.metadata.create_all`` directly from the model in
+    # ``backend/genpano_models/analyzer.py`` (which already has no default),
+    # so skipping the SQLite branch leaves test behaviour correct.
     current_default = _column_default(TABLE, COLUMN)
-    if current_default is not None:
-        # Bound the lock_timeout to the same 5s the recent expired-trans-count
-        # migration uses (PR #1102/#1104 incident — long AccessExclusiveLock
-        # on a table with active analyzer writers).
-        if bind.dialect.name == "postgresql":
-            op.execute("SET lock_timeout = '5s'")
+    if current_default is not None and bind.dialect.name == "postgresql":
+        # Bound the lock_timeout to the same 5s the recent
+        # expired-trans-count migration uses (PR #1102/#1104 incident —
+        # long AccessExclusiveLock on a table with active analyzer
+        # writers).
+        op.execute("SET lock_timeout = '5s'")
         op.alter_column(
             TABLE,
             COLUMN,
@@ -85,13 +93,15 @@ def upgrade() -> None:
 
     # Step 2: backfill 0.0 → NULL for the rows that cannot represent a real
     # calc_overall output (target not mentioned ⇒ analyzer returned None ⇒
-    # current 0.0 is a server_default coercion).
+    # current 0.0 is a server_default coercion). The predicate covers both
+    # FALSE and NULL ``target_brand_mentioned`` rows (canonical_brand_repair
+    # can leave the flag NULL on legacy paths). Runs on both PG and SQLite.
     op.execute(
         sa.text(
             f"UPDATE {TABLE} "
             f"SET {COLUMN} = NULL "
             f"WHERE {COLUMN} = 0.0 "
-            f"AND target_brand_mentioned IS NOT TRUE"
+            f"AND (target_brand_mentioned IS NULL OR target_brand_mentioned = FALSE)"
         )
     )
 
@@ -101,8 +111,12 @@ def downgrade() -> None:
     insp = inspect(bind)
     if not insp.has_table(TABLE):
         return
-    if bind.dialect.name == "postgresql":
-        op.execute("SET lock_timeout = '5s'")
+    if bind.dialect.name != "postgresql":
+        # Same SQLite caveat as upgrade(): batch_alter_table cannot reflect
+        # llm_responses FK target in this alembic chain. Tests don't rely
+        # on the column default, so leave the SQLite schema untouched.
+        return
+    op.execute("SET lock_timeout = '5s'")
     op.alter_column(
         TABLE,
         COLUMN,
