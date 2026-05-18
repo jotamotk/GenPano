@@ -8,6 +8,7 @@ import { useProject } from '../contexts/ProjectContext';
 import { useUnreadAlertCount } from '../hooks/useAlerts';
 import UserMenu from '../components/UserMenu';
 import BrandPicker from '../components/sidebar/BrandPicker';
+import DemoModeBadge from '../components/ui/DemoModeBadge';
 
 /* Banner shown when the user is signed in but has zero live Project rows.
    Triggered after they click Skip on /onboarding — invites them back to
@@ -234,6 +235,8 @@ function Topbar({ mode, onSwitchMode, t, locale, setLocale, onNavigate }) {
           (time range, engine, profile group; engine-compare segmented on Brand Mode).
           Implementation deferred to T2'; placeholder keeps layout balance.  */}
       <div className="flex-1 min-w-0" data-slot="topbar-filters" />
+
+      <DemoModeBadge />
 
       {/* Search ⌘K */}
       <button
