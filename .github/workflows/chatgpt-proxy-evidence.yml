@@ -1,0 +1,478 @@
+name: ChatGPT proxy_api_unreachable evidence (read-only)
+
+# Post-fix verification re-trigger: hotfix landed at 2026-05-18 ~14:46
+# (UFW allow rules added + vninja-allow-lan.sh upgraded; worker -> :9098
+# returned 401 in 1.1ms and 200 in 2.8ms, worker -> :6789 returned 403
+# in 357ms). This pass should capture (a) ensure_global_proxy_route()
+# now returning ok=true with a real selected_node, (b) subsequent
+# ChatGPT queries reaching status=completed for AC-2.
+#
+# Refs branch claude/fix-chatgpt-error-fjyfb.
+# AGENTS.md `### Evidence-First Debugging`: before proposing any fix for the
+# user-reported ChatGPT proxy_api_unreachable failures (Q-185664 / Q-185661 /
+# Q-185658, account jameswhislter2025@hotmail.com), capture the live state of
+# the four links in the chain:
+#   worker container -> host.docker.internal:9098 -> socat -> ninja-mihomo API
+# Read-only. Does not mutate any row or kick a celery task.
+
+on:
+  workflow_dispatch:
+    inputs:
+      query_ids:
+        description: "CSV of queries.id values to inspect (defaults to reported failures)"
+        required: false
+        default: "185664,185661,185658"
+      account_email:
+        description: "Optional llm_accounts.email filter for context"
+        required: false
+        default: "jameswhislter2025@hotmail.com"
+  push:
+    branches:
+      - 'claude/fix-chatgpt-error-fjyfb'
+    paths:
+      - '.github/workflows/chatgpt-proxy-evidence.yml'
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  evidence:
+    name: Capture ChatGPT proxy evidence
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+
+    steps:
+      - name: SSH + dump live state
+        id: ssh
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+          QUERY_IDS: ${{ inputs.query_ids || '185664,185661,185658' }}
+          ACCOUNT_EMAIL: ${{ inputs.account_email || 'jameswhislter2025@hotmail.com' }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s' "$SERVER_SSH_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H "$SERVER_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+          output=$(QUERY_IDS="$QUERY_IDS" ACCOUNT_EMAIL="$ACCOUNT_EMAIL" \
+            ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=accept-new \
+              -o ServerAliveInterval=30 -o ServerAliveCountMax=4 \
+              -o SendEnv="QUERY_IDS ACCOUNT_EMAIL" \
+              "$SERVER_USER@$SERVER_HOST" 'bash -s' <<'REMOTE'
+          set -uo pipefail
+          cd /opt/genpano
+
+          IDS="${QUERY_IDS:-185664,185661,185658}"
+          EMAIL="${ACCOUNT_EMAIL:-jameswhislter2025@hotmail.com}"
+
+          echo "=== Inputs ==="
+          echo "query_ids=${IDS}"
+          echo "account_email=${EMAIL}"
+          echo ""
+
+          echo "=== Container build identity ==="
+          docker compose images worker 2>/dev/null | head -5 || true
+          echo ""
+
+          echo "=== queries rows for reported IDs ==="
+          docker compose exec -T postgres psql -X -U genpano -d genpano -P pager=off -c "
+            SELECT
+              q.id,
+              q.target_llm,
+              q.status,
+              q.retry_count,
+              q.retry_reason,
+              q.account_id,
+              a.email AS account_email,
+              q.queued_at,
+              q.started_at,
+              q.finished_at,
+              q.latency_ms,
+              EXTRACT(EPOCH FROM (NOW() - q.queued_at))::int AS sec_since_queued
+            FROM queries q
+            LEFT JOIN llm_accounts a ON a.id = q.account_id
+            WHERE q.id = ANY(string_to_array('${IDS}', ',')::int[])
+            ORDER BY q.id DESC;
+          " </dev/null 2>&1 || true
+          echo ""
+
+          echo "=== latest 20 ChatGPT failures (any reason) ==="
+          docker compose exec -T postgres psql -X -U genpano -d genpano -P pager=off -c "
+            SELECT
+              q.id,
+              q.status,
+              q.retry_reason,
+              q.retry_count,
+              a.email AS account_email,
+              q.finished_at
+            FROM queries q
+            LEFT JOIN llm_accounts a ON a.id = q.account_id
+            WHERE q.target_llm = 'chatgpt'
+              AND LOWER(q.status) IN ('failed','dead','error')
+            ORDER BY q.id DESC
+            LIMIT 20;
+          " </dev/null 2>&1 || true
+          echo ""
+
+          echo "=== retry_reason distribution for ChatGPT in last 24h ==="
+          docker compose exec -T postgres psql -X -U genpano -d genpano -P pager=off -c "
+            SELECT q.retry_reason, COUNT(*) AS n,
+                   MIN(q.finished_at) AS first_seen,
+                   MAX(q.finished_at) AS last_seen
+            FROM queries q
+            WHERE q.target_llm = 'chatgpt'
+              AND q.finished_at >= NOW() - INTERVAL '24 hours'
+              AND q.retry_reason IS NOT NULL
+            GROUP BY q.retry_reason
+            ORDER BY n DESC;
+          " </dev/null 2>&1 || true
+          echo ""
+
+          echo "=== docker compose ps (worker family) ==="
+          docker compose ps 2>/dev/null | grep -E 'worker|beat|postgres|NAME' || true
+          echo ""
+
+          echo "=== Host-side V-Ninja systemd status ==="
+          systemctl is-active vninja 2>&1 || true
+          systemctl status vninja --no-pager -n 5 2>&1 | head -20 || true
+          echo ""
+
+          echo "=== Host-side socat 9098->9097 process ==="
+          ps -eo pid,etime,cmd --no-headers | grep -E 'socat.*9098' | grep -v grep || echo "(no socat 9098 process)"
+          echo ""
+
+          echo "=== Host-side listening ports of interest ==="
+          ss -ltnp 2>/dev/null | grep -E ':(6789|9097|9098|9090)\b' || \
+            netstat -ltnp 2>/dev/null | grep -E ':(6789|9097|9098|9090)\b' || \
+            echo "(ss/netstat unavailable)"
+          echo ""
+
+          echo "=== Worker -> host.docker.internal:9098 reachability (raw HTTP) ==="
+          # NB: ninja-mihomo /proxies endpoint may need auth; both with and without.
+          docker compose exec -T worker sh -lc '
+            set -u
+            url="http://host.docker.internal:9098/proxies"
+            echo "url=${url}"
+            echo "CLASH_API_URL=${CLASH_API_URL:-<unset>}"
+            echo "CLASH_PROXY_GROUP=${CLASH_PROXY_GROUP:-<unset>}"
+            echo "CLASH_API_SECRET set? $([ -n "${CLASH_API_SECRET:-}" ] && echo yes || echo no)"
+            echo "--- curl (no auth, 5s) ---"
+            curl -sS --max-time 5 -o /tmp/clash_resp.json -w "http_code=%{http_code} time=%{time_total}s\n" "${url}" || true
+            head -c 400 /tmp/clash_resp.json 2>/dev/null || true
+            echo
+            echo "--- curl (with auth header if secret set, 5s) ---"
+            if [ -n "${CLASH_API_SECRET:-}" ]; then
+              curl -sS --max-time 5 -H "Authorization: Bearer ${CLASH_API_SECRET}" \
+                -o /tmp/clash_resp2.json -w "http_code=%{http_code} time=%{time_total}s\n" "${url}" || true
+              head -c 400 /tmp/clash_resp2.json 2>/dev/null || true
+              echo
+            fi
+            echo "--- DNS resolution for host.docker.internal ---"
+            getent hosts host.docker.internal || nslookup host.docker.internal 2>&1 | head -10 || true
+          ' </dev/null 2>&1 || true
+          echo ""
+
+          echo "=== Host-side reachability to its own socat (loopback + docker0) ==="
+          # If socat is healthy, both should return non-000.
+          # If host->127.0.0.1:9098 fails, socat is broken.
+          # If host->127.0.0.1:9098 works but host->172.17.0.1:9098 fails,
+          # the host's own IP on docker0 is firewalled.
+          echo "--- host -> 127.0.0.1:9098 ---"
+          curl -sS --max-time 3 -o /tmp/h_lo.json \
+            -w "http_code=%{http_code} time=%{time_total}s\n" \
+            http://127.0.0.1:9098/proxies || true
+          head -c 200 /tmp/h_lo.json 2>/dev/null || true
+          echo
+          echo "--- host -> 172.17.0.1:9098 ---"
+          curl -sS --max-time 3 -o /tmp/h_d0.json \
+            -w "http_code=%{http_code} time=%{time_total}s\n" \
+            http://172.17.0.1:9098/proxies || true
+          head -c 200 /tmp/h_d0.json 2>/dev/null || true
+          echo
+
+          echo "=== Host firewall state ==="
+          echo "--- ufw status ---"
+          ufw status verbose 2>&1 | head -25 || echo "(ufw not installed)"
+          echo
+          echo "--- iptables INPUT chain (port-related rules) ---"
+          iptables -L INPUT -n -v 2>&1 | head -30 || true
+          echo
+          echo "--- iptables FORWARD chain (top 30 lines) ---"
+          iptables -L FORWARD -n -v 2>&1 | head -30 || true
+          echo
+          echo "--- iptables DOCKER-USER chain ---"
+          iptables -L DOCKER-USER -n -v 2>&1 | head -30 || echo "(no DOCKER-USER chain)"
+          echo
+          echo "--- iptables nat OUTPUT (for 9098) ---"
+          iptables -t nat -L OUTPUT -n -v 2>&1 | grep -E '9098|9097|dpt:' | head -10 || true
+          echo
+
+          echo "=== Docker networks (which subnet hosts the worker?) ==="
+          docker network ls --format '{{.Name}} driver={{.Driver}} scope={{.Scope}}' 2>&1 | head -10 || true
+          echo
+          worker_net="$(docker inspect genpano-worker-1 --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}={{$v.IPAddress}}/{{$v.Gateway}} {{end}}' 2>&1)"
+          echo "worker_networks: ${worker_net}"
+          echo
+
+          echo "=== Same probe through ensure_global_proxy_route (same Python path as production) ==="
+          # Same heredoc-vs-/dev/null bug as the Clash internals section had:
+          # `python - <<'PY' </dev/null` redirects stdin to /dev/null AFTER the
+          # heredoc, so python sees an empty script and exits silently. Drop
+          # the </dev/null — `docker compose exec -T` already disables the TTY
+          # so we don't need to "close" stdin manually.
+          docker compose exec -T worker python - <<'PY' 2>&1 || true
+          import asyncio, json, os
+          from dataclasses import asdict
+          from geo_tracker.agent.clash_api import (
+              CLASH_API_URL,
+              ensure_global_proxy_route,
+              get_proxy_group,
+          )
+          from geo_tracker.agent.guest_executor import CLASH_PROXY_GROUP
+
+          async def main():
+              report = {
+                  "clash_api_url": CLASH_API_URL,
+                  "clash_proxy_group": CLASH_PROXY_GROUP,
+                  "clash_global_proxy_group": os.getenv("CLASH_GLOBAL_PROXY_GROUP", "GLOBAL"),
+                  "clash_api_secret_present": bool(os.getenv("CLASH_API_SECRET")),
+              }
+              # Hit the proxy group endpoint the same way ensure_global_proxy_route does.
+              group = await get_proxy_group(CLASH_API_URL, CLASH_PROXY_GROUP)
+              report["get_proxy_group_ok"] = bool(group)
+              if group:
+                  report["group_now"] = group.get("now")
+                  report["group_all_count"] = len(group.get("all", []) or [])
+              route = await ensure_global_proxy_route(CLASH_API_URL, CLASH_PROXY_GROUP)
+              report["route"] = asdict(route)
+              print(json.dumps(report, ensure_ascii=False, indent=2))
+
+          asyncio.run(main())
+          PY
+          echo ""
+
+          echo "=== Clash internals (from host, bypassing UFW) ==="
+          # Pull CLASH_API_SECRET out of the worker env so we use the same
+          # token the production code uses. Mask it from logs.
+          SECRET="$(docker compose exec -T worker sh -c 'printf %s "${CLASH_API_SECRET:-}"' </dev/null 2>/dev/null | tr -d '\r\n')"
+          if [ -z "$SECRET" ]; then
+            echo "(CLASH_API_SECRET empty in worker env — falling back to no-auth probes)"
+            AUTH_HEADER=""
+          else
+            # Length only, never the value.
+            echo "CLASH_API_SECRET length: ${#SECRET}"
+            AUTH_HEADER="Authorization: Bearer $SECRET"
+          fi
+
+          # The previous pass had a python heredoc + pipe bug: `curl | python3
+          # - <<'PY'` makes python read its SCRIPT from stdin (via heredoc) so
+          # the curl JSON never reaches the script. Fix: write curl output to
+          # a tmpfile first, then have python read from the file.
+          fetch () {
+              # $1 = label, $2 = path, $3 = output file
+              echo "--- $1 ($2) ---"
+              if [ -n "$AUTH_HEADER" ]; then
+                  curl -sS --max-time 8 -H "$AUTH_HEADER" \
+                       "http://127.0.0.1:9098$2" \
+                       -o "$3" \
+                       -w "http_code=%{http_code} time=%{time_total}s\n" || true
+              else
+                  curl -sS --max-time 8 \
+                       "http://127.0.0.1:9098$2" \
+                       -o "$3" \
+                       -w "http_code=%{http_code} time=%{time_total}s\n" || true
+              fi
+          }
+
+          # /version: cheapest health probe, confirms auth works.
+          fetch "ninja-mihomo /version" "/version" /tmp/clash_version.json
+          head -c 300 /tmp/clash_version.json 2>/dev/null && echo
+
+          # /proxies: full proxy map, summarized in python.
+          fetch "/proxies summary" "/proxies" /tmp/clash_proxies.json
+          PROXIES_FILE=/tmp/clash_proxies.json python3 <<'PY'
+          import json, os
+          path = os.environ["PROXIES_FILE"]
+          try:
+              with open(path) as f:
+                  data = json.load(f)
+          except Exception as exc:
+              print(f"(json parse failed: {exc})")
+              raise SystemExit(0)
+          proxies = data.get("proxies", {}) or {}
+          group_types = {"Selector", "URLTest", "Fallback", "LoadBalance", "Relay"}
+          groups = [(n, p) for n, p in proxies.items()
+                    if p.get("type") in group_types]
+          for name, p in sorted(groups, key=lambda kv: kv[0]):
+              all_nodes = p.get("all", []) or []
+              now = p.get("now")
+              print(f"  group={name!r:34s} type={p.get('type'):10s} "
+                    f"now={now!r:24s} all_count={len(all_nodes)}")
+          print()
+          print(f"total_proxies_entries={len(proxies)}  total_groups={len(groups)}")
+          PY
+          echo
+
+          # /proxies/GLOBAL — what production hits first.
+          fetch "/proxies/GLOBAL" "/proxies/GLOBAL" /tmp/clash_global.json
+          GROUP_FILE=/tmp/clash_global.json python3 <<'PY'
+          import json, os
+          path = os.environ["GROUP_FILE"]
+          try:
+              with open(path) as f:
+                  d = json.load(f)
+          except Exception as exc:
+              print(f"(json parse failed: {exc})")
+              raise SystemExit(0)
+          print("name:", d.get("name"))
+          print("type:", d.get("type"))
+          print("now:", d.get("now"))
+          all_ = d.get("all", []) or []
+          print(f"all (count={len(all_)}):")
+          for n in all_[:40]:
+              print(f"  - {n}")
+          if len(all_) > 40:
+              print(f"  ... +{len(all_) - 40} more")
+          PY
+          echo
+
+          # /proxies/<CLASH_PROXY_GROUP> — what production picks as source.
+          PROXY_GROUP="$(docker compose exec -T worker sh -c 'printf %s "${CLASH_PROXY_GROUP:-}"' </dev/null 2>/dev/null | tr -d '\r\n')"
+          if [ -n "$PROXY_GROUP" ]; then
+              ENCODED_GROUP="$(python3 -c "import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=''))" "$PROXY_GROUP")"
+              fetch "/proxies/${PROXY_GROUP}" "/proxies/${ENCODED_GROUP}" /tmp/clash_pg.json
+              GROUP_FILE=/tmp/clash_pg.json python3 <<'PY'
+          import json, os
+          path = os.environ["GROUP_FILE"]
+          try:
+              with open(path) as f:
+                  d = json.load(f)
+          except Exception as exc:
+              print(f"(json parse failed: {exc})")
+              raise SystemExit(0)
+          print("name:", d.get("name"))
+          print("type:", d.get("type"))
+          print("now:", d.get("now"))
+          all_ = d.get("all", []) or []
+          print(f"all (count={len(all_)}):")
+          for n in all_[:40]:
+              print(f"  - {n}")
+          if len(all_) > 40:
+              print(f"  ... +{len(all_) - 40} more")
+          PY
+          else
+              echo "(CLASH_PROXY_GROUP unset in worker env)"
+          fi
+          echo
+
+          # /providers/proxies — node health from the last URL test.
+          fetch "/providers/proxies" "/providers/proxies" /tmp/clash_providers.json
+          PROV_FILE=/tmp/clash_providers.json python3 <<'PY'
+          import json, os
+          path = os.environ["PROV_FILE"]
+          try:
+              with open(path) as f:
+                  data = json.load(f)
+          except Exception as exc:
+              print(f"(json parse failed: {exc})")
+              raise SystemExit(0)
+          providers = data.get("providers", {}) or {}
+          for pname, p in providers.items():
+              nodes = p.get("proxies", []) or []
+              healthy = [n for n in nodes
+                         if (n.get("history") or [{}])[-1].get("delay", 0)]
+              dead = [n for n in nodes
+                      if not (n.get("history") or [{}])[-1].get("delay", 0)]
+              print(f"provider={pname!r}: type={p.get('type')} "
+                    f"vehicleType={p.get('vehicleType')} "
+                    f"nodes={len(nodes)} healthy={len(healthy)} dead={len(dead)} "
+                    f"updatedAt={p.get('updatedAt')}")
+              for n in dead[:5]:
+                  hist = n.get("history") or []
+                  last = hist[-1] if hist else {}
+                  print(f"  DEAD: {n.get('name')!r} last_delay={last.get('delay')} "
+                        f"history_len={len(hist)}")
+          PY
+          echo
+
+          # Proxy traffic test: does going OUT through ninja-mihomo to
+          # chatgpt.com actually work? Run inside worker so we exercise
+          # the same network path the executor uses.
+          echo "--- worker -> chatgpt.com via ninja-mihomo proxy 6789 ---"
+          docker compose exec -T worker sh -lc '
+            url="https://chatgpt.com/"
+            echo "url=${url}"
+            echo "QG_PROXY=${QG_PROXY:-<unset>}"
+            echo "--- curl --proxy host.docker.internal:6789 (12s) ---"
+            curl -sS --max-time 12 \
+              --proxy http://host.docker.internal:6789 \
+              -o /dev/null \
+              -w "http_code=%{http_code} time=%{time_total}s\n" \
+              "${url}" || echo "curl_exit=$?"
+          ' </dev/null 2>&1 || true
+          echo
+
+          echo "=== Worker log tail (last 40 lines mentioning proxy / clash / chatgpt) ==="
+          docker compose logs --tail 800 worker 2>&1 | \
+            grep -iE 'proxy_api_unreachable|clash|chatgpt|ensure_global_proxy_route|host\.docker\.internal' | \
+            tail -40 || true
+          echo ""
+
+          echo "=== End of evidence dump ==="
+          REMOTE
+          )
+
+          {
+            echo "$output"
+          } > /tmp/chatgpt-proxy-evidence.txt
+
+          {
+            echo "## ChatGPT proxy_api_unreachable evidence (read-only)"
+            echo ""
+            echo '```'
+            head -2000 /tmp/chatgpt-proxy-evidence.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Post evidence as PR comment when PR context exists
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let body = '## ChatGPT proxy_api_unreachable evidence (read-only)\n\n';
+            try {
+              const out = fs.readFileSync('/tmp/chatgpt-proxy-evidence.txt', 'utf-8');
+              const max = 50000;
+              const trimmed = out.length > max ? out.slice(0, max) + '\n…[truncated]' : out;
+              body += '```\n' + trimmed + '\n```';
+            } catch (e) {
+              body += 'failed to read output: ' + String(e);
+            }
+            let issueNumber = null;
+            if (context.payload.pull_request) {
+              issueNumber = context.payload.pull_request.number;
+            } else {
+              const sha = context.sha;
+              const prs = await github.rest.search.issuesAndPullRequests({
+                q: `repo:${context.repo.owner}/${context.repo.repo} is:pr is:open ${sha}`,
+              });
+              if (prs.data.items.length > 0) {
+                issueNumber = prs.data.items[0].number;
+              }
+            }
+            if (issueNumber) {
+              await github.rest.issues.createComment({
+                issue_number: issueNumber,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body,
+              });
+              core.notice(`Posted evidence dump to PR #${issueNumber}`);
+            } else {
+              core.notice('No PR context; evidence available in step summary only.');
+            }

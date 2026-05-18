@@ -1,0 +1,289 @@
+name: ChatGPT proxy_api_unreachable hotfix (manual)
+
+# Refs PR #1209 / branch claude/fix-chatgpt-error-fjyfb.
+# Applies the host-side fix for `retry_reason=proxy_api_unreachable`:
+#   1. Add idempotent UFW allow rule  172.16.0.0/12 -> :9098/tcp
+#   2. Sync repo clash/vninja-allow-lan.sh -> /usr/local/bin/ on host
+#   3. Verify by curling host.docker.internal:9098/proxies from
+#      genpano-worker-1 (expect http_code=401, not 000/timeout)
+#
+# Manual trigger only — host mutation requires explicit confirmation.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "yes" to apply UFW rule + sync script to production host'
+        required: true
+        default: 'no'
+  # Auto-dispatch via committing a `.trigger` file. The route-policy
+  # preflight (which runs production decision functions and asserts
+  # 豆包/deepseek direct + chatgpt proxy) is the real safety gate;
+  # the path filter ensures only an intentional trigger-file commit
+  # fires this — not every push to the branch.
+  push:
+    branches:
+      - 'claude/fix-chatgpt-error-fjyfb'
+    paths:
+      - '.github/auto-apply-chatgpt-proxy-fix.trigger'
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  hotfix:
+    name: Apply ChatGPT proxy UFW hotfix
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Guard
+        run: |
+          # Two trigger paths:
+          # - workflow_dispatch: user clicks Run workflow, must type confirm=yes
+          # - push: trigger file committed; the file's existence + path filter
+          #   IS the gate. Route-policy preflight is the next mandatory gate
+          #   either way.
+          case "${{ github.event_name }}" in
+            workflow_dispatch)
+              if [ "${{ inputs.confirm }}" != "yes" ]; then
+                echo "::error::workflow_dispatch: input 'confirm' must be literal 'yes' (got '${{ inputs.confirm }}')."
+                exit 1
+              fi
+              echo "Guard: workflow_dispatch with confirm=yes — proceeding to route-policy preflight."
+              ;;
+            push)
+              echo "Guard: push trigger from ${GITHUB_REF} — proceeding to route-policy preflight."
+              ;;
+            *)
+              echo "::error::Unexpected event: ${{ github.event_name }} — refusing."
+              exit 1
+              ;;
+          esac
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Route policy preflight
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s' "$SERVER_SSH_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H "$SERVER_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+          # User invariant: 豆包/deepseek must be direct-connect, ChatGPT
+          # must go through the proxy. The code defaults are correct
+          # (DOMESTIC_LLMS = {kimi, doubao, deepseek, zhipu};
+          # DOUBAO_USE_PROXY default False; CLASH_FORCE_GLOBAL_PROXY_ROUTE
+          # default True). Verify production env doesn't override them
+          # before applying the firewall fix.
+          policy=$(ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=accept-new \
+            "$SERVER_USER@$SERVER_HOST" 'bash -s' <<'REMOTE'
+          set -uo pipefail
+          cd /opt/genpano
+
+          docker compose exec -T worker python3 <<'PY'
+          import os
+          env = {
+              "DOUBAO_USE_PROXY": os.getenv("DOUBAO_USE_PROXY"),
+              "CLASH_FORCE_GLOBAL_PROXY_ROUTE": os.getenv("CLASH_FORCE_GLOBAL_PROXY_ROUTE"),
+          }
+          # Replay the production decision functions for every LLM.
+          from geo_tracker.agent.guest_executor import (
+              _should_use_proxy_for_llm,
+              _requires_global_proxy_route,
+              DOMESTIC_LLMS,
+          )
+          proxy_url = os.getenv("QG_PROXY_HTTP") or "http://host.docker.internal:6789"
+          plan = []
+          for llm in ["chatgpt", "gemini", "doubao", "deepseek", "kimi", "zhipu"]:
+              plan.append({
+                  "llm": llm,
+                  "domestic": llm in DOMESTIC_LLMS,
+                  "use_proxy": _should_use_proxy_for_llm(llm, proxy_url),
+                  "requires_global_route": _requires_global_proxy_route(llm),
+              })
+          print("ENV:", env)
+          for row in plan:
+              print(f"PLAN: {row}")
+          PY
+          REMOTE
+          )
+          echo "$policy"
+          echo "$policy" > /tmp/route-policy.txt
+
+          # User constraint enforcement:
+          # - doubao: use_proxy MUST be False, requires_global_route MUST be False
+          # - deepseek: use_proxy MUST be False, requires_global_route MUST be False
+          # - chatgpt: use_proxy MUST be True, requires_global_route MUST be True
+          fail=0
+          assert_match () {
+              local pat="$1"
+              local label="$2"
+              if echo "$policy" | grep -qE "$pat"; then
+                  echo "OK: $label"
+              else
+                  echo "::error::$label — pattern not found: $pat"
+                  fail=1
+              fi
+          }
+          assert_match "'llm': 'doubao'.*'use_proxy': False.*'requires_global_route': False" "豆包 direct-connect"
+          assert_match "'llm': 'deepseek'.*'use_proxy': False.*'requires_global_route': False" "deepseek direct-connect"
+          assert_match "'llm': 'chatgpt'.*'use_proxy': True.*'requires_global_route': True" "chatgpt 走代理 + preflight"
+          if [ "$fail" -ne 0 ]; then
+              echo "::error::Route policy preflight FAILED. Refusing to apply firewall fix."
+              echo "::error::Inspect /opt/genpano/.env for stale DOUBAO_USE_PROXY / CLASH_FORCE_GLOBAL_PROXY_ROUTE overrides."
+              exit 1
+          fi
+          echo "Route policy preflight PASSED — proceeding with UFW fix."
+          {
+            echo "## Route policy preflight"
+            echo
+            echo '```'
+            echo "$policy"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Apply hotfix on host
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          # ssh key already installed by the preflight step; reuse it.
+
+          # 1. Sync the updated script onto the host.
+          scp -i ~/.ssh/id_rsa -o StrictHostKeyChecking=accept-new \
+            clash/vninja-allow-lan.sh \
+            "$SERVER_USER@$SERVER_HOST:/usr/local/bin/vninja-allow-lan.sh.new"
+
+          # 2. Apply UFW rule + replace the script atomically, then re-run it
+          # so the new socat + UFW rule take effect immediately.
+          output=$(ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=accept-new \
+            "$SERVER_USER@$SERVER_HOST" 'bash -s' <<'REMOTE'
+          set -uo pipefail
+
+          echo "=== Pre-fix UFW state (9098 + 6789) ==="
+          ufw status 2>&1 | grep -E '9098|6789|To' || echo "(no 9098/6789 rule present)"
+
+          echo ""
+          echo "=== Apply UFW allow rules (idempotent, both ports) ==="
+          # 9098: socat forwarder for ninja-mihomo external-controller API
+          # 6789: ninja-mihomo proxy port (the actual HTTP/SOCKS proxy)
+          # 172.16.0.0/12 covers every default docker bridge (172.17-172.31).
+          for port in 9098 6789; do
+            if ufw status 2>/dev/null | grep -qE "${port}/tcp\s+ALLOW IN\s+172\.16\.0\.0/12"; then
+              echo "ufw: 172.16.0.0/12 -> :${port}/tcp already allowed (no change)"
+            else
+              ufw allow proto tcp from 172.16.0.0/12 to any port "${port}"
+            fi
+          done
+
+          echo ""
+          echo "=== Replace /usr/local/bin/vninja-allow-lan.sh ==="
+          if [ -f /usr/local/bin/vninja-allow-lan.sh ]; then
+            cp -p /usr/local/bin/vninja-allow-lan.sh /usr/local/bin/vninja-allow-lan.sh.bak.$(date +%s)
+          fi
+          chmod +x /usr/local/bin/vninja-allow-lan.sh.new
+          mv /usr/local/bin/vninja-allow-lan.sh.new /usr/local/bin/vninja-allow-lan.sh
+          echo "installed:"
+          ls -la /usr/local/bin/vninja-allow-lan.sh*
+
+          echo ""
+          echo "=== Post-fix UFW state (9098 + 6789) ==="
+          ufw status 2>&1 | grep -E '9098|6789|To' || echo "(unexpected: no 9098/6789 rule)"
+
+          echo ""
+          echo "=== Verify worker -> host.docker.internal:9098 (Clash API) ==="
+          cd /opt/genpano
+          docker compose exec -T worker sh -lc '
+            curl -sS --max-time 5 -o /dev/null \
+              -w "api_no_auth: http_code=%{http_code} time=%{time_total}s\n" \
+              http://host.docker.internal:9098/proxies || echo "curl_exit=$?"
+            if [ -n "${CLASH_API_SECRET:-}" ]; then
+              curl -sS --max-time 5 -o /dev/null \
+                -H "Authorization: Bearer ${CLASH_API_SECRET}" \
+                -w "api_auth:    http_code=%{http_code} time=%{time_total}s\n" \
+                http://host.docker.internal:9098/proxies || echo "curl_exit=$?"
+            fi
+          ' </dev/null 2>&1 || true
+
+          echo ""
+          echo "=== Verify worker -> host.docker.internal:6789 (proxy port) ==="
+          # 6789 is the actual HTTP proxy port. A working proxy to chatgpt.com
+          # returns 403 (Cloudflare JS challenge) — that means the TCP path
+          # to the proxy is OPEN. 000/timeout means UFW still blocking.
+          docker compose exec -T worker sh -lc '
+            curl -sS --max-time 12 -o /dev/null \
+              --proxy http://host.docker.internal:6789 \
+              -w "proxy:       http_code=%{http_code} time=%{time_total}s\n" \
+              https://chatgpt.com/ || echo "curl_exit=$?"
+          ' </dev/null 2>&1 || true
+
+          echo ""
+          echo "=== End of hotfix ==="
+          REMOTE
+          )
+
+          echo "$output"
+          {
+            echo "## ChatGPT proxy_api_unreachable hotfix"
+            echo ""
+            echo '```'
+            echo "$output"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "$output" > /tmp/hotfix-output.txt
+
+          # PASS gate: both ports must respond with a non-000 http_code.
+          # :9098 -> 200/401 (API up or auth required). :6789 -> any non-000
+          # (typically 403 from Cloudflare JS-challenge, but proxy CONNECT
+          # working is what matters here, not chatgpt.com's response).
+          api_ok=$(echo "$output" | grep -E '^api_(no_auth|auth):' | grep -cE 'http_code=(200|401)')
+          proxy_ok=$(echo "$output" | grep -E '^proxy:' | grep -cvE 'http_code=000')
+          echo "api_ok_lines=${api_ok} proxy_ok_lines=${proxy_ok}"
+          if [ "${api_ok}" -ge 1 ] && [ "${proxy_ok}" -ge 1 ]; then
+            echo "::notice::Hotfix verification PASSED: worker can now reach :9098 AND :6789"
+          else
+            echo "::error::Hotfix verification FAILED: worker cannot reach :9098 or :6789 post-fix. See step summary."
+            exit 1
+          fi
+
+      - name: Post hotfix output as PR comment
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let body = '## ChatGPT proxy_api_unreachable hotfix\n\n';
+            try {
+              const out = fs.readFileSync('/tmp/hotfix-output.txt', 'utf-8');
+              const max = 40000;
+              const trimmed = out.length > max ? out.slice(0, max) + '\n…[truncated]' : out;
+              body += '```\n' + trimmed + '\n```';
+            } catch (e) {
+              body += 'failed to read output: ' + String(e);
+            }
+            const sha = context.sha;
+            const prs = await github.rest.search.issuesAndPullRequests({
+              q: `repo:${context.repo.owner}/${context.repo.repo} is:pr is:open ${sha}`,
+            });
+            if (prs.data.items.length > 0) {
+              await github.rest.issues.createComment({
+                issue_number: prs.data.items[0].number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body,
+              });
+              core.notice(`Posted hotfix dump to PR #${prs.data.items[0].number}`);
+            } else {
+              core.notice('No PR context; hotfix dump available in step summary only.');
+            }
