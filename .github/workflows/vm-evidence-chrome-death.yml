@@ -1,0 +1,98 @@
+name: VM Evidence - Why Chrome Dies
+
+# Read-only evidence collector for Chrome instability in doubao-01/02
+# containers. Captures:
+#   - chrome.log exit codes (supervisor loop will show repeated rc=N lines)
+#   - dmesg OOM-kill activity on the ECS host
+#   - docker stats current memory/cpu vs cgroup limit
+#   - docker inspect actual mem_limit
+#   - ps inside container to confirm Chrome alive/dead
+# Per AGENTS.md `### Evidence-First Debugging` — collect BEFORE fixing.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  evidence:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - name: Setup SSH
+        env:
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_SSH_PORT: ${{ secrets.SERVER_SSH_PORT }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 0700 ~/.ssh
+          printf '%s\n' "$SERVER_SSH_KEY" > ~/.ssh/id_ssh
+          chmod 0600 ~/.ssh/id_ssh
+          PORT="${SERVER_SSH_PORT:-22}"
+          ssh-keyscan -p "$PORT" -H "$SERVER_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Collect evidence
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_SSH_PORT: ${{ secrets.SERVER_SSH_PORT }}
+        run: |
+          set -uo pipefail
+          PORT="${SERVER_SSH_PORT:-22}"
+          REMOTE="${SERVER_USER}@${SERVER_HOST}"
+
+          for c in doubao-01 doubao-02; do
+            echo
+            echo "===================================================="
+            echo "===== $c ====="
+            echo "===================================================="
+
+            echo "--- docker inspect mem/cpu/state ---"
+            ssh -i ~/.ssh/id_ssh -p "$PORT" "$REMOTE" \
+              "sudo docker inspect $c --format 'State.Running={{.State.Running}} Restarting={{.State.Restarting}} StartedAt={{.State.StartedAt}} RestartCount={{.RestartCount}} HostConfig.Memory={{.HostConfig.Memory}} HostConfig.MemorySwap={{.HostConfig.MemorySwap}} HostConfig.ShmSize={{.HostConfig.ShmSize}} HostConfig.CpuQuota={{.HostConfig.CpuQuota}}'"
+
+            echo
+            echo "--- docker stats (live mem/cpu) ---"
+            ssh -i ~/.ssh/id_ssh -p "$PORT" "$REMOTE" \
+              "sudo docker stats --no-stream --format 'table {{.Container}}\t{{.MemUsage}}\t{{.MemPerc}}\t{{.CPUPerc}}' $c"
+
+            echo
+            echo "--- ps auxww inside container (filter chrome / socat / Xvfb / xfce / websockify) ---"
+            ssh -i ~/.ssh/id_ssh -p "$PORT" "$REMOTE" \
+              "sudo docker exec $c ps auxww 2>/dev/null | grep -E 'chrome|socat|Xvfb|xfce|websockify|xfwm4|panel' | grep -v grep || echo NONE"
+
+            echo
+            echo "--- ss -tlnp inside container ---"
+            ssh -i ~/.ssh/id_ssh -p "$PORT" "$REMOTE" \
+              "sudo docker exec $c ss -tlnp 2>/dev/null | grep -E ':(9222|9322|5900|6080)' || echo NONE"
+
+            echo
+            echo "--- tail -120 /var/log/chrome.log (supervisor exit codes show here) ---"
+            ssh -i ~/.ssh/id_ssh -p "$PORT" "$REMOTE" \
+              "sudo docker exec $c tail -120 /var/log/chrome.log 2>&1 | tail -120 || echo no-log"
+
+            echo
+            echo "--- last 20 lines /var/log/xvfb.log ---"
+            ssh -i ~/.ssh/id_ssh -p "$PORT" "$REMOTE" \
+              "sudo docker exec $c tail -20 /var/log/xvfb.log 2>&1 || echo no-xvfb-log"
+
+            echo
+            echo "--- last 20 lines /var/log/socat-cdp.log ---"
+            ssh -i ~/.ssh/id_ssh -p "$PORT" "$REMOTE" \
+              "sudo docker exec $c tail -20 /var/log/socat-cdp.log 2>&1 || echo no-socat-log"
+          done
+
+          echo
+          echo "===================================================="
+          echo "===== ECS HOST ====="
+          echo "===================================================="
+          echo "--- dmesg | grep -i 'out of memory|oom-kill|killed process' (last 30) ---"
+          ssh -i ~/.ssh/id_ssh -p "$PORT" "$REMOTE" \
+            "sudo dmesg --since '12 hours ago' 2>/dev/null | grep -iE 'out of memory|oom[-_]kill|killed process|invoked oom' | tail -30 || sudo dmesg 2>/dev/null | grep -iE 'out of memory|oom[-_]kill|killed process|invoked oom' | tail -30 || echo NONE"
+
+          echo
+          echo "--- ECS free -h ---"
+          ssh -i ~/.ssh/id_ssh -p "$PORT" "$REMOTE" "free -h"
+
+          echo
+          echo "--- ECS uptime / load ---"
+          ssh -i ~/.ssh/id_ssh -p "$PORT" "$REMOTE" "uptime"
