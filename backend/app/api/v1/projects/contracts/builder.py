@@ -31,7 +31,7 @@ from genpano_models import (
     ResponseRelationFact,
     SentimentDriver,
 )
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.projects._mention_rollups import (
@@ -756,6 +756,7 @@ async def build_contract_context(
     selected_filters: dict[str, Any] | None = None,
     source_provenance: list[str] | None = None,
     target_response_ids: set[int] | None = None,
+    engines: tuple[str, ...] | None = None,
 ) -> AnalyticsContractContext:
     competitor_ids = await _competitor_ids(session, project)
     missing_sources = list(base_missing_sources or [])
@@ -959,6 +960,58 @@ async def build_contract_context(
         ).scalar_one()
         or 0
     )
+    # Issue #1225 (PRD-APP-ANALYTICS-003 revised 2026-05-18): citation_share's
+    # denominator is now ALL citation_sources in the window scoped to the brand's
+    # queries — not just target-mentioning responses. The original "competitive
+    # set" denominator degenerated to 100% when LLM responses for a project did
+    # not cite competitor official domains. The new window total counts every
+    # citation row produced by queries (queries.brand_id) whose responses fell
+    # in the time window, regardless of whether they were target-mentioning or
+    # whose citation_mapper resolved their domains.
+    # Models for `llm_responses` and `queries` live in geo_tracker.db.models and
+    # are not exposed via genpano_models, so the join uses raw SQL — same
+    # pattern as `_pinned_topic_response_ids` and `app/admin/misc/db.py`. Gated
+    # on `has_admin_chain` so test fixtures without the legacy tables (test
+    # DBs that only seed analyzer mirror tables) silently get a 0 instead of
+    # raising `OperationalError: no such table: queries`.
+    # Engine filter (#1237 review): when /metrics is requested with
+    # `engines=`, the numerator path applies `q.target_llm IN (...)` via
+    # `_query_scope_conditions` (queries.py:98), so the denominator must
+    # narrow to the same engines or the ratio under-reports (engine's
+    # target citations / all engines' citations).
+    window_citation_total = 0
+    if has_admin_chain and await legacy_table_exists(session, "llm_responses"):
+        engine_clause = ""
+        params: dict[str, Any] = {
+            "brand_id": brand_id,
+            "from_dt": from_dt,
+            "to_dt": to_dt,
+        }
+        if engines:
+            engine_placeholders = ",".join(f":engine_{i}" for i in range(len(engines)))
+            engine_clause = f"AND q.target_llm IN ({engine_placeholders})"
+            for i, name in enumerate(engines):
+                params[f"engine_{i}"] = name
+        window_citation_total = int(
+            (
+                await session.execute(
+                    text(
+                        f"""
+                        SELECT COUNT(*)
+                        FROM citation_sources cs
+                        JOIN llm_responses r ON r.id = cs.response_id
+                        JOIN queries q ON q.id = r.query_id
+                        WHERE q.brand_id = :brand_id
+                          AND cs.created_at >= :from_dt
+                          AND cs.created_at <= :to_dt
+                          {engine_clause}
+                        """
+                    ),
+                    params,
+                )
+            ).scalar_one()
+            or 0
+        )
     raw_response_without_app_facts = (
         has_admin_chain
         and admin_fact_response_count > 0
@@ -1074,6 +1127,7 @@ async def build_contract_context(
         "normalized_brand_mention_count": normalized_mentions,
         "response_analysis_count": len(analysis_rows),
         "citation_source_count": citation_count,
+        "total_citation_count_window": window_citation_total,
         "competitor_brand_count": len(competitor_ids),
         "eligible_response_count": eligible_response_count,
         "admin_fact_response_count": admin_fact_response_count,

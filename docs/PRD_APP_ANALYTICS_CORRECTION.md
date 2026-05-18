@@ -144,9 +144,17 @@ Citation rate:
 
 Citation share:
 
-- Numerator: citation-backed target-brand mentions or citation references.
-- Denominator: citation-backed mentions or citation references for the
-  competitive set.
+- Numerator: citation_sources rows attributed to target-brand brand_mentions
+  in the time window.
+- Denominator: ALL citation_sources rows in the same time window (regardless
+  of brand attribution).
+
+Rationale (revised 2026-05-18 per #1225): the original "competitive set"
+denominator degenerated to target-only when LLM responses for a project did
+not cite competitor official domains, producing a misleading 100%. The
+revised denominator answers "what share of LLM citations point to the
+target brand" rather than "what share of competitive-set citations". This
+is a window-cumulative ratio, NOT a per-day comparison.
 
 Official-domain share:
 
@@ -159,6 +167,8 @@ Invalid outputs:
   citation series.
 - Labeling citation rate as citation share.
 - Treating no citation extraction as a real zero.
+- Computing citation share over a denominator scoped to target-mentioning
+  responses only — that recovers the pre-#1225 100% degeneracy.
 
 If citation extraction tables are empty while responses exist, return `partial`
 or `empty` based on response evidence; never silently show `0%`.

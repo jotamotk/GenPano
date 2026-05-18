@@ -437,7 +437,12 @@ def _series_contract_missing_inputs(
     return _unique(missing)
 
 
-def _fact_metric_value(metric: str, bucket: _FactMetricBucket) -> float | None:
+def _fact_metric_value(
+    metric: str,
+    bucket: _FactMetricBucket,
+    *,
+    context: AnalyticsContractContext | None = None,
+) -> float | None:
     if metric == "mention_rate":
         denominator = len(bucket["mention_denominator_response_ids"])
         if denominator <= 0 or not bucket["has_target_mention_input"]:
@@ -473,24 +478,29 @@ def _fact_metric_value(metric: str, bucket: _FactMetricBucket) -> float | None:
             return None
         return round(sum(scores) / len(scores), 4)
     if metric == "citation":
-        # Issue #948 follow-up: citation_share = target_attributed /
-        # eligible_project citations. Previous implementation used
-        # `(any target-mentioning response has any citation) /
-        # (target-mentioning responses)`, which collapsed to 100% the moment
-        # the LLM emitted any citations because the COUNT(*) denominator
-        # subquery in admin_facts (queries.py:407-410) was unfiltered by
-        # `mention_id`. Switch to the proper attributed/total ratio that
-        # matches `metric_formula_evidence.citation.numerator_name /
-        # denominator_name` (target_attributed_citations /
-        # eligible_project_citations).
+        # Issue #1225 (PRD-APP-ANALYTICS-003 revised 2026-05-18):
+        # citation_share = target_attributed_citations / all_window_citations.
+        # The previous denominator (target-mentioning responses only via
+        # bucket["citation_count_sum"]) degenerated to 100% when LLM
+        # responses for a project did not cite competitor official domains.
+        # The new denominator comes from the analytics contract context's
+        # window-total citation count (see contracts/builder.py:
+        # total_citation_count_window), which counts every citation_sources
+        # row in the window regardless of brand attribution.
         if not bucket["has_citation_input"]:
             return None
-        total_citations = int(bucket["citation_count_sum"])
-        if total_citations <= 0:
-            # Nothing to divide by — guard the no-fallback contract.
+        if context is None:
+            return None
+        window_total = int(context.evidence_counts.get("total_citation_count_window", 0))
+        if window_total <= 0:
+            # No citations anywhere in the window → metric is undefined,
+            # not zero. Return None so the contract can render this as a
+            # `partial`/`empty` state instead of a misleading 0%.
             return None
         target_citations = int(bucket["target_citation_count_sum"])
-        return round(target_citations / total_citations, 4)
+        if target_citations <= 0:
+            return 0.0
+        return round(target_citations / window_total, 4)
     return None
 
 
@@ -590,11 +600,30 @@ async def _metrics_from_admin_facts(
         bucket["citation_count_sum"] += int(row.get("citation_count") or 0)
         bucket["target_citation_count_sum"] += int(row.get("target_citation_count") or 0)
 
+    # Issue #1225 (PRD-APP-ANALYTICS-003 revised 2026-05-18): the citation
+    # metric's denominator is now `total_citation_count_window` from the
+    # analytics contract context. Build the contract context up front (with a
+    # provisional `has_data=False`) so `_fact_metric_value` can read that
+    # window-total. The post-metric has_data refinement reruns
+    # `build_contract_context` below if state changes — same pattern as the
+    # existing missing_inputs / formula_pending_upstream branches.
+    context = await build_contract_context(
+        session,
+        project,
+        brand_id=brand_id,
+        from_date=from_d,
+        to_date=to_d,
+        has_data=False,
+        base_state="empty",
+        source_provenance=["admin_facts"],
+        engines=tuple(filters.engines) if filters.engines else None,
+    )
+
     out_series: list[MetricSeries] = []
     for metric in requested:
         points: list[MetricSeriesPoint] = []
         for day in sorted(buckets):
-            value = _fact_metric_value(metric, buckets[day])
+            value = _fact_metric_value(metric, buckets[day], context=context)
             if value is None:
                 continue
             points.append(MetricSeriesPoint(date=date.fromisoformat(day), value=value))
@@ -602,16 +631,17 @@ async def _metrics_from_admin_facts(
 
     out_series = _decorate_metric_series(out_series)
     has_data = any(series.points for series in out_series)
-    context = await build_contract_context(
-        session,
-        project,
-        brand_id=brand_id,
-        from_date=from_d,
-        to_date=to_d,
-        has_data=has_data,
-        base_state="ok" if has_data else "empty",
-        source_provenance=["admin_facts"],
-    )
+    if has_data:
+        context = await build_contract_context(
+            session,
+            project,
+            brand_id=brand_id,
+            from_date=from_d,
+            to_date=to_d,
+            has_data=has_data,
+            base_state="ok",
+            source_provenance=["admin_facts"],
+        )
     explicit_primary_brand = (
         brand_id_override is not None and brand_id_override == project.primary_brand_id
     )
