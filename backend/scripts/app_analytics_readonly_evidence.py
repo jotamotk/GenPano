@@ -269,6 +269,58 @@ GROUP BY coverage_bucket, sc.brand_id, sc.brand_name
 ORDER BY coverage_bucket, citation_rows DESC, domains DESC
 LIMIT 80;
 
+\\echo '--- unresolved citation top-30 domains (issue #1225 citation attribution probe) ---'
+SELECT
+  cs.domain,
+  COUNT(*) AS rows_in_unresolved,
+  COUNT(DISTINCT cs.response_id) AS cited_responses,
+  MIN(cs.source_type) AS sample_source_type,
+  (SELECT bod.brand_id FROM brand_official_domains bod
+    WHERE LOWER(bod.domain) = LOWER(cs.domain) LIMIT 1) AS owning_brand_id,
+  (SELECT b.name FROM brand_official_domains bod
+    JOIN brands b ON b.id = bod.brand_id
+    WHERE LOWER(bod.domain) = LOWER(cs.domain) LIMIT 1) AS owning_brand_name
+FROM citation_sources cs
+LEFT JOIN llm_responses r ON r.id = cs.response_id
+LEFT JOIN queries q ON q.id = r.query_id
+WHERE cs.mention_id IS NULL
+  AND {response_date_expr}
+    BETWEEN '{date_from}'::date AND '{date_to}'::date
+GROUP BY cs.domain
+ORDER BY rows_in_unresolved DESC
+LIMIT 30;
+
+\\echo '--- response_analyses geo_score distribution (issue #1225 geo_score_daily probe) ---'
+SELECT
+  ra.target_brand_mentioned,
+  COUNT(*) AS rows,
+  COUNT(ra.geo_score) AS geo_score_non_null,
+  COUNT(*) FILTER (WHERE ra.geo_score IS NULL) AS geo_score_null,
+  ROUND(AVG(ra.geo_score)::numeric, 4) AS avg_geo_score,
+  COUNT(DISTINCT ra.response_id) AS distinct_responses
+FROM response_analyses ra
+JOIN llm_responses r ON r.id = ra.response_id
+LEFT JOIN queries q ON q.id = r.query_id
+WHERE r.brand_id = {config.brand_id}
+  AND {response_date_expr}
+    BETWEEN '{date_from}'::date AND '{date_to}'::date
+GROUP BY ra.target_brand_mentioned
+ORDER BY ra.target_brand_mentioned NULLS LAST;
+
+\\echo '--- queries intent/prompt coverage for geo_score eligibility (issue #1225) ---'
+SELECT
+  COUNT(*) AS total_queries,
+  COUNT(q.intent) AS queries_with_intent,
+  COUNT(*) FILTER (WHERE q.intent IS NULL) AS queries_intent_null,
+  COUNT(DISTINCT q.intent) AS distinct_intents,
+  COUNT(q.prompt_id) AS queries_with_prompt_id,
+  COUNT(DISTINCT q.language) AS distinct_languages,
+  COUNT(DISTINCT q.target_llm) AS distinct_target_llms
+FROM queries q
+WHERE q.brand_id = {config.brand_id}
+  AND COALESCE(q.finished_at, q.created_at)::date
+    BETWEEN '{date_from}'::date AND '{date_to}'::date;
+
 \\echo '--- cited responses date distribution (issue #1021 authority-trend probe) ---'
 WITH target_cited_responses AS (
   SELECT DISTINCT
