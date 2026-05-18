@@ -1741,11 +1741,26 @@ test.describe('Live App analytics business completeness gate', () => {
     await fs.mkdir(SCREENSHOT_DIR, { recursive: true })
     const failedResponses: string[] = []
     const runtimeErrors: string[] = []
+    let capturedMentionSamplesPayload: ContractPayload | null = null
     page.on('response', response => {
       const url = response.url()
       const status = response.status()
       if (url.includes('/api/') && (status === 401 || status >= 500)) {
         failedResponses.push(`${status} ${url}`)
+      }
+      // #1175: capture the mention-samples payload the BrandSentimentPage actually consumes so the
+      // DOM-rendered response_text can be compared against the live API value below.
+      if (
+        status === 200 &&
+        url.includes(`/api/v1/projects/${projectId}/mention-samples`) &&
+        capturedMentionSamplesPayload === null
+      ) {
+        response
+          .json()
+          .then(json => {
+            capturedMentionSamplesPayload = json as ContractPayload
+          })
+          .catch(() => {})
       }
     })
     page.on('pageerror', error => runtimeErrors.push(`pageerror: ${error.message}`))
@@ -1763,6 +1778,14 @@ test.describe('Live App analytics business completeness gate', () => {
       expected: TopicReadabilityExpectation[]
       modal?: RenderedAnalyzerFactsSummary
     }> = []
+    // #1175: traceability record proving the BrandSentimentPage rendered the live API response_text.
+    let sentimentResponseExpansionEvidence: {
+      route: string
+      apiItemCount: number
+      apiResponseTextPreview: string
+      apiResponseTextLength: number
+      renderedMatchesApi: boolean
+    } | null = null
 
     const routes = [
       `/brand/overview?brandId=${brandId}&range=30d&profileGroup=all`,
@@ -1809,6 +1832,52 @@ test.describe('Live App analytics business completeness gate', () => {
           expected: topicReadabilityExpectations,
           modal: modalSummary,
         })
+      } else if (route.startsWith('/brand/sentiment?')) {
+        // #1175 acceptance evidence: prove the response row expansion renders the live API response_text.
+        // Wait briefly for the captured mention-samples payload (the page already finished networkidle above,
+        // but the JSON .then() resolves on the next microtask). No flake-retry per AGENTS.md — single attempt.
+        const waitDeadline = Date.now() + 10_000
+        while (capturedMentionSamplesPayload === null && Date.now() < waitDeadline) {
+          await page.waitForTimeout(250)
+        }
+        assertCondition(
+          capturedMentionSamplesPayload !== null,
+          '#1175 expected /api/v1/projects/{id}/mention-samples response to be captured on /brand/sentiment',
+        )
+        const samplesPayload = capturedMentionSamplesPayload as ContractPayload
+        const samplesItems = Array.isArray(samplesPayload.items) ? samplesPayload.items : []
+        assertCondition(
+          samplesItems.length >= 1,
+          '#1175 expected at least one sentiment response item on /brand/sentiment',
+        )
+        const firstItem = samplesItems[0] as ContractPayload
+        const firstResponseText = firstItem?.response_text
+        assertCondition(
+          typeof firstResponseText === 'string' && firstResponseText.length > 0,
+          '#1175 first response item must have non-empty response_text',
+        )
+        // Click the first row's Inspect control. The page uses a plain <button> labelled "Inspect" with
+        // aria-label="Inspect full response for ...". Using the visible name keeps test scope to this file
+        // (no product code testid needed). See BrandSentimentPage.tsx:570-591.
+        const inspectButton = page.getByRole('button', { name: /^Inspect$/ }).first()
+        await inspectButton.waitFor({ state: 'visible', timeout: 10_000 })
+        await inspectButton.click()
+        // Wait for the expanded panel header to appear, then assert the rendered text contains the exact API value.
+        const expandedPanel = page.getByText('Full response inspection').first()
+        await expandedPanel.waitFor({ state: 'visible', timeout: 10_000 })
+        const expandedContainer = expandedPanel.locator('..')
+        const expandedText = await expandedContainer.innerText({ timeout: 10_000 })
+        assertCondition(
+          expandedText.includes(firstResponseText),
+          '#1175 expanded row must render exact API response_text on /brand/sentiment',
+        )
+        sentimentResponseExpansionEvidence = {
+          route,
+          apiItemCount: samplesItems.length,
+          apiResponseTextPreview: firstResponseText.slice(0, 200),
+          apiResponseTextLength: firstResponseText.length,
+          renderedMatchesApi: true,
+        }
       }
       pageSummaries.push({ route, path, surfaceCount })
     }
@@ -1864,6 +1933,21 @@ test.describe('Live App analytics business completeness gate', () => {
                 }
               : null,
           })),
+        },
+        null,
+        2,
+      ),
+    )
+    // #1175: persist the captured response_text preview so the acceptance evidence is traceable from the artifact.
+    await fs.writeFile(
+      `${SCREENSHOT_DIR}/sentiment-response-expansion-summary.json`,
+      JSON.stringify(
+        {
+          projectId,
+          brandId,
+          window: { from: fromDate, to: toDate },
+          issue: '#1175',
+          evidence: sentimentResponseExpansionEvidence,
         },
         null,
         2,
