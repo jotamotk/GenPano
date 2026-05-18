@@ -132,8 +132,7 @@ def test_citation_series_with_competitors_but_zero_competitive_citations_is_part
     )
     assert citation_series.formula_status != "ok", (
         "formula_status must not stay ok when the citation denominator "
-        "collapses to target-only attribution; got "
-        + repr(citation_series.formula_status)
+        "collapses to target-only attribution; got " + repr(citation_series.formula_status)
     )
     assert "brand_mentions.competitive_set" in citation_series.missing_inputs, (
         "missing_inputs must surface brand_mentions.competitive_set so the "
@@ -158,8 +157,7 @@ def test_series_missing_inputs_emits_competitive_set_for_degenerate_citation() -
 
     assert "brand_mentions.competitive_set" in missing, (
         "Expected the new gate to emit brand_mentions.competitive_set when "
-        "competitor_brand_count>0 and competitive_citation_count<=0; got "
-        + repr(missing)
+        "competitor_brand_count>0 and competitive_citation_count<=0; got " + repr(missing)
     )
     # The original ``citation_sources`` branch must NOT regress: this
     # context has citation_source_count=127, so the legacy gate should
@@ -192,8 +190,7 @@ def test_citation_series_with_competitive_citations_keeps_ok() -> None:
     )
     assert "brand_mentions.competitive_set" not in citation_series.missing_inputs, (
         "missing_inputs must NOT contain brand_mentions.competitive_set "
-        "when competitive_citation_count>0; got "
-        + repr(citation_series.missing_inputs)
+        "when competitive_citation_count>0; got " + repr(citation_series.missing_inputs)
     )
 
 
@@ -243,8 +240,7 @@ def test_series_missing_inputs_preserves_legacy_citation_sources_gate() -> None:
     # competitive-set complaint is redundant — the broader source-missing
     # signal takes precedence.
     assert "brand_mentions.competitive_set" not in missing, (
-        "When citation_sources is empty the broader gate covers the "
-        "diagnosis; got " + repr(missing)
+        "When citation_sources is empty the broader gate covers the diagnosis; got " + repr(missing)
     )
 
 
@@ -270,7 +266,6 @@ def test_gate_silent_when_no_competitors_are_configured() -> None:
         evidence_source="admin_facts",
     )
 
-    assert missing == [], (
-        "Gate must stay silent when competitor_brand_count==0; got "
-        + repr(missing)
+    assert missing == [], "Gate must stay silent when competitor_brand_count==0; got " + repr(
+        missing
     )
