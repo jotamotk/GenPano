@@ -756,6 +756,7 @@ async def build_contract_context(
     selected_filters: dict[str, Any] | None = None,
     source_provenance: list[str] | None = None,
     target_response_ids: set[int] | None = None,
+    engines: tuple[str, ...] | None = None,
 ) -> AnalyticsContractContext:
     competitor_ids = await _competitor_ids(session, project)
     missing_sources = list(base_missing_sources or [])
@@ -973,13 +974,29 @@ async def build_contract_context(
     # on `has_admin_chain` so test fixtures without the legacy tables (test
     # DBs that only seed analyzer mirror tables) silently get a 0 instead of
     # raising `OperationalError: no such table: queries`.
+    # Engine filter (#1237 review): when /metrics is requested with
+    # `engines=`, the numerator path applies `q.target_llm IN (...)` via
+    # `_query_scope_conditions` (queries.py:98), so the denominator must
+    # narrow to the same engines or the ratio under-reports (engine's
+    # target citations / all engines' citations).
     window_citation_total = 0
     if has_admin_chain and await legacy_table_exists(session, "llm_responses"):
+        engine_clause = ""
+        params: dict[str, Any] = {
+            "brand_id": brand_id,
+            "from_dt": from_dt,
+            "to_dt": to_dt,
+        }
+        if engines:
+            engine_placeholders = ",".join(f":engine_{i}" for i in range(len(engines)))
+            engine_clause = f"AND q.target_llm IN ({engine_placeholders})"
+            for i, name in enumerate(engines):
+                params[f"engine_{i}"] = name
         window_citation_total = int(
             (
                 await session.execute(
                     text(
-                        """
+                        f"""
                         SELECT COUNT(*)
                         FROM citation_sources cs
                         JOIN llm_responses r ON r.id = cs.response_id
@@ -987,9 +1004,10 @@ async def build_contract_context(
                         WHERE q.brand_id = :brand_id
                           AND cs.created_at >= :from_dt
                           AND cs.created_at <= :to_dt
+                          {engine_clause}
                         """
                     ),
-                    {"brand_id": brand_id, "from_dt": from_dt, "to_dt": to_dt},
+                    params,
                 )
             ).scalar_one()
             or 0

@@ -616,6 +616,7 @@ async def _metrics_from_admin_facts(
         has_data=False,
         base_state="empty",
         source_provenance=["admin_facts"],
+        engines=tuple(filters.engines) if filters.engines else None,
     )
 
     out_series: list[MetricSeries] = []
