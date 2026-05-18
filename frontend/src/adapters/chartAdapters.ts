@@ -199,6 +199,12 @@ export interface SentimentSampleRow {
   engine: string
   time: string
   summary: string
+  polarity: 'positive' | 'negative' | 'neutral'
+  queryId: number | null
+  mentionId: number | null
+  responseId: number | null
+  snippet: string | null
+  responseText: string | null
 }
 
 export function adaptMentionSamples(
@@ -211,6 +217,12 @@ export function adaptMentionSamples(
     engine: m.engine ?? '—',
     time: m.occurred_at ? m.occurred_at.slice(0, 10) : '',
     summary: m.summary ?? '',
+    polarity: m.polarity,
+    queryId: m.query_id ?? null,
+    mentionId: m.mention_id ?? null,
+    responseId: m.response_id ?? null,
+    snippet: m.snippet ?? null,
+    responseText: m.response_text ?? null,
   }))
 }
 

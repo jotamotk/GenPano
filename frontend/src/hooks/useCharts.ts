@@ -113,7 +113,7 @@ export function useTopicAttribution(
 
 export function useMentionSamples(
   projectId: string | null | undefined,
-  opts: { polarity?: string; limit?: number; filters?: ProjectAnalysisParams } = {},
+  opts: { polarity?: string; limit?: number; offset?: number; filters?: ProjectAnalysisParams } = {},
 ) {
   return useQuery({
     queryKey: [
@@ -122,6 +122,7 @@ export function useMentionSamples(
       projectId,
       opts.polarity,
       opts.limit,
+      opts.offset,
       filterKey(opts.filters),
     ],
     queryFn: () => projectChartsApi.mentionSamples(projectId as string, opts),
