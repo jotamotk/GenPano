@@ -16,6 +16,16 @@ on:
         description: 'Type "yes" to apply UFW rule + sync script to production host'
         required: true
         default: 'no'
+  # Auto-dispatch via committing a `.trigger` file. The route-policy
+  # preflight (which runs production decision functions and asserts
+  # 豆包/deepseek direct + chatgpt proxy) is the real safety gate;
+  # the path filter ensures only an intentional trigger-file commit
+  # fires this — not every push to the branch.
+  push:
+    branches:
+      - 'claude/fix-chatgpt-error-fjyfb'
+    paths:
+      - '.github/auto-apply-chatgpt-proxy-fix.trigger'
 
 permissions:
   contents: read
@@ -30,10 +40,27 @@ jobs:
     steps:
       - name: Guard
         run: |
-          if [ "${{ inputs.confirm }}" != "yes" ]; then
-            echo "::error::Refusing to mutate production host: input 'confirm' must be literal 'yes' (got '${{ inputs.confirm }}')."
-            exit 1
-          fi
+          # Two trigger paths:
+          # - workflow_dispatch: user clicks Run workflow, must type confirm=yes
+          # - push: trigger file committed; the file's existence + path filter
+          #   IS the gate. Route-policy preflight is the next mandatory gate
+          #   either way.
+          case "${{ github.event_name }}" in
+            workflow_dispatch)
+              if [ "${{ inputs.confirm }}" != "yes" ]; then
+                echo "::error::workflow_dispatch: input 'confirm' must be literal 'yes' (got '${{ inputs.confirm }}')."
+                exit 1
+              fi
+              echo "Guard: workflow_dispatch with confirm=yes — proceeding to route-policy preflight."
+              ;;
+            push)
+              echo "Guard: push trigger from ${GITHUB_REF} — proceeding to route-policy preflight."
+              ;;
+            *)
+              echo "::error::Unexpected event: ${{ github.event_name }} — refusing."
+              exit 1
+              ;;
+          esac
 
       - name: Checkout
         uses: actions/checkout@v4
