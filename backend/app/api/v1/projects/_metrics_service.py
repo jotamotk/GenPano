@@ -360,9 +360,7 @@ def _apply_metric_series_contract(
             )
             state = "ok" if formula_status == FORMULA_OK_STATUS else "partial"
             state_reason = (
-                "data_available"
-                if formula_status == FORMULA_OK_STATUS
-                else "partial_analyzer_data"
+                "data_available" if formula_status == FORMULA_OK_STATUS else "partial_analyzer_data"
             )
             item_missing_inputs = (
                 item.missing_inputs
