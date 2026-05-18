@@ -518,7 +518,11 @@ async def _overview_from_admin_facts(
             if mentions > 0:
                 prompt_buckets[prompt_key]["sentiments"].append(sentiment)
         geo = _fact_geo_display(row.get("geo_score"))
-        if geo is not None:
+        if geo is not None and mentions > 0:
+            # response_analyses.geo_score has server_default="0.0", so
+            # non-target-mention rows arrive as 0.0 instead of NULL. Including
+            # them would dilute the per-response mean toward zero. Only
+            # mention-bearing rows carry a real GEOScorer.calc_overall output.
             bucket["geo_scores"].append(geo)
 
     if not buckets:
