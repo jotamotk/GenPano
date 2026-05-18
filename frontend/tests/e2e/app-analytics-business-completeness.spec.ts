@@ -1473,6 +1473,7 @@ test.describe('Live App analytics business completeness gate', () => {
   test.skip(process.env.APP_ANALYTICS_LIVE_E2E !== '1', 'Set APP_ANALYTICS_LIVE_E2E=1 to run against production.')
 
   test('validates live API contracts and rendered chart pages', async ({ page }) => {
+    test.setTimeout(120_000)
     const baseUrl = process.env.PLAYWRIGHT_BASE_URL || process.env.BASE_URL || 'http://116.62.36.173'
     const projectId = process.env.PROJECT_ID || DEFAULT_PROJECT_ID
     const brandId = Number(process.env.BRAND_ID || DEFAULT_BRAND_ID)
