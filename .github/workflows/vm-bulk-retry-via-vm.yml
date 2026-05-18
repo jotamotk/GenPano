@@ -93,20 +93,16 @@ jobs:
           # resolves to from inside worker) -> 127.0.0.1:9222/9223 (where
           # doubao-NN containers expose CDP). Without this, worker can't
           # reach the loopback-bound CDP ports. Idempotent: kill any
-          # previous socat on those ports first, then re-start in background.
-          ssh -i ~/.ssh/id_ssh -p "$PORT" "$REMOTE" "bash -s" <<'SOCAT_EOF'
-            set -uo pipefail
-            sudo pkill -f 'socat .*172\.17\.0\.1:9222' || true
-            sudo pkill -f 'socat .*172\.17\.0\.1:9223' || true
-            sleep 0.5
-            sudo nohup socat TCP-LISTEN:9222,bind=172.17.0.1,reuseaddr,fork TCP:127.0.0.1:9222 \
-              > /tmp/host-socat-9222.log 2>&1 &
-            sudo nohup socat TCP-LISTEN:9223,bind=172.17.0.1,reuseaddr,fork TCP:127.0.0.1:9223 \
-              > /tmp/host-socat-9223.log 2>&1 &
-            sleep 1
-            echo "=== socat status ==="
-            sudo ss -tlnp 2>/dev/null | grep -E '172\.17\.0\.1:(9222|9223)' || echo "WARN: socat not visible in ss output"
-SOCAT_EOF
+          # previous socat first, then re-start in background.
+          ssh -i ~/.ssh/id_ssh -p "$PORT" "$REMOTE" \
+            "sudo pkill -f 'socat .*172\\.17\\.0\\.1:9222' || true; \
+             sudo pkill -f 'socat .*172\\.17\\.0\\.1:9223' || true; \
+             sleep 0.5; \
+             sudo nohup socat TCP-LISTEN:9222,bind=172.17.0.1,reuseaddr,fork TCP:127.0.0.1:9222 > /tmp/host-socat-9222.log 2>&1 < /dev/null & \
+             sudo nohup socat TCP-LISTEN:9223,bind=172.17.0.1,reuseaddr,fork TCP:127.0.0.1:9223 > /tmp/host-socat-9223.log 2>&1 < /dev/null & \
+             sleep 1; \
+             echo '=== socat status ==='; \
+             sudo ss -tlnp 2>/dev/null | grep -E '172\\.17\\.0\\.1:(9222|9223)' || echo 'WARN socat not visible'"
 
           # 2. Identify worker container name on ECS. geo_tracker (and
           #    therefore vm_quick_retry) only ships in the worker image,
