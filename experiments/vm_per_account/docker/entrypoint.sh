@@ -34,6 +34,16 @@ rm -f /tmp/.X0-lock /tmp/.X11-unix/X0 2>/dev/null || true
 mkdir -p /profile
 chmod 0700 /profile
 
+# Clean Chrome's stale singleton lock — when a container restarts, the
+# previous instance leaves /profile/SingletonLock pointing at its old
+# hostname:PID. New Chrome sees the lock and refuses to start with
+# "another Google Chrome process is using this profile", which makes
+# /json/version unreachable (Chrome exits before binding CDP). The
+# Singleton* files are PID/hostname-scoped so removing them on every
+# container start is safe — they only matter while Chrome is actively
+# running, and Chrome wasn't running yet at this point.
+rm -f /profile/SingletonLock /profile/SingletonCookie /profile/SingletonSocket 2>/dev/null || true
+
 # ---- 1. VNC password storage ----
 mkdir -p /root/.vnc
 x11vnc -storepasswd "$VNC_PASSWORD" /root/.vnc/passwd
