@@ -1,0 +1,8 @@
+project_id=7380c0e0-8798-4a5f-998f-42010a7d9caa
+brand_id=24
+competitor_brand_ids=
+date_from=2026-04-18
+date_to=2026-05-18
+base_url=http://116.62.36.173
+captured_at=20260518T060355Z
+commit=7b889062b67938a7d68090c0caae5e232d8c85b4
