@@ -41,6 +41,7 @@ import type {
 } from '../api/industries'
 import {
   canUseMetricEvidence,
+  isUsableAnalyticsEndpointState,
   type AnalyticsContractMetadata,
 } from '../api/analyticsContract'
 
@@ -210,7 +211,15 @@ export interface SentimentSampleRow {
 export function adaptMentionSamples(
   out: MentionSamplesOut | undefined,
 ): SentimentSampleRow[] {
-  if (!out || !canUseChartMetrics(out, ['sentiment']) || !Array.isArray(out.items)) return []
+  // Issue #1175: the `mention_samples` endpoint is a paginated response-sample
+  // list, not a sentiment-metric endpoint. It does not promise (and the backend
+  // does not emit) `metric_formula_evidence.sentiment`, so the previous gate
+  // `canUseChartMetrics(out, ['sentiment'])` permanently returned [] for valid
+  // responses with items. Gate on the endpoint's own ChartState instead — the
+  // backend already sets state='ok'/'partial' iff items are derived from real
+  // brand-mention evidence (see Server Diagnostics run 26032322450 against
+  // BestCoffer brandId=24: state=ok, evidence_count=89, items=20).
+  if (!out || !isUsableAnalyticsEndpointState(out.state) || !Array.isArray(out.items)) return []
   return out.items.map((m) => ({
     label: m.label,
     topic: m.topic ?? '—',
