@@ -187,6 +187,12 @@ const REASON_LABELS: Record<string, string> = {
   missing_analyzer_rows: 'Analysis coverage missing',
   insufficient_coverage: 'Coverage incomplete',
   missing_competitive_extraction: 'Competitor evidence incomplete',
+  missing_competitive_evidence: 'Competitor evidence incomplete',
+  missing_competitive_set_evidence: 'Competitor evidence incomplete',
+  competitive_set_evidence_missing: 'Competitor evidence incomplete',
+  missing_competitive_denominator: 'Competitor denominator missing',
+  missing_competitor_denominator: 'Competitor denominator missing',
+  competitive_denominator_missing: 'Competitor denominator missing',
   target_only_sov: 'Target-only SoV',
   unresolved_citation_attribution: 'Citation attribution unresolved',
   missing_sentiment_quote: 'Sentiment quote missing',
@@ -233,7 +239,22 @@ function coverageDetails(coverage: AnalyzerCoverage | null | undefined): string[
   return details
 }
 
-function trustSummary(reasonLabels: string[], tone: MetricTrustTone): string {
+function hasCompetitiveDenominatorGap(reasonLabels: string[]): boolean {
+  return reasonLabels.some((label) =>
+    label === 'Target-only SoV' ||
+    label === 'Competitor evidence incomplete' ||
+    label === 'Competitor denominator missing'
+  )
+}
+
+function trustSummary(
+  reasonLabels: string[],
+  tone: MetricTrustTone,
+  metricKey?: string | null,
+): string {
+  if (lower(metricKey) === 'sov' && hasCompetitiveDenominatorGap(reasonLabels)) {
+    return 'SoV has target evidence but no competitive denominator yet.'
+  }
   if (reasonLabels.includes('Valid zero') && tone === 'ok') {
     return 'Zero is supported by complete evidence.'
   }
@@ -318,7 +339,7 @@ export function buildMetricTrustState(input: MetricTrustInput | null | undefined
   return {
     tone,
     label,
-    summary: trustSummary(reasonLabels, tone),
+    summary: trustSummary(reasonLabels, tone, input?.metricKey),
     details,
     reasonLabels,
     canShowValue,

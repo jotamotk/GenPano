@@ -5,6 +5,7 @@ import {
   canUseContractMetricValue,
   canUseMetricEvidence,
   contractEvidenceReasons,
+  metricReasonLabel,
 } from './analyticsContract'
 
 describe('analytics formula-status guards', () => {
@@ -131,7 +132,7 @@ describe('analytics formula-status guards', () => {
     expect(state.tone).toBe('partial')
     expect(state.canShowValue).toBe(false)
     expect(state.label).toBe('Needs review')
-    expect(state.summary).toContain('Coverage incomplete')
+    expect(state.summary).toBe('SoV has target evidence but no competitive denominator yet.')
     expect(state.details).toContain('34 of 56 analyzed')
     expect(state.details).toContain('22 missing')
     expect(state.details).toContain('Analyzer v3')
@@ -217,5 +218,34 @@ describe('analytics formula-status guards', () => {
     expect(state.tone).toBe('missing')
     expect(state.summary).toBe('SoV has target evidence but no competitive denominator yet.')
     expect(state.details).toContain('2 / 2 evidence')
+  })
+
+  it('prioritizes competitive denominator gaps over generic analyzer coverage for SoV', () => {
+    const state = buildMetricTrustState({
+      metricKey: 'sov',
+      value: null,
+      formula_status: 'missing_required_inputs',
+      reason_codes: ['missing_competitive_denominator', 'target_only_sov'],
+      analyzer_coverage: {
+        eligible_response_count: 70,
+        analyzed_response_count: 52,
+        missing_response_count: 18,
+      },
+    })
+
+    expect(state.canShowValue).toBe(false)
+    expect(state.summary).toBe('SoV has target evidence but no competitive denominator yet.')
+    expect(state.reasonLabels).toEqual(
+      expect.arrayContaining([
+        'Competitor denominator missing',
+        'Target-only SoV',
+        'Coverage incomplete',
+      ]),
+    )
+  })
+
+  it('maps backend competitive-set reason codes to product-facing labels', () => {
+    expect(metricReasonLabel('missing_competitive_denominator')).toBe('Competitor denominator missing')
+    expect(metricReasonLabel('missing_competitive_set_evidence')).toBe('Competitor evidence incomplete')
   })
 })
