@@ -737,7 +737,7 @@ async def project_topic_heatmap(
     session: AsyncSession = _DependsDb,
     metric: str = Query("mention_rate"),
     compare_with: str | None = Query(None),
-    top_n: int = Query(8, ge=1, le=30),
+    top_n: int = Query(8, ge=1, le=50),
     from_: str | None = Query(None, alias="from"),
     to: str | None = Query(None),
     brand_id: int | None = Query(None),

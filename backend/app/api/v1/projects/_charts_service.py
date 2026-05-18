@@ -1006,6 +1006,24 @@ async def get_topic_heatmap(
         .limit(top_n)
     )
     top_topics = [int(r[0]) for r in (await session.execute(top_topic_stmt)).all()]
+
+    if 0 < len(top_topics) < top_n:
+        existing = set(top_topics)
+        pad_rows = (
+            await session.execute(
+                text("SELECT id FROM topics WHERE brand_id = :bid ORDER BY id"),
+                {"bid": primary},
+            )
+        ).all()
+        for r in pad_rows:
+            tid = int(r[0])
+            if tid in existing:
+                continue
+            top_topics.append(tid)
+            existing.add(tid)
+            if len(top_topics) >= top_n:
+                break
+
     if not top_topics:
         fact_rows = await _admin_fact_rows(
             session,
