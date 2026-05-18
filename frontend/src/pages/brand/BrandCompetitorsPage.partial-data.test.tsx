@@ -219,5 +219,15 @@ describe('BrandCompetitorsPage partial_competitor_data fall-through', () => {
     expect(screen.getByText(/数据为 partial/)).toBeInTheDocument()
     // The full-suppression banner must NOT appear.
     expect(screen.queryByText('Competitor comparison is partial')).not.toBeInTheDocument()
+    // Issue #1185 follow-up — chart titles must use the live primary
+    // brand name (bestCoffer), not the mock cosmetics fallback that
+    // leaked through when `BRANDS.find(...)` returned undefined for the
+    // bestCoffer brand_id and silently selected BRANDS[1] (雅诗兰黛).
+    // Authority Radar / Topic 胜负图 / PANO 趋势 titles all share the
+    // same "{primary.name} vs {focus.name}" pattern.
+    expect(screen.queryByText(/雅诗兰黛/)).not.toBeInTheDocument()
+    expect(
+      screen.getAllByText((_, element) => /bestCoffer.*vs.*IBM Security/.test(element?.textContent ?? '')).length,
+    ).toBeGreaterThan(0)
   })
 })
