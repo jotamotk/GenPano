@@ -677,6 +677,10 @@ export const MESSAGES = {
         pano_title: 'PANO 趋势 (主品牌 vs Top 3 竞品)',
         kpi_summary_title: '5 KPI sparkline 汇总',
         pano_self: '主品牌',
+        empty: '暂无趋势数据',
+        dates_missing: '实时趋势缺少日期字段',
+        values_missing: '实时趋势暂无可用数值',
+        partial_dates: '部分实时趋势点缺少日期，已暂不展示。',
       },
       alerts: {
         title: '告警条 (Top 3 P0/P1 诊断)',
@@ -1799,6 +1803,10 @@ export const MESSAGES = {
         pano_title: 'PANO trend (me vs Top 3 competitors)',
         kpi_summary_title: '5-KPI sparkline summary',
         pano_self: 'Primary',
+        empty: 'No trend data yet.',
+        dates_missing: 'Live trend dates are missing.',
+        values_missing: 'Live trend values are unavailable.',
+        partial_dates: 'Some live trend points are missing dates.',
       },
       alerts: {
         title: 'Alerts (Top 3 P0/P1 diagnostics)',

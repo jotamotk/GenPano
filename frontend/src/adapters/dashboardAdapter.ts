@@ -78,6 +78,8 @@ export interface BubbleEntry {
 
 export interface TrendPoint {
   day: number
+  date: string
+  name: string
   panoScore: number | null
   mentionRate: number | null
   sentiment: number | null
@@ -396,6 +398,8 @@ export function adaptOverviewToTrend(
     const sent = lookup(sentimentSeries, d)
     return {
       day,
+      date: d,
+      name: d,
       panoScore: geo == null ? null : Math.round(geo),
       // Mention rate is supplied by /metrics. Do not reuse SoV as a proxy.
       mentionRate: null,
@@ -488,6 +492,8 @@ export function adaptMetricsToSparklines(metrics: MetricsOut): SparklineSet {
 
 export interface TrendRowAdapted {
   day: number
+  date: string
+  name: string
   panoScore: number | null
   mentionRate: number | null
   sentiment: number | null
@@ -544,6 +550,8 @@ export function adaptCompetitorTrendsToTrendData(
   return dateList.map((date, idx) => {
     const row: TrendRowAdapted = {
       day: idx + 1,
+      date,
+      name: date,
       panoScore: null,
       mentionRate: metricSeriesPercentValue(metricsTrend, 'mention_rate', date),
       sentiment: null,
@@ -578,6 +586,7 @@ export function adaptCompetitorTrendsToTrendData(
 // Visibility page PANO trend from the competitor geo trend contract.
 const VISIBILITY_TREND_RESERVED_KEYS = new Set([
   'day',
+  'date',
   'name',
   'panoScore',
   'mentionRate',
@@ -603,7 +612,7 @@ export function adaptCompetitorTrendsToVisibilityPanoTrend(
   if (!trends) return { rows: [], lines: [] }
 
   const rows = adaptCompetitorTrendsToTrendData(trends, null).map((row, idx) => ({
-    name: row.day != null ? `D${row.day}` : `D${idx + 1}`,
+    name: row.name || row.date || (row.day != null ? `D${row.day}` : `D${idx + 1}`),
     ...row,
   }))
   if (!rows.length) return { rows: [], lines: [] }
