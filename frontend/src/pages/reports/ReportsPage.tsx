@@ -50,7 +50,11 @@ export default function ReportsPage() {
   const { data: liveProjects } = useProjects();
   const liveProjectId =
     liveProjects && liveProjects.length > 0 ? liveProjects[0].id : null;
-  const showSampleBadge = !isLiveProjectId(liveProjectId);
+  // When a live project exists, the LIVE banner (ReportsLiveBanner) is the
+  // sole source of reports — backed by GET /v1/projects/:id/reports. The
+  // hardcoded REPORTS catalog below is demo-only and must not coexist with
+  // real project data, otherwise the page mixes mock with API output.
+  const showMockCatalog = !isLiveProjectId(liveProjectId);
 
   const tabs = [
     { id: 'all',             label: t('reports.tabs.all') },
@@ -110,16 +114,18 @@ export default function ReportsPage() {
           Clicking 查看 opens LiveReportDetail (audit #1044 F4-3). */}
       <ReportsLiveBanner onSelect={setSelectedLiveId} />
 
-      {/* Tabs */}
-      <Tabs tabs={tabs} active={activeTab} onChange={setActiveTab} />
+      {showMockCatalog && (
+        <>
+          {/* Tabs (drive mock-catalog filter only — hidden in live mode) */}
+          <Tabs tabs={tabs} active={activeTab} onChange={setActiveTab} />
 
-      {showSampleBadge && (
-        <div className="flex items-center gap-2 text-[11px] text-themed-muted">
-          <Badge variant="default" size="sm">示例</Badge>
-          <span>
-            以下为示例报告。创建项目并生成真实报告后,可在上方 LIVE 区查看。
-          </span>
-        </div>
+          <div className="flex items-center gap-2 text-[11px] text-themed-muted">
+            <Badge variant="default" size="sm">示例</Badge>
+            <span>
+              以下为示例报告。创建项目并生成真实报告后,可在上方 LIVE 区查看。
+            </span>
+          </div>
+        </>
       )}
 
       {/* Schedule / delivery strip */}
@@ -147,7 +153,9 @@ export default function ReportsPage() {
         </button>
       </Card>
 
-      {/* Report rows */}
+      {/* Mock report rows — only rendered in demo mode (no live project).
+          Live mode relies entirely on ReportsLiveBanner above. */}
+      {showMockCatalog && (
       <div className="grid grid-cols-1 gap-4">
         {filtered.map((report) => {
           const brandName = formatBrand(report.brand);
@@ -242,6 +250,7 @@ export default function ReportsPage() {
           );
         })}
       </div>
+      )}
 
       {showGenerate && <GenerateModal onClose={() => setShowGenerate(false)} />}
     </div>
