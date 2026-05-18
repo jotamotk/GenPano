@@ -834,6 +834,128 @@ async def test_topic_prompt_query_response_drilldown(client, db_session, user):
 
 
 @pytest.mark.asyncio
+async def test_mention_samples_expose_query_detail_key_full_text_and_pagination(
+    client, db_session, user
+):
+    project = await _seed_admin_chain(db_session, user)
+    headers = _bearer(user)
+
+    samples = await client.get(
+        f"/api/v1/projects/{project.id}/mention-samples?limit=1&offset=1",
+        headers=headers,
+    )
+
+    assert samples.status_code == 200, samples.text
+    body = samples.json()
+    assert body["total"] == 2
+    assert body["limit"] == 1
+    assert body["offset"] == 1
+    assert body["has_more"] is False
+    assert body["evidence_count"] == 2
+    assert body["selected_filters"]["limit"] == 1
+    assert body["selected_filters"]["offset"] == 1
+
+    [sample] = body["items"]
+    assert sample["mention_id"] > 0
+    assert sample["response_id"] == 401
+    assert sample["query_id"] == 301
+    assert sample["response_text"] == "Test Brand is a strong barrier option."
+    assert sample["snippet"] == "strong barrier option"
+    assert sample["engine"] == "chatgpt"
+    assert sample["topic"] == "Barrier repair"
+
+    detail = await client.get(
+        f"/api/v1/projects/{project.id}/queries/{sample['query_id']}/response",
+        headers=headers,
+    )
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["response"]["raw_text"] == sample["response_text"]
+
+
+@pytest.mark.asyncio
+async def test_mention_samples_profile_filter_excludes_unprofiled_rows(client, db_session, user):
+    project = await _seed_admin_chain(db_session, user)
+    now = datetime.now()
+    await db_session.execute(
+        text(
+            """
+            INSERT INTO queries
+                (id, target_llm, status, query_text, brand_id, profile_id, prompt_id,
+                 created_at, executed_at, finished_at, latency_ms)
+            VALUES
+                (305, 'chatgpt', 'done', 'Unprofiled sentiment sample?', 42, NULL, 201,
+                 :now, :now, :now, 800),
+                (306, 'chatgpt', 'done', 'Other profile sentiment sample?', 42, 'PROF-B', 201,
+                 :now, :now, :now, 850)
+            """
+        ),
+        {"now": now},
+    )
+    await db_session.execute(
+        text(
+            """
+            INSERT INTO llm_responses
+                (id, query_id, prompt_id, raw_text, target_llm, intent, llm_version,
+                 citations_json, created_at)
+            VALUES
+                (405, 305, 201, 'Unprofiled Test Brand sample should stay broad only.',
+                 'chatgpt', 'commercial', 'gpt-test', '[]', :now),
+                (406, 306, 201, 'Other profile Test Brand sample should not match PROF-A.',
+                 'chatgpt', 'commercial', 'gpt-test', '[]', :now)
+            """
+        ),
+        {"now": now},
+    )
+    db_session.add_all(
+        [
+            BrandMention(
+                response_id=405,
+                brand_id=42,
+                brand_name="Test Brand",
+                sentiment="positive",
+                sentiment_score=0.5,
+                position_rank=2,
+                context_snippet="unprofiled sample",
+                created_at=now,
+            ),
+            BrandMention(
+                response_id=406,
+                brand_id=42,
+                brand_name="Test Brand",
+                sentiment="positive",
+                sentiment_score=0.6,
+                position_rank=2,
+                context_snippet="other profile sample",
+                created_at=now,
+            ),
+        ]
+    )
+    await db_session.commit()
+    headers = _bearer(user)
+
+    broad = await client.get(
+        f"/api/v1/projects/{project.id}/mention-samples?limit=10",
+        headers=headers,
+    )
+    assert broad.status_code == 200, broad.text
+    broad_body = broad.json()
+    assert broad_body["total"] == 4
+    assert {row["response_id"] for row in broad_body["items"]} == {401, 402, 405, 406}
+
+    profiled = await client.get(
+        f"/api/v1/projects/{project.id}/mention-samples?profile_id=PROF-A&limit=10",
+        headers=headers,
+    )
+    assert profiled.status_code == 200, profiled.text
+    profiled_body = profiled.json()
+    assert profiled_body["total"] == 2
+    assert profiled_body["evidence_count"] == 2
+    assert profiled_body["has_more"] is False
+    assert profiled_body["selected_filters"]["profile_id"] == "PROF-A"
+    assert {row["response_id"] for row in profiled_body["items"]} == {401, 402}
+
+
+@pytest.mark.asyncio
 async def test_query_response_detail_coverage_is_scoped_to_selected_response(
     client, db_session, user
 ):

@@ -825,7 +825,12 @@ async def project_mention_samples(
     polarity: str | None = Query(None),
     from_: str | None = Query(None, alias="from"),
     to: str | None = Query(None),
+    engine: str | None = Query(None),
+    segment_id: str | None = Query(None),
+    profile_id: str | None = Query(None),
+    brand_id: int | None = Query(None),
     limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
 ) -> MentionSamplesOut:
     project = await service.get_project_for_user(session, user, project_id)
     return await get_mention_samples(
@@ -834,7 +839,12 @@ async def project_mention_samples(
         polarity=polarity,
         from_date=_parse_date(from_, "from"),
         to_date=_parse_date(to, "to"),
+        engines=_parse_csv(engine),
+        segment_id=segment_id,
+        profile_id=profile_id,
+        brand_id_override=brand_id,
         limit=limit,
+        offset=offset,
     )
 
 
