@@ -35,19 +35,15 @@ contribute to the GeoScore bucket.
 
 from __future__ import annotations
 
-import json
 import uuid
-from datetime import datetime
 
 import pytest
 import pytest_asyncio
 from genpano_models import ResponseAnalysis, User
-from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.projects._overview_service import get_brand_overview
-
-from tests.test_issue_562_app_analytics_endpoint_consistency import (  # type: ignore[import-untyped]
+from tests.test_issue_562_app_analytics_endpoint_consistency import (
     REPAIR_DAY,
     WINDOW_DAY,
     _seed_live_shaped_admin_facts,
