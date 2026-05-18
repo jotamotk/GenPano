@@ -254,8 +254,7 @@ def context_with_sov_competitive_gap(
         return context
 
     updated_evidence = {
-        key: (dict(value) if isinstance(value, dict) else value)
-        for key, value in evidence.items()
+        key: (dict(value) if isinstance(value, dict) else value) for key, value in evidence.items()
     }
     updated_evidence["sov"] = {
         **dict(sov_evidence),
@@ -264,9 +263,7 @@ def context_with_sov_competitive_gap(
     return context.model_copy(
         update={
             "metric_formula_evidence": updated_evidence,
-            "missing_inputs": sov_competitive_gap_reasons(
-                [*context.missing_inputs, *reason_codes]
-            ),
+            "missing_inputs": sov_competitive_gap_reasons([*context.missing_inputs, *reason_codes]),
             "missing_sources": sov_competitive_gap_reasons(
                 [*context.missing_sources, SOV_COMPETITIVE_SET_REASON]
             )
