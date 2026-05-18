@@ -10,7 +10,7 @@ import BrandAnalysisFilterBar from '../../components/filters/BrandAnalysisFilter
 import { useBrandAnalysisFilters } from '../../hooks/useBrandAnalysisFilters';
 import { useProjects } from '../../hooks/useProjects';
 import { isLiveProjectId } from '../../hooks/useBrandOverview';
-import { resolveLiveProjectId } from '../../lib/liveProject';
+import { resolveLiveProjectIdForBrand } from '../../lib/liveProject';
 import { brandIdFromSearchParams, toProjectAnalysisParams } from '../../lib/projectAnalysisFilters';
 import { canUseMetricEvidence } from '../../api/analyticsContract';
 import { useBrandSentiment } from '../../hooks/useBrandMetrics';
@@ -85,7 +85,7 @@ export default function BrandSentimentPage() {
 
   // ── Live data hooks ──
   const { data: liveProjects } = useProjects();
-  const liveProjectId = resolveLiveProjectId(liveProjects, activeProject);
+  const liveProjectId = resolveLiveProjectIdForBrand(liveProjects, activeProject, brandIdOverride);
   const isLive = isLiveProjectId(liveProjectId);
   const sentimentQ = useBrandSentiment(isLive ? liveProjectId : null, chartFilters);
   const engineQ = useSentimentByEngine(isLive ? liveProjectId : null, chartFilters);
