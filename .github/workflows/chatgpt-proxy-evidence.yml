@@ -1,8 +1,11 @@
 name: ChatGPT proxy_api_unreachable evidence (read-only)
 
-# Re-trigger: previous run completed before PR #1209 existed, so the
-# github-script comment step had no PR to attach evidence to. Touching
-# the file to fire one more run inside PR context.
+# Post-fix verification re-trigger: hotfix landed at 2026-05-18 ~14:46
+# (UFW allow rules added + vninja-allow-lan.sh upgraded; worker -> :9098
+# returned 401 in 1.1ms and 200 in 2.8ms, worker -> :6789 returned 403
+# in 357ms). This pass should capture (a) ensure_global_proxy_route()
+# now returning ok=true with a real selected_node, (b) subsequent
+# ChatGPT queries reaching status=completed for AC-2.
 #
 # Refs branch claude/fix-chatgpt-error-fjyfb.
 # AGENTS.md `### Evidence-First Debugging`: before proposing any fix for the
