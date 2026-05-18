@@ -15,6 +15,7 @@ from genpano_models import (
     GeoScoreDaily,
     ProductScoreDaily,
     Project,
+    ProjectCompetitor,
     ProjectTopicPin,
     ResponseAnalysis,
     TopicScoreDaily,
@@ -745,6 +746,13 @@ async def test_pinned_topic_eligibility_honors_requested_brand_override(
 ) -> None:
     project = await _project(db_session, user, primary_brand_id=12)
     await _seed_admin_chain_tables(db_session)
+    db_session.add(
+        ProjectCompetitor(
+            project_id=project.id,
+            brand_id=BESTCOFFER_BRAND_ID,
+            pinned_by=user.id,
+        )
+    )
     db_session.add(ProjectTopicPin(project_id=project.id, topic_id=71201, state="tracked"))
     await db_session.execute(
         text(
