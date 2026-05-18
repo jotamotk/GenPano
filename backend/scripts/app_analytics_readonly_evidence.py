@@ -193,6 +193,64 @@ LEFT JOIN response_analyses ra ON ra.response_id = sr.response_id
 GROUP BY response_date, engine
 ORDER BY response_date, engine;
 
+\\echo '--- analyzer_fact_package_v3 presence per engine (Epic #1150) ---'
+WITH scoped_responses AS (
+  SELECT
+    r.id AS response_id,
+    COALESCE(q.target_llm, 'unknown') AS engine,
+    {response_date_expr} AS response_date
+  FROM llm_responses r
+  JOIN queries q ON q.id = r.query_id
+  WHERE q.brand_id = ANY({all_brand_array})
+    AND {response_date_expr}
+      BETWEEN '{date_from}'::date AND '{date_to}'::date
+    AND r.analysis_status = 'done'
+)
+SELECT
+  sr.engine,
+  COUNT(*) AS analyzed_rows,
+  COUNT(*) FILTER (
+    WHERE ra.raw_analysis_json ? 'analyzer_fact_package_v3'
+  ) AS has_v3_package,
+  COUNT(*) FILTER (
+    WHERE NOT (ra.raw_analysis_json ? 'analyzer_fact_package_v3')
+       OR ra.raw_analysis_json IS NULL
+  ) AS missing_v3_package,
+  COUNT(*) FILTER (
+    WHERE ra.raw_analysis_json ? 'canonical_alias_repairs'
+  ) AS has_canonical_repair,
+  COUNT(*) FILTER (
+    WHERE ra.raw_analysis_json ? 'analyzer_fact_packages'
+  ) AS has_v_other_packages
+FROM scoped_responses sr
+JOIN response_analyses ra ON ra.response_id = sr.response_id
+GROUP BY sr.engine
+ORDER BY sr.engine;
+
+\\echo '--- response_id list for analyzer rerun (Epic #1150 deepseek+doubao only, missing v3) ---'
+WITH scoped_responses AS (
+  SELECT
+    r.id AS response_id,
+    COALESCE(q.target_llm, 'unknown') AS engine,
+    {response_date_expr} AS response_date
+  FROM llm_responses r
+  JOIN queries q ON q.id = r.query_id
+  WHERE q.brand_id = ANY({all_brand_array})
+    AND {response_date_expr}
+      BETWEEN '{date_from}'::date AND '{date_to}'::date
+    AND r.analysis_status = 'done'
+    AND COALESCE(q.target_llm, '') IN ('deepseek', 'doubao')
+)
+SELECT
+  sr.engine,
+  STRING_AGG(sr.response_id::text, ',' ORDER BY sr.response_id) AS response_ids,
+  COUNT(*) AS row_count
+FROM scoped_responses sr
+JOIN response_analyses ra ON ra.response_id = sr.response_id
+WHERE NOT (COALESCE(ra.raw_analysis_json, '{{}}'::jsonb) ? 'analyzer_fact_package_v3')
+GROUP BY sr.engine
+ORDER BY sr.engine;
+
 \\echo '--- brand_mentions coverage ---'
 WITH scoped_mentions AS (
   SELECT
