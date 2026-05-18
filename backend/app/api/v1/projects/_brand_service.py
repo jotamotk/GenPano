@@ -1284,8 +1284,12 @@ async def get_competitor_trends(
     has_effective_override = (
         brand_id_override is not None and brand_id_override != project.primary_brand_id
     )
+    # Admin-chain fact data, when available, gives a higher-quality primary
+    # series. Capture it here but do NOT early-return: the SQL path below still
+    # needs to run so the FE chart can render the per-competitor lines.
+    fact_primary_series: CompetitorTrendSeries | None = None
     if primary_id is not None and await _has_admin_chain(session):
-        fact_series = await _fact_primary_trend_series(
+        fact_primary_series = await _fact_primary_trend_series(
             session,
             project,
             primary_id=primary_id,
@@ -1294,25 +1298,6 @@ async def get_competitor_trends(
             to_d=to_d,
             brand_id_override=brand_id_override,
         )
-        if fact_series is not None:
-            out = CompetitorTrendsOut(
-                project_id=project.id,
-                metric=metric,
-                period=_period(from_d, to_d),
-                series=[fact_series],
-                state="ok",
-                metric_definition=metric_definition(metric),
-            )
-            context = await build_contract_context(
-                session,
-                project,
-                brand_id=primary_id,
-                from_date=from_d,
-                to_date=to_d,
-                has_data=True,
-                base_state="ok",
-            )
-            return out.model_copy(update=context_update(context))
     primary_industry = (
         await resolve_brand_industry(session, primary_id) if primary_id is not None else None
     )
@@ -1357,42 +1342,53 @@ async def get_competitor_trends(
         )
         return out.model_copy(update=context_update(context))
 
-    stmt = (
-        select(
-            GeoScoreDaily.brand_id,
-            GeoScoreDaily.date,
-            func.avg(metric_col).label("value"),
-        )
-        .where(
-            and_(
-                GeoScoreDaily.brand_id.in_(brand_ids),
-                GeoScoreDaily.date >= datetime.combine(from_d, datetime.min.time()),
-                GeoScoreDaily.date <= datetime.combine(to_d, datetime.max.time()),
-            )
-        )
-        .group_by(GeoScoreDaily.brand_id, GeoScoreDaily.date)
-        .order_by(GeoScoreDaily.brand_id, GeoScoreDaily.date)
+    # Skip primary in the SQL query when admin-chain fact data already covered it.
+    sql_brand_ids = (
+        [bid for bid in brand_ids if bid != primary_id]
+        if fact_primary_series is not None
+        else brand_ids
     )
-    rows = list((await session.execute(stmt)).all())
-
-    series_by_brand: dict[int, list[CompetitorTrendPoint]] = {bid: [] for bid in brand_ids}
-    for brand_id, dt, value in rows:
-        series_by_brand[brand_id].append(
-            CompetitorTrendPoint(
-                date=dt.date().isoformat() if hasattr(dt, "date") else str(dt),
-                value=_normalize_trend_metric(metric, value),
+    series_by_brand: dict[int, list[CompetitorTrendPoint]] = {bid: [] for bid in sql_brand_ids}
+    rows: list[Any] = []
+    if sql_brand_ids:
+        stmt = (
+            select(
+                GeoScoreDaily.brand_id,
+                GeoScoreDaily.date,
+                func.avg(metric_col).label("value"),
             )
+            .where(
+                and_(
+                    GeoScoreDaily.brand_id.in_(sql_brand_ids),
+                    GeoScoreDaily.date >= datetime.combine(from_d, datetime.min.time()),
+                    GeoScoreDaily.date <= datetime.combine(to_d, datetime.max.time()),
+                )
+            )
+            .group_by(GeoScoreDaily.brand_id, GeoScoreDaily.date)
+            .order_by(GeoScoreDaily.brand_id, GeoScoreDaily.date)
         )
+        rows = list((await session.execute(stmt)).all())
+        for brand_id, dt, value in rows:
+            series_by_brand[brand_id].append(
+                CompetitorTrendPoint(
+                    date=dt.date().isoformat() if hasattr(dt, "date") else str(dt),
+                    value=_normalize_trend_metric(metric, value),
+                )
+            )
     name_map = await resolve_brand_names(session, brand_ids)
-    output_series = [
-        CompetitorTrendSeries(
-            brand_id=bid,
-            brand_name=name_map.get(bid),
-            is_primary=(bid == primary_id),
-            points=series_by_brand[bid],
-        )
-        for bid in brand_ids
-    ]
+    output_series: list[CompetitorTrendSeries] = []
+    for bid in brand_ids:
+        if bid == primary_id and fact_primary_series is not None:
+            output_series.append(fact_primary_series)
+        else:
+            output_series.append(
+                CompetitorTrendSeries(
+                    brand_id=bid,
+                    brand_name=name_map.get(bid),
+                    is_primary=(bid == primary_id),
+                    points=series_by_brand.get(bid, []),
+                )
+            )
     state = "ok" if any(s.points for s in output_series) else "empty"
     definition_key = "avg_sentiment" if metric == "sentiment" and rows else metric
     out = CompetitorTrendsOut(
