@@ -323,13 +323,14 @@ ORDER BY ra.target_brand_mentioned NULLS LAST;
 \\echo '--- queries intent/prompt coverage for geo_score eligibility (issue #1225) ---'
 SELECT
   COUNT(*) AS total_queries,
-  COUNT(q.intent) AS queries_with_intent,
-  COUNT(*) FILTER (WHERE q.intent IS NULL) AS queries_intent_null,
-  COUNT(DISTINCT q.intent) AS distinct_intents,
   COUNT(q.prompt_id) AS queries_with_prompt_id,
-  COUNT(DISTINCT q.language) AS distinct_languages,
+  COUNT(p.intent) AS prompts_with_intent,
+  COUNT(*) FILTER (WHERE p.intent IS NULL) AS prompts_intent_null,
+  COUNT(DISTINCT p.intent) AS distinct_intents,
+  COUNT(DISTINCT p.language) AS distinct_languages,
   COUNT(DISTINCT q.target_llm) AS distinct_target_llms
 FROM queries q
+LEFT JOIN prompts p ON p.id = q.prompt_id
 WHERE q.brand_id = {config.brand_id}
   AND COALESCE(q.finished_at, q.created_at)::date
     BETWEEN '{date_from}'::date AND '{date_to}'::date;
