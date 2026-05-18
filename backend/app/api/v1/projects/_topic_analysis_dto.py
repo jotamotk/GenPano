@@ -7,9 +7,17 @@ from raw Admin entities.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_serializer
+
+_QUERY_ACTIVITY_EXPLANATION_FIELDS = (
+    "state_reason",
+    "missing_inputs",
+    "missing_sources",
+    "formula_status",
+    "formula_diagnostics",
+)
 
 
 class TopicMonitoringSummary(BaseModel):
@@ -346,6 +354,19 @@ class QueryActivityOut(BaseModel):
     )
     position_distribution: dict[str, int] = Field(default_factory=dict)
     state: str = "ok"
+    state_reason: str | None = None
+    missing_inputs: list[str] | None = None
+    missing_sources: list[str] | None = None
+    formula_status: str | None = None
+    formula_diagnostics: Any | None = None
+
+    @model_serializer(mode="wrap")
+    def _serialize_query_activity(self, handler: Any) -> dict[str, Any]:
+        data = cast(dict[str, Any], handler(self))
+        for field in _QUERY_ACTIVITY_EXPLANATION_FIELDS:
+            if data.get(field) in (None, [], {}):
+                data.pop(field, None)
+        return data
 
 
 class ProjectProfileRow(BaseModel):

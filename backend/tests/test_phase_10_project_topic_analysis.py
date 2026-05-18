@@ -1239,6 +1239,38 @@ async def test_project_query_activity_is_project_scoped(client, db_session, user
     assert body["by_status"]["failed"] == 1
     assert body["by_topic"][0]["topic_id"] == 101
     assert body["by_topic"][0]["mention_rate"] == pytest.approx(1 / 2, rel=0.01)
+    assert "state_reason" not in body
+    assert "missing_inputs" not in body
+    assert "missing_sources" not in body
+    assert "formula_status" not in body
+    assert "formula_diagnostics" not in body
+
+
+@pytest.mark.asyncio
+async def test_project_query_activity_empty_window_includes_evidence_reason(
+    client,
+    db_session,
+    user,
+):
+    project = await _seed_admin_chain(db_session, user)
+
+    resp = await client.get(
+        f"/api/v1/projects/{project.id}/query-activity?brand_id=42&from=1999-01-01&to=1999-01-02",
+        headers=_bearer(user),
+    )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["state"] == "empty"
+    assert body["totals"]["queries"] == 0
+    assert body["by_engine"] == []
+    assert body["by_topic"] == []
+    assert body["daily"] == []
+    assert body["state_reason"] == "no_query_activity_rows"
+    assert "queries" in body["missing_sources"]
+    assert body["formula_status"] == "no_evidence"
+    assert body["formula_diagnostics"]["status"] == "no_evidence"
+    assert body["formula_diagnostics"]["details"]
 
 
 @pytest.mark.asyncio
