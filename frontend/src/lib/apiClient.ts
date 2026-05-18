@@ -15,9 +15,6 @@
  * which wraps this in TanStack Query.
  */
 
-import { isDemoActive } from './demoMode'
-import { tryMockResponse } from '../data/demo/router'
-
 const TOKEN_KEY = 'genpano_token'
 const trimTrailingSlash = (value: string) => value.replace(/\/+$/, '')
 
@@ -205,16 +202,6 @@ function handleUnauthorized(): void {
 }
 
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  // Demo-mode short-circuit (opt-in via ?demo=1 → sessionStorage). Only
-  // intercepts GETs that match a known bestcoffer fixture; everything
-  // else falls through to the live backend so writes & unmocked
-  // surfaces behave exactly as in production.
-  const method = (options.method ?? 'GET').toUpperCase()
-  if (method === 'GET' && isDemoActive()) {
-    const mocked = tryMockResponse<T>(path, method)
-    if (mocked !== null) return mocked
-  }
-
   const headers = new Headers(options.headers)
   headers.set('Accept', 'application/json')
   if (!headers.has('Content-Type') && options.body) {
