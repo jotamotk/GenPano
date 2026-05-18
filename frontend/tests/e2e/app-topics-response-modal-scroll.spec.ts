@@ -133,13 +133,35 @@ function parseRetryAfterSeconds(response: Response, text: string) {
 async function api(baseUrl: string, token: string, name: string, path: string) {
   const maxAttempts = Math.max(1, LIVE_API_RATE_LIMIT_RETRIES + 1)
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-    const response = await fetch(`${baseUrl}${path}`, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: 'application/json',
-        'Accept-Language': 'zh-CN,zh;q=0.9',
-      },
-    })
+    let response: Response
+    try {
+      response = await fetch(`${baseUrl}${path}`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/json',
+          'Accept-Language': 'zh-CN,zh;q=0.9',
+        },
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      const waitMs = Math.min(LIVE_API_RATE_LIMIT_MAX_WAIT_MS, 1000 + attempt * 1000)
+      if (attempt < maxAttempts - 1) {
+        console.log(
+          'LIVE_API_NETWORK_RETRY ' +
+            JSON.stringify({
+              name,
+              path,
+              attempt: attempt + 1,
+              maxRetries: LIVE_API_RATE_LIMIT_RETRIES,
+              waitMs,
+              error: message.slice(0, 240),
+            }),
+        )
+        await sleep(waitMs)
+        continue
+      }
+      throw new Error(`${name} ${path} -> NETWORK_ERROR after ${LIVE_API_RATE_LIMIT_RETRIES} retries: ${message.slice(0, 800)}`)
+    }
     const text = await response.text()
     if (response.status === 429) {
       const retryAfterSeconds = parseRetryAfterSeconds(response, text)
