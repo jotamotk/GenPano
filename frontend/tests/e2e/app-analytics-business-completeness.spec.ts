@@ -1209,6 +1209,42 @@ test.describe('App analytics business completeness assertion', () => {
     ).not.toThrow()
   })
 
+  test('flags missing visible competitor partial reason evidence', () => {
+    const competitors = {
+      state: 'partial',
+      state_reason: 'partial_analyzer_data',
+      missing_reasons: ['eligible_response_denominator', 'missing_optional_collection'],
+    }
+    const expectations = deriveVisibleOverviewExpectations({
+      overview: {
+        state: 'partial',
+        kpi_cards: [
+          { metric_key: 'mention_rate', value: 0.42, value_scale: 'decimal', formula_status: 'ok' },
+        ],
+      },
+      metrics: {
+        state: 'ok',
+        series: [],
+      },
+      competitors,
+    })
+
+    expect(() =>
+      assertVisibleOverviewRendering(
+        {
+          route: '/brand/overview?brandId=24&range=30d&profileGroup=all',
+          url: 'http://example.test/brand/overview?brandId=24&range=30d&profileGroup=all',
+          bodyText: 'bestCoffer Mention Rate 42% Competitor coverage Limited data',
+          kpiCardTexts: ['Mention Rate 42%'],
+          chartTexts: [],
+          genericEmptyTexts: [],
+        },
+        expectations,
+        competitors,
+      ),
+    ).toThrow(/did not render an explicit competitor partial reason/)
+  })
+
   test('accepts configured BestCoffer brand context for live rendered routes', () => {
     expect(
       renderedPageHasExpectedBrandContext(
