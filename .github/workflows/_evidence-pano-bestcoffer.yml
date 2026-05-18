@@ -111,7 +111,7 @@ jobs:
               "${SERVER_USER}@${SERVER_HOST}" \
               "cd /opt/genpano && docker compose exec -T postgres psql -U genpano -d genpano -v ON_ERROR_STOP=1 -X" \
               < "${RUNNER_TEMP}/evidence.sql"
-          } | tee "${RUNNER_TEMP}/evidence_db.log"
+          } | tee "${RUNNER_TEMP}/evidence_db.txt"
 
       - name: Run authenticated GET probes
         if: steps.preflight.outputs.api_ready == 'true'
@@ -143,13 +143,13 @@ jobs:
           {
             echo "db_ready=${db_ready}"
             echo "api_ready=${api_ready}"
-            echo "evidence_db_log_exists=$([ -f "${RUNNER_TEMP}/evidence_db.log" ] && echo yes || echo no)"
+            echo "evidence_db_log_exists=$([ -f "${RUNNER_TEMP}/evidence_db.txt" ] && echo yes || echo no)"
             echo "evidence_api_jsonl_exists=$([ -f "${RUNNER_TEMP}/evidence_api.jsonl" ] && echo yes || echo no)"
           } > "${out_dir}/status.txt"
-          if [ -f "${RUNNER_TEMP}/evidence_db.log" ]; then
-            cp "${RUNNER_TEMP}/evidence_db.log" "${out_dir}/db.log"
+          if [ -f "${RUNNER_TEMP}/evidence_db.txt" ]; then
+            cp "${RUNNER_TEMP}/evidence_db.txt" "${out_dir}/db.txt"
           else
-            printf 'DB probe blocked or skipped (db_ready=%s)\n' "${db_ready}" > "${out_dir}/db.log"
+            printf 'DB probe blocked or skipped (db_ready=%s)\n' "${db_ready}" > "${out_dir}/db.txt"
           fi
           if [ -f "${RUNNER_TEMP}/evidence_api.jsonl" ]; then
             cp "${RUNNER_TEMP}/evidence_api.jsonl" "${out_dir}/api.jsonl"
