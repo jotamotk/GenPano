@@ -334,10 +334,7 @@ async def _response_entity_competitor_metrics(
     from_d: date,
     to_d: date,
     filters: AnalysisFilters | None = None,
-) -> (
-    tuple[CompetitorBrandRow | None, list[CompetitorBrandRow], str, str | None]
-    | None
-):
+) -> tuple[CompetitorBrandRow | None, list[CompetitorBrandRow], str, str | None] | None:
     """Build SoV from response-level brand_mentions, including name-only rivals.
 
     Return tuple is ``(primary_row, competitors, state, state_reason)``.
@@ -476,9 +473,7 @@ async def _response_entity_competitor_metrics(
     primary_industry = await resolve_brand_industry(session, primary_id)
     if not primary_industry:
         return primary_row, [], "empty", "primary_brand_industry_missing"
-    competitors = await _filter_competitors_by_industry(
-        session, competitors, primary_industry
-    )
+    competitors = await _filter_competitors_by_industry(session, competitors, primary_industry)
 
     competitors.sort(key=lambda row: (-(row.avg_sov or 0), row.brand_name or row.brand_key or ""))
     state = "partial" if primary_row and not competitors else "ok"

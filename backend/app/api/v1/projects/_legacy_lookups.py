@@ -121,11 +121,9 @@ async def resolve_brand_industry_by_name(
     # comparison across both Postgres and SQLite.
     if name_cols:
         or_parts = [f"LOWER(TRIM({c})) = :n" for c in name_cols]
-        sql = f"SELECT industry FROM brands WHERE {' OR '.join(or_parts)} LIMIT 1"  # noqa: S608
+        sql = f"SELECT industry FROM brands WHERE {' OR '.join(or_parts)} LIMIT 1"
         try:
-            row = (
-                await session.execute(text(sql), {"n": cleaned_lower})
-            ).one_or_none()
+            row = (await session.execute(text(sql), {"n": cleaned_lower})).one_or_none()
             if row is not None and row[0]:
                 return str(row[0])
         except Exception:
@@ -171,9 +169,7 @@ async def resolve_brand_industry_by_name(
                         continue
                     try:
                         aliases = (
-                            json.loads(aliases_val)
-                            if isinstance(aliases_val, str)
-                            else aliases_val
+                            json.loads(aliases_val) if isinstance(aliases_val, str) else aliases_val
                         )
                     except Exception:
                         continue

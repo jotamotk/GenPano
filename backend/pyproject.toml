@@ -68,6 +68,11 @@ select = ["E", "F", "W", "I", "B", "UP", "ASYNC", "RUF"]
 # real LLM responses they simulate; match the source-file exception so
 # tests don't fail purely on transliteration grounds.
 "tests/test_phase_5_slice3b_iii_*" = ["RUF001", "RUF002", "RUF003"]
+# Regression test for issue #1185 quotes the user's verbatim Chinese bug
+# report in its module docstring (Hard Rule 1: capture broken-surface
+# output). The fullwidth punctuation must be preserved for evidence
+# fidelity, so transliteration is not acceptable here.
+"tests/test_competitor_industry_filter.py" = ["RUF001", "RUF002", "RUF003"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["app"]

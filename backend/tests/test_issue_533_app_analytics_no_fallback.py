@@ -71,24 +71,17 @@ async def _project(
             except Exception:
                 pass
         await db_session.execute(
-            text(
-                "INSERT INTO brands (id, industry, name_en) "
-                "VALUES (:id, :ind, :name)"
-            ),
+            text("INSERT INTO brands (id, industry, name_en) VALUES (:id, :ind, :name)"),
             {"id": primary_brand_id, "ind": industry, "name": "Estee Lauder"},
         )
         for bid in competitor_brand_ids:
             await db_session.execute(
-                text(
-                    "INSERT INTO brands (id, industry) VALUES (:id, :ind)"
-                ),
+                text("INSERT INTO brands (id, industry) VALUES (:id, :ind)"),
                 {"id": bid, "ind": industry},
             )
         for bname in competitor_brand_names:
             await db_session.execute(
-                text(
-                    "INSERT INTO brands (industry, name_en) VALUES (:ind, :name)"
-                ),
+                text("INSERT INTO brands (industry, name_en) VALUES (:ind, :name)"),
                 {"ind": industry, "name": bname},
             )
 

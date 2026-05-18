@@ -77,10 +77,7 @@ async def _seed_brands_with_industry(
             )
         else:
             await db_session.execute(
-                text(
-                    "INSERT INTO brands (id, industry, name_en) "
-                    "VALUES (:id, :ind, :name)"
-                ),
+                text("INSERT INTO brands (id, industry, name_en) VALUES (:id, :ind, :name)"),
                 {"id": bid, "ind": industry, "name": display},
             )
 
