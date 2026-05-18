@@ -1,10 +1,14 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { LocaleProvider } from '../../contexts/LocaleContext'
 import BrandVisibilityPage from './BrandVisibilityPage'
+
+const mockState = vi.hoisted(() => ({
+  engineData: undefined as any,
+}))
 
 vi.mock('recharts', async () => {
   const React = await import('react')
@@ -158,7 +162,7 @@ vi.mock('../../hooks/useBrandMetrics', () => ({
 }))
 
 vi.mock('../../hooks/useCharts', () => ({
-  useEngineMetrics: () => ({ data: undefined }),
+  useEngineMetrics: () => ({ data: mockState.engineData }),
   usePositionDistribution: () => ({ data: undefined }),
   useTopicHeatmap: () => ({ data: undefined }),
 }))
@@ -180,6 +184,10 @@ function renderVisibilityPage() {
 }
 
 describe('BrandVisibilityPage KPI cards (issue #988)', () => {
+  beforeEach(() => {
+    mockState.engineData = undefined
+  })
+
   it('reads KPI values from /overview so numbers match the Overview page, not from /metrics series points', () => {
     renderVisibilityPage()
 
@@ -194,5 +202,52 @@ describe('BrandVisibilityPage KPI cards (issue #988)', () => {
     expect(screen.queryByText('2.8%')).not.toBeInTheDocument()
     expect(screen.queryByText('1.4%')).not.toBeInTheDocument()
     expect(screen.queryByText('47.8%')).not.toBeInTheDocument()
+  })
+
+  it('makes missing by-engine Mention Rate and SoV explicit while keeping citation share secondary', () => {
+    mockState.engineData = {
+      project_id: '11111111-2222-3333-4444-555555555555',
+      period: { from: '2026-05-08', to: '2026-05-15' },
+      state: 'partial',
+      formula_status: 'partial',
+      state_reason: 'visibility_metrics_partial',
+      state_detail: 'Mention Rate and SoV are waiting for analyzer evidence.',
+      metric_formula_evidence: {
+        mention_rate: {
+          formula_status: 'missing_required_inputs',
+          reason_codes: ['missing_analyzer_rows'],
+          missing_inputs: ['brand_mentions'],
+        },
+        sov: {
+          formula_status: 'missing_required_inputs',
+          reason_codes: ['missing_competitive_extraction', 'target_only_sov'],
+        },
+        citation: {
+          formula_status: 'ok',
+          numerator: 31,
+          denominator: 50,
+        },
+      },
+      items: [
+        {
+          engine: 'ChatGPT',
+          mention_rate: null,
+          sov: null,
+          citation_rate: 0.62,
+          sentiment: null,
+        },
+      ],
+    }
+
+    renderVisibilityPage()
+
+    const block = screen.getByTestId('engine-visibility-breakdown')
+    expect(within(block).getByText('ChatGPT')).toBeInTheDocument()
+    expect(within(block).getByText('Mention Rate')).toBeInTheDocument()
+    expect(within(block).getByText('SoV')).toBeInTheDocument()
+    expect(within(block).getAllByText('Unavailable')).toHaveLength(2)
+    expect(within(block).getByText(/Mention Rate and SoV are waiting for analyzer evidence/i)).toBeInTheDocument()
+    expect(within(block).getByText(/Citation share is secondary context/i)).toBeInTheDocument()
+    expect(within(block).getByText('62.0%')).toBeInTheDocument()
   })
 })
