@@ -1,0 +1,8 @@
+project_id=95d43022-a5c8-5944-b6d6-34b29faa18b5
+brand_id=12
+competitor_brand_ids=2
+date_from=2026-04-18
+date_to=2026-05-18
+base_url=http://116.62.36.173
+captured_at=20260518T055637Z
+commit=17fd59960e43b706fb67ddb73b2faf885362f2b4
