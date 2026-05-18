@@ -1,0 +1,112 @@
+name: VM Bulk Retry via VM (BestCoffer Doubao)
+
+# One-off workflow to trigger retry-via-VM on N failed BestCoffer Doubao
+# queries, half to doubao-01 and half to doubao-02. SCPs the bulk script
+# to ECS and runs it inside the backend container, which has DB access
+# and the geo_tracker module on its sys.path.
+#
+# Requires:
+#   - PR #1145 merged + deployed (the run_quick_retry helper live in prod).
+#   - doubao-01 + doubao-02 both logged in (manually via noVNC, see
+#     experiments/vm_per_account/docker/scripts/open-vnc-tunnel.ps1).
+#
+# Exit codes (from scripts/vm_bulk_retry.py):
+#   0 all selected retries succeeded
+#   2 DATABASE_URL not set
+#   3 no candidates matched the filter
+#   4 run_quick_retry cannot be imported
+#   5 one or more retries failed (success < total)
+
+on:
+  workflow_dispatch:
+    inputs:
+      count:
+        description: 'How many queries to retry (split evenly across 2 VMs)'
+        required: true
+        default: '20'
+        type: string
+      query_text_filter:
+        description: 'SQL ILIKE pattern for queries.query_text'
+        required: true
+        default: '%bestCoffer%'
+        type: string
+      target_llm:
+        description: 'Target LLM (doubao only for now)'
+        required: true
+        default: 'doubao'
+        type: string
+      dry_run:
+        description: 'Dry run: just list the query IDs without retrying'
+        required: false
+        default: 'false'
+        type: choice
+        options: ['true', 'false']
+
+jobs:
+  bulk-retry:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup SSH key
+        env:
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_SSH_PORT: ${{ secrets.SERVER_SSH_PORT }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 0700 ~/.ssh
+          printf '%s\n' "$SERVER_SSH_KEY" > ~/.ssh/id_ssh
+          chmod 0600 ~/.ssh/id_ssh
+          PORT="${SERVER_SSH_PORT:-22}"
+          ssh-keyscan -p "$PORT" -H "$SERVER_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          ssh -i ~/.ssh/id_ssh -p "$PORT" \
+            -o BatchMode=yes -o ConnectTimeout=10 \
+            "${SERVER_USER}@${SERVER_HOST}" 'echo ssh-ok'
+
+      - name: SCP bulk script to ECS + docker exec inside backend container
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_SSH_PORT: ${{ secrets.SERVER_SSH_PORT }}
+          COUNT: ${{ inputs.count }}
+          QUERY_FILTER: ${{ inputs.query_text_filter }}
+          TARGET_LLM: ${{ inputs.target_llm }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          PORT="${SERVER_SSH_PORT:-22}"
+          REMOTE="${SERVER_USER}@${SERVER_HOST}"
+
+          # 1. SCP the script onto ECS host /tmp.
+          scp -i ~/.ssh/id_ssh -P "$PORT" \
+            scripts/vm_bulk_retry.py \
+            "${REMOTE}:/tmp/vm_bulk_retry.py"
+
+          # 2. Identify backend container name on ECS.
+          CN=$(ssh -i ~/.ssh/id_ssh -p "$PORT" "$REMOTE" \
+            "sudo docker ps --format '{{.Names}}' | grep -E '^genpano-backend|backend' | head -1")
+          if [ -z "$CN" ]; then
+            echo "FATAL: no backend container running on ECS" >&2
+            ssh -i ~/.ssh/id_ssh -p "$PORT" "$REMOTE" "sudo docker ps" >&2 || true
+            exit 5
+          fi
+          echo "running bulk-retry inside container: $CN"
+
+          # 3. Copy script into the container then exec it. Propagate
+          #    the script's exit code as the workflow step's exit code,
+          #    so a partial-failure run is reported red on the job page.
+          ssh -i ~/.ssh/id_ssh -p "$PORT" "$REMOTE" \
+            "sudo docker cp /tmp/vm_bulk_retry.py '${CN}:/tmp/vm_bulk_retry.py'"
+          ssh -i ~/.ssh/id_ssh -p "$PORT" "$REMOTE" \
+            "sudo docker exec \
+                -e BULK_COUNT='${COUNT}' \
+                -e BULK_FILTER='${QUERY_FILTER}' \
+                -e BULK_LLM='${TARGET_LLM}' \
+                -e BULK_DRY_RUN='${DRY_RUN}' \
+                '${CN}' python -u /tmp/vm_bulk_retry.py"

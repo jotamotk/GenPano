@@ -19,7 +19,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
       ca-certificates curl gnupg apt-transport-https \
-      locales tini iproute2 \
+      locales tini iproute2 socat \
       xfce4-session xfce4-panel xfwm4 xfce4-terminal \
       x11vnc novnc websockify \
       xvfb xdotool dbus-x11 x11-utils \
