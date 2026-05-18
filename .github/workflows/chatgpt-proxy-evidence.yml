@@ -1,0 +1,263 @@
+name: ChatGPT proxy_api_unreachable evidence (read-only)
+
+# Refs branch claude/fix-chatgpt-error-fjyfb.
+# AGENTS.md `### Evidence-First Debugging`: before proposing any fix for the
+# user-reported ChatGPT proxy_api_unreachable failures (Q-185664 / Q-185661 /
+# Q-185658, account jameswhislter2025@hotmail.com), capture the live state of
+# the four links in the chain:
+#   worker container -> host.docker.internal:9098 -> socat -> ninja-mihomo API
+# Read-only. Does not mutate any row or kick a celery task.
+
+on:
+  workflow_dispatch:
+    inputs:
+      query_ids:
+        description: "CSV of queries.id values to inspect (defaults to reported failures)"
+        required: false
+        default: "185664,185661,185658"
+      account_email:
+        description: "Optional llm_accounts.email filter for context"
+        required: false
+        default: "jameswhislter2025@hotmail.com"
+  push:
+    branches:
+      - 'claude/fix-chatgpt-error-fjyfb'
+    paths:
+      - '.github/workflows/chatgpt-proxy-evidence.yml'
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  evidence:
+    name: Capture ChatGPT proxy evidence
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+
+    steps:
+      - name: SSH + dump live state
+        id: ssh
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+          QUERY_IDS: ${{ inputs.query_ids || '185664,185661,185658' }}
+          ACCOUNT_EMAIL: ${{ inputs.account_email || 'jameswhislter2025@hotmail.com' }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s' "$SERVER_SSH_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H "$SERVER_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+          output=$(QUERY_IDS="$QUERY_IDS" ACCOUNT_EMAIL="$ACCOUNT_EMAIL" \
+            ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=accept-new \
+              -o ServerAliveInterval=30 -o ServerAliveCountMax=4 \
+              -o SendEnv="QUERY_IDS ACCOUNT_EMAIL" \
+              "$SERVER_USER@$SERVER_HOST" 'bash -s' <<'REMOTE'
+          set -uo pipefail
+          cd /opt/genpano
+
+          IDS="${QUERY_IDS:-185664,185661,185658}"
+          EMAIL="${ACCOUNT_EMAIL:-jameswhislter2025@hotmail.com}"
+
+          echo "=== Inputs ==="
+          echo "query_ids=${IDS}"
+          echo "account_email=${EMAIL}"
+          echo ""
+
+          echo "=== Container build identity ==="
+          docker compose images worker 2>/dev/null | head -5 || true
+          echo ""
+
+          echo "=== queries rows for reported IDs ==="
+          docker compose exec -T postgres psql -X -U genpano -d genpano -P pager=off -c "
+            SELECT
+              q.id,
+              q.target_llm,
+              q.status,
+              q.retry_count,
+              q.retry_reason,
+              q.account_id,
+              a.email AS account_email,
+              q.queued_at,
+              q.started_at,
+              q.finished_at,
+              q.latency_ms,
+              EXTRACT(EPOCH FROM (NOW() - q.queued_at))::int AS sec_since_queued
+            FROM queries q
+            LEFT JOIN llm_accounts a ON a.id = q.account_id
+            WHERE q.id = ANY(string_to_array('${IDS}', ',')::int[])
+            ORDER BY q.id DESC;
+          " </dev/null 2>&1 || true
+          echo ""
+
+          echo "=== latest 20 ChatGPT failures (any reason) ==="
+          docker compose exec -T postgres psql -X -U genpano -d genpano -P pager=off -c "
+            SELECT
+              q.id,
+              q.status,
+              q.retry_reason,
+              q.retry_count,
+              a.email AS account_email,
+              q.finished_at
+            FROM queries q
+            LEFT JOIN llm_accounts a ON a.id = q.account_id
+            WHERE q.target_llm = 'chatgpt'
+              AND LOWER(q.status) IN ('failed','dead','error')
+            ORDER BY q.id DESC
+            LIMIT 20;
+          " </dev/null 2>&1 || true
+          echo ""
+
+          echo "=== retry_reason distribution for ChatGPT in last 24h ==="
+          docker compose exec -T postgres psql -X -U genpano -d genpano -P pager=off -c "
+            SELECT q.retry_reason, COUNT(*) AS n,
+                   MIN(q.finished_at) AS first_seen,
+                   MAX(q.finished_at) AS last_seen
+            FROM queries q
+            WHERE q.target_llm = 'chatgpt'
+              AND q.finished_at >= NOW() - INTERVAL '24 hours'
+              AND q.retry_reason IS NOT NULL
+            GROUP BY q.retry_reason
+            ORDER BY n DESC;
+          " </dev/null 2>&1 || true
+          echo ""
+
+          echo "=== docker compose ps (worker family) ==="
+          docker compose ps 2>/dev/null | grep -E 'worker|beat|postgres|NAME' || true
+          echo ""
+
+          echo "=== Host-side V-Ninja systemd status ==="
+          systemctl is-active vninja 2>&1 || true
+          systemctl status vninja --no-pager -n 5 2>&1 | head -20 || true
+          echo ""
+
+          echo "=== Host-side socat 9098->9097 process ==="
+          ps -eo pid,etime,cmd --no-headers | grep -E 'socat.*9098' | grep -v grep || echo "(no socat 9098 process)"
+          echo ""
+
+          echo "=== Host-side listening ports of interest ==="
+          ss -ltnp 2>/dev/null | grep -E ':(6789|9097|9098|9090)\b' || \
+            netstat -ltnp 2>/dev/null | grep -E ':(6789|9097|9098|9090)\b' || \
+            echo "(ss/netstat unavailable)"
+          echo ""
+
+          echo "=== Worker -> host.docker.internal:9098 reachability (raw HTTP) ==="
+          # NB: ninja-mihomo /proxies endpoint may need auth; both with and without.
+          docker compose exec -T worker sh -lc '
+            set -u
+            url="http://host.docker.internal:9098/proxies"
+            echo "url=${url}"
+            echo "CLASH_API_URL=${CLASH_API_URL:-<unset>}"
+            echo "CLASH_PROXY_GROUP=${CLASH_PROXY_GROUP:-<unset>}"
+            echo "CLASH_API_SECRET set? $([ -n "${CLASH_API_SECRET:-}" ] && echo yes || echo no)"
+            echo "--- curl (no auth, 5s) ---"
+            curl -sS --max-time 5 -o /tmp/clash_resp.json -w "http_code=%{http_code} time=%{time_total}s\n" "${url}" || true
+            head -c 400 /tmp/clash_resp.json 2>/dev/null || true
+            echo
+            echo "--- curl (with auth header if secret set, 5s) ---"
+            if [ -n "${CLASH_API_SECRET:-}" ]; then
+              curl -sS --max-time 5 -H "Authorization: Bearer ${CLASH_API_SECRET}" \
+                -o /tmp/clash_resp2.json -w "http_code=%{http_code} time=%{time_total}s\n" "${url}" || true
+              head -c 400 /tmp/clash_resp2.json 2>/dev/null || true
+              echo
+            fi
+            echo "--- DNS resolution for host.docker.internal ---"
+            getent hosts host.docker.internal || nslookup host.docker.internal 2>&1 | head -10 || true
+          ' </dev/null 2>&1 || true
+          echo ""
+
+          echo "=== Same probe through ensure_global_proxy_route (same Python path as production) ==="
+          docker compose exec -T worker python - <<'PY' </dev/null 2>&1 || true
+          import asyncio, json, os
+          from dataclasses import asdict
+          from geo_tracker.agent.clash_api import (
+              CLASH_API_URL,
+              ensure_global_proxy_route,
+              get_proxy_group,
+          )
+          from geo_tracker.agent.guest_executor import CLASH_PROXY_GROUP
+
+          async def main():
+              report = {
+                  "clash_api_url": CLASH_API_URL,
+                  "clash_proxy_group": CLASH_PROXY_GROUP,
+                  "clash_global_proxy_group": os.getenv("CLASH_GLOBAL_PROXY_GROUP", "GLOBAL"),
+                  "clash_api_secret_present": bool(os.getenv("CLASH_API_SECRET")),
+              }
+              # Hit the proxy group endpoint the same way ensure_global_proxy_route does.
+              group = await get_proxy_group(CLASH_API_URL, CLASH_PROXY_GROUP)
+              report["get_proxy_group_ok"] = bool(group)
+              if group:
+                  report["group_now"] = group.get("now")
+                  report["group_all_count"] = len(group.get("all", []) or [])
+              route = await ensure_global_proxy_route(CLASH_API_URL, CLASH_PROXY_GROUP)
+              report["route"] = asdict(route)
+              print(json.dumps(report, ensure_ascii=False, indent=2))
+
+          asyncio.run(main())
+          PY
+          echo ""
+
+          echo "=== Worker log tail (last 40 lines mentioning proxy / clash / chatgpt) ==="
+          docker compose logs --tail 800 worker 2>&1 | \
+            grep -iE 'proxy_api_unreachable|clash|chatgpt|ensure_global_proxy_route|host\.docker\.internal' | \
+            tail -40 || true
+          echo ""
+
+          echo "=== End of evidence dump ==="
+          REMOTE
+          )
+
+          {
+            echo "$output"
+          } > /tmp/chatgpt-proxy-evidence.txt
+
+          {
+            echo "## ChatGPT proxy_api_unreachable evidence (read-only)"
+            echo ""
+            echo '```'
+            head -2000 /tmp/chatgpt-proxy-evidence.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Post evidence as PR comment when PR context exists
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let body = '## ChatGPT proxy_api_unreachable evidence (read-only)\n\n';
+            try {
+              const out = fs.readFileSync('/tmp/chatgpt-proxy-evidence.txt', 'utf-8');
+              const max = 50000;
+              const trimmed = out.length > max ? out.slice(0, max) + '\n…[truncated]' : out;
+              body += '```\n' + trimmed + '\n```';
+            } catch (e) {
+              body += 'failed to read output: ' + String(e);
+            }
+            let issueNumber = null;
+            if (context.payload.pull_request) {
+              issueNumber = context.payload.pull_request.number;
+            } else {
+              const sha = context.sha;
+              const prs = await github.rest.search.issuesAndPullRequests({
+                q: `repo:${context.repo.owner}/${context.repo.repo} is:pr is:open ${sha}`,
+              });
+              if (prs.data.items.length > 0) {
+                issueNumber = prs.data.items[0].number;
+              }
+            }
+            if (issueNumber) {
+              await github.rest.issues.createComment({
+                issue_number: issueNumber,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body,
+              });
+              core.notice(`Posted evidence dump to PR #${issueNumber}`);
+            } else {
+              core.notice('No PR context; evidence available in step summary only.');
+            }
