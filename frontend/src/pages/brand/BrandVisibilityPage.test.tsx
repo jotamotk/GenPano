@@ -254,7 +254,9 @@ describe('BrandVisibilityPage KPI cards (issue #988)', () => {
     expect(within(block).getByText('Mention Rate')).toBeInTheDocument()
     expect(within(block).getByText('SoV')).toBeInTheDocument()
     expect(within(block).getAllByText('Unavailable')).toHaveLength(2)
-    expect(within(block).getByText(/Mention Rate and SoV are waiting for analyzer evidence/i)).toBeInTheDocument()
+    expect(
+      within(block).getAllByText('SoV has target evidence but no competitive denominator yet.').length,
+    ).toBeGreaterThan(0)
     expect(within(block).getByText(/Citation share is secondary context/i)).toBeInTheDocument()
     expect(within(block).getByText('62.0%')).toBeInTheDocument()
   })
@@ -333,6 +335,7 @@ describe('BrandVisibilityPage KPI cards (issue #988)', () => {
       state: 'partial',
       formula_status: 'partial',
       state_reason: 'partial_analyzer_data',
+      state_detail: 'Visibility metrics incomplete',
       missing_inputs: ['target_only_sov'],
       source_provenance: ['admin_facts', 'brand_mentions', 'citation_sources'],
       evidence_counts: { admin_fact_response_count: 2 },
@@ -360,12 +363,16 @@ describe('BrandVisibilityPage KPI cards (issue #988)', () => {
 
     const block = screen.getByTestId('engine-visibility-breakdown')
     expect(within(block).getByText('chatgpt')).toBeInTheDocument()
-    expect(within(block).getByText('Visibility metrics incomplete')).toBeInTheDocument()
+    expect(within(block).getByText('By-engine visibility needs more evidence')).toBeInTheDocument()
+    expect(within(block).getByText('Primary metrics need evidence')).toBeInTheDocument()
     expect(within(block).getAllByText('100.0%')).toHaveLength(2)
     expect(within(block).getByText('Unavailable')).toBeInTheDocument()
     expect(
-      within(block).getByText('SoV has target evidence but no competitive denominator yet.'),
-    ).toBeInTheDocument()
+      within(block).getAllByText('SoV has target evidence but no competitive denominator yet.').length,
+    ).toBeGreaterThan(0)
     expect(within(block).getByText('2 / 2 evidence')).toBeInTheDocument()
+    expect(within(block).queryByText('Partial by-engine visibility evidence')).not.toBeInTheDocument()
+    expect(within(block).queryByText('partial_analyzer_data')).not.toBeInTheDocument()
+    expect(within(block).queryByText('Visibility metrics incomplete')).not.toBeInTheDocument()
   })
 })
