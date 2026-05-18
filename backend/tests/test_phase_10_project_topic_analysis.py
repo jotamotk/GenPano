@@ -290,7 +290,15 @@ async def _seed_admin_chain(db_session: AsyncSession, user: User) -> Project:
     await db_session.flush()
 
     await db_session.execute(
-        text("INSERT INTO brands (id, name, industry) VALUES (42, 'Test Brand', 'Beauty')")
+        text(
+            "INSERT INTO brands (id, name, industry) VALUES "
+            "(42, 'Test Brand', 'Beauty'), "
+            # Issue #1185 / #1192: register the name-only competitor so the
+            # unified industry filter resolves 'Null Rival' to a same-
+            # industry brand row and keeps the bucket alive in admin-fact-
+            # filter tests.
+            "(43, 'Null Rival', 'Beauty')"
+        )
     )
     await db_session.execute(
         text(

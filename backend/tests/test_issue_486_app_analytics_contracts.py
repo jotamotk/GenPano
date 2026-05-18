@@ -16,6 +16,7 @@ from genpano_models import (
     ResponseAnalysis,
     User,
 )
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.user_auth.jwt import sign_user_access_token
@@ -54,7 +55,28 @@ async def _project(
     user: User,
     *,
     primary_brand_id: int | None = 12,
+    competitor_brand_ids: tuple[int, ...] = (),
+    industry: str = "Beauty",
 ) -> Project:
+    # Issue #1185 / #1192: the unified industry filter on /competitors/metrics
+    # short-circuits to ``state="empty"`` when ``brands.industry`` is missing
+    # for the primary brand. Seed primary + any pinned-competitor ids with the
+    # same industry so the contract-metadata assertions in this module still
+    # see the populated payload.
+    if primary_brand_id is not None:
+        try:
+            await db_session.execute(text("ALTER TABLE brands ADD COLUMN industry TEXT"))
+        except Exception:
+            pass
+        await db_session.execute(
+            text("INSERT INTO brands (id, industry) VALUES (:id, :ind)"),
+            {"id": primary_brand_id, "ind": industry},
+        )
+        for bid in competitor_brand_ids:
+            await db_session.execute(
+                text("INSERT INTO brands (id, industry) VALUES (:id, :ind)"),
+                {"id": bid, "ind": industry},
+            )
     p = Project(
         user_id=user.id,
         name=f"Issue 486 {uuid.uuid4().hex[:6]}",
@@ -190,7 +212,9 @@ async def test_geo_score_daily_sentiment_component_is_not_labeled_raw_sentiment(
     user: User,
     db_session: AsyncSession,
 ) -> None:
-    p = await _project(db_session, user)
+    # Issue #1185 / #1192: pinned competitor 99 needs an industry attribution
+    # to survive the unified industry filter.
+    p = await _project(db_session, user, competitor_brand_ids=(99,))
     db_session.add(ProjectCompetitor(project_id=p.id, brand_id=99, pinned_by=user.id))
     db_session.add(_daily_row(brand_id=12, avg_sentiment=64.0))
     db_session.add(_daily_row(brand_id=99, avg_sentiment=52.0))
@@ -378,7 +402,10 @@ async def test_competitor_chart_endpoints_expose_contract_metadata(
     user: User,
     db_session: AsyncSession,
 ) -> None:
-    p = await _project(db_session, user)
+    # Issue #1185 / #1192: same-industry seed for primary 12 + pinned 99
+    # keeps the chart-metadata path observable under the new fail-closed
+    # industry gate.
+    p = await _project(db_session, user, competitor_brand_ids=(99,))
     db_session.add(ProjectCompetitor(project_id=p.id, brand_id=99, pinned_by=user.id))
     db_session.add(_daily_row(brand_id=12, avg_sov=38.4))
     db_session.add(_daily_row(brand_id=99, avg_sov=21.6))
