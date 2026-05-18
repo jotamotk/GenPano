@@ -26,9 +26,9 @@ jobs:
       contents: write
 
     env:
-      PROJECT_ID: 95d43022-a5c8-5944-b6d6-34b29faa18b5
-      BRAND_ID: "12"
-      COMPETITOR_BRAND_IDS: "2"
+      PROJECT_ID: 7380c0e0-8798-4a5f-998f-42010a7d9caa
+      BRAND_ID: "24"
+      COMPETITOR_BRAND_IDS: ""
       DATE_FROM: "2026-04-18"
       DATE_TO: "2026-05-18"
       BASE_URL: http://116.62.36.173
@@ -138,15 +138,23 @@ jobs:
           stamp="$(date -u +%Y%m%dT%H%M%SZ)"
           out_dir="_evidence/pano-bestcoffer-${stamp}"
           mkdir -p "${out_dir}"
+          db_ready="${{ steps.preflight.outputs.db_ready }}"
+          api_ready="${{ steps.preflight.outputs.api_ready }}"
+          {
+            echo "db_ready=${db_ready}"
+            echo "api_ready=${api_ready}"
+            echo "evidence_db_log_exists=$([ -f "${RUNNER_TEMP}/evidence_db.log" ] && echo yes || echo no)"
+            echo "evidence_api_jsonl_exists=$([ -f "${RUNNER_TEMP}/evidence_api.jsonl" ] && echo yes || echo no)"
+          } > "${out_dir}/status.txt"
           if [ -f "${RUNNER_TEMP}/evidence_db.log" ]; then
             cp "${RUNNER_TEMP}/evidence_db.log" "${out_dir}/db.log"
           else
-            echo "DB probe blocked or skipped (preflight db_ready=${{ steps.preflight.outputs.db_ready }})" > "${out_dir}/db.log"
+            printf 'DB probe blocked or skipped (db_ready=%s)\n' "${db_ready}" > "${out_dir}/db.log"
           fi
           if [ -f "${RUNNER_TEMP}/evidence_api.jsonl" ]; then
             cp "${RUNNER_TEMP}/evidence_api.jsonl" "${out_dir}/api.jsonl"
           else
-            echo "API probe blocked or skipped (preflight api_ready=${{ steps.preflight.outputs.api_ready }})" > "${out_dir}/api.txt"
+            printf 'API probe blocked or skipped (api_ready=%s)\n' "${api_ready}" > "${out_dir}/api.jsonl"
           fi
           {
             echo "project_id=${PROJECT_ID}"
