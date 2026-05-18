@@ -39,7 +39,7 @@ from geo_tracker.db.models import (
 
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 GITHUB_ISSUE_RE = re.compile(
-    r"^https://github\.com/jotamotk/trash_test/issues/(654|590|585)"
+    r"^https://github\.com/jotamotk/trash_test/issues/(654|590|585|1239)"
     r"(#issuecomment-[0-9]+)?$"
 )
 RELATION_KEYS = (
@@ -152,7 +152,7 @@ def validate_approval_ref(approval_ref: str | None) -> str:
     if not value or not GITHUB_ISSUE_RE.match(value):
         raise ValueError(
             "apply mode requires approval_ref in "
-            "https://github.com/jotamotk/trash_test/issues/{654,590,585}"
+            "https://github.com/jotamotk/trash_test/issues/{654,590,585,1239}"
         )
     return value
 

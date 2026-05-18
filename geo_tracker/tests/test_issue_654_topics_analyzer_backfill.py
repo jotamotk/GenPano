@@ -357,6 +357,7 @@ async def test_apply_requires_github_approval_ref(session: AsyncSession) -> None
         "https://github.com/jotamotk/trash_test/issues/654",
         "https://github.com/jotamotk/trash_test/issues/590#issuecomment-4432463335",
         "https://github.com/jotamotk/trash_test/issues/585",
+        "https://github.com/jotamotk/trash_test/issues/1239#issuecomment-4477630163",
     ],
 )
 def test_approval_ref_accepts_only_approved_issue_urls(approval_ref: str) -> None:
