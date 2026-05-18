@@ -96,13 +96,25 @@ jobs:
           # network so worker containers can reach them by container name
           # (DNS). `docker network connect` is idempotent if container
           # already on network — but errors loud; tolerate with || true.
-          echo "::group::Step 1b - bridge doubao containers to genpano network"
+          echo "::group::Step 1b - bridge doubao containers + verify socat alive"
           ssh -i ~/.ssh/id_ssh -p "$PORT" "$REMOTE" \
             "sudo docker network connect genpano_default doubao-01 2>&1 | grep -v 'already exists in network' || true"
           ssh -i ~/.ssh/id_ssh -p "$PORT" "$REMOTE" \
             "sudo docker network connect genpano_default doubao-02 2>&1 | grep -v 'already exists in network' || true"
           ssh -i ~/.ssh/id_ssh -p "$PORT" "$REMOTE" \
             "sudo docker network inspect genpano_default --format '{{range .Containers}}{{.Name}} {{end}}'"
+          echo "--- doubao-01 internal listeners ---"
+          ssh -i ~/.ssh/id_ssh -p "$PORT" "$REMOTE" \
+            "sudo docker exec doubao-01 ss -tlnp 2>/dev/null || true"
+          echo "--- doubao-01 curl 127.0.0.1:9222 from inside container ---"
+          ssh -i ~/.ssh/id_ssh -p "$PORT" "$REMOTE" \
+            "sudo docker exec doubao-01 curl -sS --max-time 3 http://127.0.0.1:9222/json/version 2>&1 | head -5 || true"
+          echo "--- doubao-01 curl 127.0.0.1:9322 (Chrome internal) ---"
+          ssh -i ~/.ssh/id_ssh -p "$PORT" "$REMOTE" \
+            "sudo docker exec doubao-01 curl -sS --max-time 3 http://127.0.0.1:9322/json/version 2>&1 | head -5 || true"
+          echo "--- doubao-01 socat process ---"
+          ssh -i ~/.ssh/id_ssh -p "$PORT" "$REMOTE" \
+            "sudo docker exec doubao-01 ps auxww 2>/dev/null | grep -E 'socat|chrome' | head -10 || true"
           echo "::endgroup::"
 
           # 2. Identify the worker image (geo_tracker + playwright only ship
