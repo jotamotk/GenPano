@@ -216,7 +216,12 @@ jobs:
           echo
 
           echo "=== Same probe through ensure_global_proxy_route (same Python path as production) ==="
-          docker compose exec -T worker python - <<'PY' </dev/null 2>&1 || true
+          # Same heredoc-vs-/dev/null bug as the Clash internals section had:
+          # `python - <<'PY' </dev/null` redirects stdin to /dev/null AFTER the
+          # heredoc, so python sees an empty script and exits silently. Drop
+          # the </dev/null — `docker compose exec -T` already disables the TTY
+          # so we don't need to "close" stdin manually.
+          docker compose exec -T worker python - <<'PY' 2>&1 || true
           import asyncio, json, os
           from dataclasses import asdict
           from geo_tracker.agent.clash_api import (
