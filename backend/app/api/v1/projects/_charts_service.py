@@ -1700,9 +1700,7 @@ async def get_mention_samples(
             where_sql.append("1 = 0")
         else:
             params["profile_id"] = str(profile_id)
-            where_sql.append(
-                "(q.profile_id IS NULL OR CAST(q.profile_id AS TEXT) = :profile_id)"
-            )
+            where_sql.append("CAST(q.profile_id AS TEXT) = :profile_id")
 
     if segment_id:
         profile_cols = (
