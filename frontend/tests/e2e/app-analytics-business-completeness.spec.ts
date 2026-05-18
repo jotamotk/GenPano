@@ -1859,7 +1859,7 @@ test.describe('Live App analytics business completeness gate', () => {
         // Click the first row's Inspect control. The page uses a plain <button> labelled "Inspect" with
         // aria-label="Inspect full response for ...". Using the visible name keeps test scope to this file
         // (no product code testid needed). See BrandSentimentPage.tsx:570-591.
-        const inspectButton = page.getByRole('button', { name: /^Inspect$/ }).first()
+        const inspectButton = page.getByRole('button', { name: /^Inspect full response for / }).first()
         await inspectButton.waitFor({ state: 'visible', timeout: 10_000 })
         await inspectButton.click()
         // Wait for the expanded panel header to appear, then assert the rendered text contains the exact API value.
