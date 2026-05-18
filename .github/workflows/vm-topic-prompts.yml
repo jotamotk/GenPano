@@ -51,6 +51,5 @@ jobs:
             "sudo docker exec genpano-postgres-1 psql -U genpano -d genpano -c '\\d prompts' | head -40"
           echo
           echo "=== prompts under matching topics ==="
-          # Try query_text first, fallback to text
           ssh -i ~/.ssh/id_ssh -p "$PORT" "$REMOTE" \
-            "sudo docker exec genpano-postgres-1 psql -U genpano -d genpano -c \"SELECT p.id AS prompt_id, substring(t.text from 1 for 25) AS topic, substring(coalesce(p.prompt_text, p.text, '') from 1 for 100) AS prompt FROM prompts p JOIN topics t ON t.id = p.topic_id WHERE (${CLAUSE}) ORDER BY t.text, p.id LIMIT 100;\" 2>&1 | head -60"
+            "sudo docker exec genpano-postgres-1 psql -U genpano -d genpano -c \"SELECT p.id AS prompt_id, p.intent, substring(t.text from 1 for 22) AS topic, substring(p.text from 1 for 90) AS prompt FROM prompts p JOIN topics t ON t.id = p.topic_id WHERE (${CLAUSE}) ORDER BY t.text, p.id LIMIT 200;\""
