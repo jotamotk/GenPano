@@ -90,16 +90,20 @@ async def _main() -> int:
         print(json.dumps({"fatal": f"cannot import run_quick_retry: {e!r}"}))
         return 4
 
-    half = len(ids) // 2
-    # The doubao-NN containers are attached to genpano_default network by
-    # the workflow before this script runs, so we can reach them via
-    # docker DNS using container name. Internal CDP port is 9222 inside
-    # both containers (different external ports are docker-compose port
-    # mapping artifacts, not the actual listening port). When we connect
-    # via the docker network we bypass the port mapping entirely.
-    plan = [(qid, "doubao-01", "http://doubao-01:9222") for qid in ids[:half]] + [
-        (qid, "doubao-02", "http://doubao-02:9222") for qid in ids[half:]
-    ]
+    # Routing: by default split half/half between doubao-01 (CDP 9222)
+    # and doubao-02 (9223). BULK_VM=doubao-01 / doubao-02 pins all
+    # queries to one VM — used when the other is logged-out or rate-
+    # limited and the operator can't intervene right now.
+    pin = os.environ.get("BULK_VM", "").strip().lower()
+    if pin == "doubao-01":
+        plan = [(qid, "doubao-01", "http://doubao-01:9222") for qid in ids]
+    elif pin == "doubao-02":
+        plan = [(qid, "doubao-02", "http://doubao-02:9222") for qid in ids]
+    else:
+        half = len(ids) // 2
+        plan = [(qid, "doubao-01", "http://doubao-01:9222") for qid in ids[:half]] + [
+            (qid, "doubao-02", "http://doubao-02:9222") for qid in ids[half:]
+        ]
 
     results: list[dict] = []
     for qid, vm_id, cdp in plan:

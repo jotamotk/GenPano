@@ -39,6 +39,12 @@ on:
         default: 'false'
         type: choice
         options: ['true', 'false']
+      vm_pin:
+        description: 'Pin all queries to one VM (split / doubao-01 / doubao-02)'
+        required: false
+        default: 'split'
+        type: choice
+        options: ['split', 'doubao-01', 'doubao-02']
 
 jobs:
   bulk:
@@ -140,17 +146,30 @@ jobs:
           n=${#LINES[@]}
           half=$(( n / 2 ))
           idx=0
+          VM_PIN="${{ inputs.vm_pin }}"
           for line in "${LINES[@]}"; do
             qid="${line%%||*}"
             qtext="${line#*||}"
             if [ -z "$qid" ]; then continue; fi
-            if [ $idx -lt $half ]; then
-              cdp_port=9222
-              vm_id="doubao-01"
-            else
-              cdp_port=9223
-              vm_id="doubao-02"
-            fi
+            case "$VM_PIN" in
+              doubao-01)
+                cdp_port=9222
+                vm_id="doubao-01"
+                ;;
+              doubao-02)
+                cdp_port=9223
+                vm_id="doubao-02"
+                ;;
+              *)
+                if [ $idx -lt $half ]; then
+                  cdp_port=9222
+                  vm_id="doubao-01"
+                else
+                  cdp_port=9223
+                  vm_id="doubao-02"
+                fi
+                ;;
+            esac
             echo "=== rep $((idx+1))/$n  query=$qid  vm=$vm_id ==="
             total=$((total+1))
             python experiments/vm_per_account/poc_runner.py \
