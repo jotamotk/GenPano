@@ -1,0 +1,212 @@
+name: VM Bulk via Runner (SSH-tunnel CDP, runner-side Playwright)
+
+# Drives N BestCoffer Doubao queries through both doubao-01/02 by:
+#   1. SSH-tunneling CDP 9222 + 9223 from ECS host to the runner.
+#   2. Selecting N candidate query_ids by SSH-execing psql in the
+#      genpano-postgres container.
+#   3. Running poc_runner.py on the runner (Python + playwright) against
+#      http://localhost:9222 / 9223 for each id. Playwright sees Host as
+#      `localhost:9222` so Chrome's DNS-rebinding check passes (this is
+#      why the worker-container-based bulk-retry kept getting `socket hang
+#      up` — Chrome returns webSocketDebuggerUrl with the request's Host
+#      and the worker container couldn't reach `ws://doubao-NN:...`).
+#   4. For each captured rawText, SSH-exec docker exec backend container
+#      to UPDATE / INSERT the ai_responses row.
+#
+# Refs Epic #1110 / Issue #1144.
+
+on:
+  workflow_dispatch:
+    inputs:
+      count:
+        description: 'How many queries to retry (split evenly across 2 VMs)'
+        required: true
+        default: '20'
+        type: string
+      query_text_filter:
+        description: 'SQL ILIKE pattern for queries.query_text'
+        required: true
+        default: '%bestCoffer%'
+        type: string
+      target_llm:
+        description: 'Target LLM (doubao only for now)'
+        required: true
+        default: 'doubao'
+        type: string
+      dry_run:
+        description: 'Dry run: just list query IDs without retrying'
+        required: false
+        default: 'false'
+        type: choice
+        options: ['true', 'false']
+
+jobs:
+  bulk:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Playwright
+        run: |
+          python -m pip install --upgrade pip
+          pip install 'playwright==1.47.0'
+
+      - name: Setup SSH key + open CDP tunnels
+        env:
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_SSH_PORT: ${{ secrets.SERVER_SSH_PORT }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 0700 ~/.ssh
+          printf '%s\n' "$SERVER_SSH_KEY" > ~/.ssh/id_ssh
+          chmod 0600 ~/.ssh/id_ssh
+          PORT="${SERVER_SSH_PORT:-22}"
+          ssh-keyscan -p "$PORT" -H "$SERVER_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          # Forward both doubao-01 + doubao-02 CDP ports
+          nohup ssh -i ~/.ssh/id_ssh -p "$PORT" \
+            -N -o ExitOnForwardFailure=yes \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+            -L 9222:127.0.0.1:9222 -L 9223:127.0.0.1:9223 \
+            "${SERVER_USER}@${SERVER_HOST}" \
+            > /tmp/cdp-tunnel.log 2>&1 &
+          echo $! > /tmp/cdp-tunnel.pid
+          # Wait up to 10s for both ports
+          for i in $(seq 1 20); do
+            ready=1
+            for p in 9222 9223; do
+              (echo > /dev/tcp/127.0.0.1/$p) >/dev/null 2>&1 || ready=0
+            done
+            [ $ready -eq 1 ] && break
+            sleep 0.5
+          done
+          (echo > /dev/tcp/127.0.0.1/9222) || { echo "9222 tunnel down"; cat /tmp/cdp-tunnel.log; exit 1; }
+          (echo > /dev/tcp/127.0.0.1/9223) || { echo "9223 tunnel down"; cat /tmp/cdp-tunnel.log; exit 1; }
+          echo "CDP tunnels up; verifying Chrome reachable..."
+          curl -sf http://127.0.0.1:9222/json/version | head -3
+          curl -sf http://127.0.0.1:9223/json/version | head -3
+
+      - name: Select target query ids via SSH + docker exec psql
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_SSH_PORT: ${{ secrets.SERVER_SSH_PORT }}
+          COUNT: ${{ inputs.count }}
+          QUERY_FILTER: ${{ inputs.query_text_filter }}
+          TARGET_LLM: ${{ inputs.target_llm }}
+        run: |
+          set -euo pipefail
+          PORT="${SERVER_SSH_PORT:-22}"
+          REMOTE="${SERVER_USER}@${SERVER_HOST}"
+          # Use postgres container; |||| as column separator and \\n row.
+          SQL="SELECT id || '||' || replace(query_text, E'\\n', ' ')
+               FROM queries
+               WHERE target_llm = '${TARGET_LLM}'
+                 AND query_text ILIKE '${QUERY_FILTER}'
+                 AND status IN ('failed', 'expired', 'pending', 'no_response')
+               ORDER BY id DESC LIMIT ${COUNT};"
+          ssh -i ~/.ssh/id_ssh -p "$PORT" "$REMOTE" \
+            "sudo docker exec genpano-postgres-1 psql -U genpano -d genpano -t -A -c \"${SQL}\"" \
+            | tee /tmp/candidates.txt
+          test -s /tmp/candidates.txt
+          echo "selected: $(wc -l < /tmp/candidates.txt)"
+
+      - name: Run poc_runner.py + write rawText per query
+        if: ${{ inputs.dry_run != 'true' }}
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_SSH_PORT: ${{ secrets.SERVER_SSH_PORT }}
+        run: |
+          set -uo pipefail
+          PORT="${SERVER_SSH_PORT:-22}"
+          REMOTE="${SERVER_USER}@${SERVER_HOST}"
+          mkdir -p artifacts
+          total=0
+          ok=0
+          # Read each `id||text` line, half to 9222 half to 9223
+          declare -a LINES
+          mapfile -t LINES < /tmp/candidates.txt
+          n=${#LINES[@]}
+          half=$(( n / 2 ))
+          idx=0
+          for line in "${LINES[@]}"; do
+            qid="${line%%||*}"
+            qtext="${line#*||}"
+            if [ -z "$qid" ]; then continue; fi
+            if [ $idx -lt $half ]; then
+              cdp_port=9222
+              vm_id="doubao-01"
+            else
+              cdp_port=9223
+              vm_id="doubao-02"
+            fi
+            echo "=== rep $((idx+1))/$n  query=$qid  vm=$vm_id ==="
+            total=$((total+1))
+            python experiments/vm_per_account/poc_runner.py \
+              --cdp-endpoint "http://127.0.0.1:${cdp_port}" \
+              --engine doubao \
+              --prompt-text "$qtext" \
+              --prompt-id "q${qid}" \
+              --reps 1 \
+              --output-dir "artifacts/q${qid}" \
+              --timeout-secs 120 || echo "[rep $idx FAIL]"
+
+            rawfile="artifacts/q${qid}/doubao/q${qid}/1/rawText.txt"
+            if [ -s "$rawfile" ]; then
+              chars=$(wc -c < "$rawfile")
+              if [ "$chars" -ge 50 ]; then
+                ok=$((ok+1))
+                # Write rawText to ai_responses via psql on postgres container.
+                # Use docker cp + a temp file to avoid quote/escape pain.
+                tmphost="/tmp/raw_${qid}.txt"
+                scp -i ~/.ssh/id_ssh -P "$PORT" \
+                  "$rawfile" "${REMOTE}:${tmphost}"
+                ssh -i ~/.ssh/id_ssh -p "$PORT" "$REMOTE" \
+                  "sudo docker cp ${tmphost} genpano-postgres-1:/tmp/raw.txt"
+                # UPSERT (one row per query_id, unique constraint exists)
+                SQL_UPSERT="INSERT INTO llm_responses (query_id, raw_text, response_time_ms, collected_at) VALUES (${qid}, pg_read_file('/tmp/raw.txt'), 60000, NOW()) ON CONFLICT (query_id) DO UPDATE SET raw_text = EXCLUDED.raw_text, response_time_ms = EXCLUDED.response_time_ms, collected_at = EXCLUDED.collected_at;"
+                ssh -i ~/.ssh/id_ssh -p "$PORT" "$REMOTE" \
+                  "sudo docker exec genpano-postgres-1 psql -U genpano -d genpano -c \"${SQL_UPSERT}\" 2>&1 | tail -5"
+                # Mark the queries row as 'success' so the analyzer's downstream cron sweeps it.
+                ssh -i ~/.ssh/id_ssh -p "$PORT" "$REMOTE" \
+                  "sudo docker exec genpano-postgres-1 psql -U genpano -d genpano -c \"UPDATE queries SET status='success' WHERE id=${qid};\" 2>&1 | tail -2"
+                echo "[rep $idx OK] $chars chars written to ai_responses"
+              else
+                echo "[rep $idx skip-write] rawText too short ($chars chars)"
+              fi
+            else
+              echo "[rep $idx skip-write] rawText missing"
+            fi
+            idx=$((idx+1))
+          done
+          echo "===== summary: $ok/$total succeeded ====="
+          if [ $ok -lt $total ]; then
+            exit 5
+          fi
+
+      - name: Stop CDP tunnels
+        if: always()
+        run: |
+          if [ -f /tmp/cdp-tunnel.pid ]; then
+            kill "$(cat /tmp/cdp-tunnel.pid)" 2>/dev/null || true
+          fi
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vm-bulk-via-runner-${{ github.run_id }}
+          path: artifacts/
+          if-no-files-found: warn
+          retention-days: 7
