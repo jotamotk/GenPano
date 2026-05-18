@@ -120,13 +120,25 @@ jobs:
           PORT="${SERVER_SSH_PORT:-22}"
           REMOTE="${SERVER_USER}@${SERVER_HOST}"
           # Use postgres container; |||| as column separator and \\n row.
+          # Topic + prompt balance: pick at most 1 query per (topic, prompt)
+          # via ROW_NUMBER() partition, then sort by rn so iter-1 covers the
+          # newest of every (topic,prompt) before any duplicate (topic,prompt)
+          # gets a 2nd slot. This spreads the N quota across diversity
+          # instead of dumping into the largest topic/prompt cluster.
           OFFSET="${{ inputs.offset }}"
-          SQL="SELECT id || '||' || replace(query_text, E'\\n', ' ')
-               FROM queries
-               WHERE target_llm = '${TARGET_LLM}'
-                 AND query_text ILIKE '${QUERY_FILTER}'
-                 AND status IN ('failed', 'expired', 'pending', 'no_response')
-               ORDER BY id DESC LIMIT ${COUNT} OFFSET ${OFFSET:-0};"
+          SQL="WITH ranked AS (
+                 SELECT q.id, q.query_text, p.topic_id, q.prompt_id,
+                        ROW_NUMBER() OVER (PARTITION BY p.topic_id, q.prompt_id ORDER BY q.id DESC) AS rn
+                 FROM queries q
+                 LEFT JOIN prompts p ON p.id = q.prompt_id
+                 WHERE q.target_llm = '${TARGET_LLM}'
+                   AND q.query_text ILIKE '${QUERY_FILTER}'
+                   AND q.status IN ('failed', 'expired', 'pending', 'no_response')
+               )
+               SELECT id || '||' || replace(query_text, E'\\n', ' ')
+               FROM ranked
+               ORDER BY rn, topic_id NULLS LAST, prompt_id NULLS LAST, id DESC
+               LIMIT ${COUNT} OFFSET ${OFFSET:-0};"
           ssh -i ~/.ssh/id_ssh -p "$PORT" "$REMOTE" \
             "sudo docker exec genpano-postgres-1 psql -U genpano -d genpano -t -A -c \"${SQL}\"" \
             | tee /tmp/candidates.txt
