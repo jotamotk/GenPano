@@ -34,6 +34,7 @@ type CandidateScanSummary = {
   skippedDuplicateAttempts: number
   queryResponseRequests: number
   queryResponseErrors: number
+  listEndpointErrors: number
   candidatesWithAnalyzerFacts: number
   categoryCounts: CandidateCategoryCounts
   maxRawTextCandidate: CandidateSummary | null
@@ -44,6 +45,7 @@ type CandidateScanSummary = {
 type CandidateCategoryCounts = {
   healthyResponseCandidates: number
   unhealthyResponseCandidates: number
+  unhealthyListEndpoints: number
   rateLimitBlockers: number
   duplicateAttemptsSkipped: number
 }
@@ -298,6 +300,7 @@ function candidateScanSummary(
     categoryCounts: {
       healthyResponseCandidates: candidates.length,
       unhealthyResponseCandidates: scan.queryResponseErrors,
+      unhealthyListEndpoints: scan.listEndpointErrors,
       rateLimitBlockers: 0,
       duplicateAttemptsSkipped: scan.skippedDuplicateAttempts,
       ...overrides,
@@ -336,6 +339,7 @@ async function findModalProbe(baseUrl: string, token: string): Promise<ModalProb
     skippedDuplicateAttempts: 0,
     queryResponseRequests: 0,
     queryResponseErrors: 0,
+    listEndpointErrors: 0,
   }
   const seenQueryResponses = new Set<string>()
 
@@ -352,7 +356,13 @@ async function findModalProbe(baseUrl: string, token: string): Promise<ModalProb
       )
     } catch (error) {
       if (isRateLimitBlocker(error)) throw rateLimitWithPartialSummary(error, scan, candidates, blockers)
-      throw error
+      scan.listEndpointErrors += 1
+      const message = error instanceof Error ? error.message : String(error)
+      blockers.push(`${slice.projectId}/${slice.brandId}: skipped slice monitoring endpoint error: ${message.slice(0, 240)}`)
+      console.log(
+        `TOPICS_MODAL_LIST_ENDPOINT_SKIP ${JSON.stringify({ projectId: slice.projectId, brandId: slice.brandId, endpoint: 'topics_monitoring', error: message.slice(0, 300) })}`,
+      )
+      continue
     }
     const topics = (Array.isArray(monitoring?.topics) ? monitoring.topics : [])
       .filter((topic: JsonMap) => Number(topic.response_count || 0) > 0)
@@ -374,7 +384,13 @@ async function findModalProbe(baseUrl: string, token: string): Promise<ModalProb
         )
       } catch (error) {
         if (isRateLimitBlocker(error)) throw rateLimitWithPartialSummary(error, scan, candidates, blockers)
-        throw error
+        scan.listEndpointErrors += 1
+        const message = error instanceof Error ? error.message : String(error)
+        blockers.push(`${slice.projectId}/${slice.brandId}: skipped topic_id=${topicId} prompts endpoint error: ${message.slice(0, 240)}`)
+        console.log(
+          `TOPICS_MODAL_LIST_ENDPOINT_SKIP ${JSON.stringify({ projectId: slice.projectId, brandId: slice.brandId, topicId, endpoint: 'topic_prompts', error: message.slice(0, 300) })}`,
+        )
+        continue
       }
       const prompts = (Array.isArray(promptsPayload?.items) ? promptsPayload.items : [])
         .filter((prompt: JsonMap) => Number(prompt.response_count || 0) > 0)
@@ -391,7 +407,13 @@ async function findModalProbe(baseUrl: string, token: string): Promise<ModalProb
           )
         } catch (error) {
           if (isRateLimitBlocker(error)) throw rateLimitWithPartialSummary(error, scan, candidates, blockers)
-          throw error
+          scan.listEndpointErrors += 1
+          const message = error instanceof Error ? error.message : String(error)
+          blockers.push(`${slice.projectId}/${slice.brandId}: skipped prompt_id=${promptId} queries endpoint error: ${message.slice(0, 240)}`)
+          console.log(
+            `TOPICS_MODAL_LIST_ENDPOINT_SKIP ${JSON.stringify({ projectId: slice.projectId, brandId: slice.brandId, topicId, promptId, endpoint: 'prompt_queries', error: message.slice(0, 300) })}`,
+          )
+          continue
         }
         const queries = Array.isArray(queriesPayload?.items) ? queriesPayload.items : []
         scan.scannedQueries += queries.length
@@ -468,6 +490,7 @@ async function findModalProbe(baseUrl: string, token: string): Promise<ModalProb
           skippedDuplicateAttempts: scan.skippedDuplicateAttempts,
           queryResponseRequests: scan.queryResponseRequests,
           queryResponseErrors: scan.queryResponseErrors,
+          listEndpointErrors: scan.listEndpointErrors,
         }),
     )
   }
@@ -636,6 +659,7 @@ test.describe('Live App Topics response modal scroll gate', () => {
         categoryCounts: {
           healthyResponseCandidates: probe.candidateSummary?.categoryCounts.healthyResponseCandidates ?? 0,
           unhealthyResponseCandidates: probe.candidateSummary?.categoryCounts.unhealthyResponseCandidates ?? 0,
+          unhealthyListEndpoints: probe.candidateSummary?.categoryCounts.unhealthyListEndpoints ?? 0,
           rateLimitBlockers: probe.candidateSummary?.categoryCounts.rateLimitBlockers ?? 0,
           duplicateAttemptsSkipped: probe.candidateSummary?.categoryCounts.duplicateAttemptsSkipped ?? 0,
           openedNonOverflowingCandidates: 1,
