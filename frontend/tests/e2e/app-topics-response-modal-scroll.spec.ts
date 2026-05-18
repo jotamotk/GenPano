@@ -597,6 +597,18 @@ async function waitForResponseModalLoaded(modal: Locator, responsePromise: Promi
   const loadingHidden = await expect(loading).toBeHidden({ timeout: 45_000 }).then(() => true).catch(() => false)
   const fullAnswerVisible = await expect(fullAnswer).toBeVisible({ timeout: 45_000 }).then(() => true).catch(() => false)
 
+  if (loadingHidden && fullAnswerVisible) {
+    return {
+      loaded: true,
+      status: 'LOADED',
+      reason: 'selected_response_content_loaded',
+      apiEvidence,
+      loadingHidden,
+      fullAnswerVisible,
+      queryId: probe.queryId,
+    }
+  }
+
   if (!apiEvidence.ok || !loadingHidden || !fullAnswerVisible) {
     return {
       loaded: false,
@@ -606,16 +618,6 @@ async function waitForResponseModalLoaded(modal: Locator, responsePromise: Promi
       loadingHidden,
       fullAnswerVisible,
     }
-  }
-
-  return {
-    loaded: true,
-    status: 'LOADED',
-    reason: 'selected_response_content_loaded',
-    apiEvidence,
-    loadingHidden,
-    fullAnswerVisible,
-    queryId: probe.queryId,
   }
 }
 
