@@ -410,15 +410,6 @@ async def _response_entity_competitor_metrics(
         for key, bucket in buckets.items()
         if key != _brand_entity_key(primary_id, None)
     ]
-    # Issue #975: drop competitor buckets whose brand_id falls outside the
-    # primary brand's industry. Name-only buckets (brand_id=None) cannot be
-    # scoped reliably and are kept as-is.
-    primary_industry = await resolve_brand_industry(session, primary_id)
-    industry_brand_ids = await _industry_brand_ids(session, primary_industry)
-    if industry_brand_ids:
-        competitors = [
-            row for row in competitors if row.brand_id is None or row.brand_id in industry_brand_ids
-        ]
     competitors.sort(key=lambda row: (-(row.avg_sov or 0), row.brand_name or row.brand_key or ""))
     state = "partial" if primary_row and not competitors else "ok"
     return primary_row, competitors, state
@@ -806,17 +797,6 @@ async def get_competitor_metrics(
             ProjectCompetitor.project_id == project.id
         )
         competitor_ids = [r[0] for r in (await session.execute(competitor_stmt)).all()]
-        # Issue #975: drop pinned competitors that fall outside the primary
-        # brand's industry. Cross-industry pins (manual or auto-seeded by
-        # an older worker) were leaking into the competitor panel even
-        # after #978 scoped the auto-discovery path.
-        industry_brand_ids = await _industry_brand_ids(session, primary_industry)
-        if industry_brand_ids and competitor_ids:
-            competitor_ids = [bid for bid in competitor_ids if bid in industry_brand_ids]
-        if not competitor_ids:
-            competitor_ids = await discover_related_brand_ids(
-                session, primary_id, from_d, to_d, industry_name=primary_industry
-            )
     competitor_ids = [bid for bid in competitor_ids if bid is not None and bid != primary_id]
 
     async def _row_for(brand_id: int) -> CompetitorBrandRow:
