@@ -1716,10 +1716,10 @@ function ResponseAttemptsModal({
         role="dialog"
         aria-modal="true"
         aria-label="Response attempts"
-        className="w-full max-w-[1180px] max-h-[88vh] overflow-hidden rounded-card bg-themed-card shadow-elevated border border-themed-card"
+        className="w-full max-w-[1180px] h-[88vh] max-h-[88vh] overflow-hidden rounded-card bg-themed-card shadow-elevated border border-themed-card flex flex-col"
         onClick={(event) => event.stopPropagation()}
       >
-        <div className="flex items-center justify-between gap-3 px-5 py-4 border-b border-themed-card">
+        <div className="flex shrink-0 items-center justify-between gap-3 px-5 py-4 border-b border-themed-card">
           <div>
             <h3 className="text-sm font-semibold text-themed-primary">Response attempts</h3>
             <div className="text-xs text-themed-muted mt-1">
@@ -1736,8 +1736,8 @@ function ResponseAttemptsModal({
           </button>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-[220px_minmax(0,1fr)_320px] max-h-[calc(88vh-73px)] overflow-hidden">
-          <aside className="border-b lg:border-b-0 lg:border-r border-themed-card p-3 overflow-y-auto">
+        <div className="grid flex-1 min-h-0 grid-cols-1 grid-rows-[auto_minmax(0,1fr)_minmax(0,1fr)] lg:grid-cols-[220px_minmax(0,1fr)_320px] lg:grid-rows-1 overflow-hidden">
+          <aside className="min-h-0 max-h-[24vh] lg:max-h-none border-b lg:border-b-0 lg:border-r border-themed-card p-3 overflow-y-auto">
             <div className="inline-flex items-center gap-1.5 text-xs font-semibold text-themed-muted mb-3">
               <CalendarRange size={14} aria-hidden />
               Date
@@ -1771,7 +1771,7 @@ function ResponseAttemptsModal({
             </div>
           </aside>
 
-          <main className="p-5 overflow-y-auto">
+          <main className="min-h-0 min-w-0 p-5 overflow-y-auto">
             <div className="space-y-4">
               <section className="p-4 rounded-card bg-themed-subtle border border-themed-subtle">
                 <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-themed-muted mb-2">
@@ -1804,7 +1804,7 @@ function ResponseAttemptsModal({
             </div>
           </main>
 
-          <aside className="border-t lg:border-t-0 lg:border-l border-themed-card p-5 overflow-y-auto space-y-5">
+          <aside className="min-h-0 min-w-0 border-t lg:border-t-0 lg:border-l border-themed-card p-5 overflow-y-auto space-y-5">
             <div className="flex items-center gap-2">
               <BarChart3 size={16} className="text-themed-accent" aria-hidden />
               <h4 className="text-sm font-semibold text-themed-primary">Analyzer facts</h4>
