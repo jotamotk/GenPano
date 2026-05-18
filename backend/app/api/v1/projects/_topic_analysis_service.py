@@ -1691,6 +1691,12 @@ async def get_query_activity(
     filters: AnalysisFilters,
     brand_id_override: int | None = None,
 ) -> QueryActivityOut:
+    from app.api.v1.projects._analytics_contract import (
+        FORMULA_NO_EVIDENCE_STATUS,
+        MISSING_PROJECT_BRAND_BINDING_REASON,
+        formula_diagnostics_for,
+    )
+
     from_d, to_d = _resolve_window(filters)
     brand_id = _effective_brand_id(project, brand_id_override)
     if brand_id is None:
@@ -1706,6 +1712,11 @@ async def get_query_activity(
                 "mention_denominator": 0,
             },
             state="empty",
+            state_reason=MISSING_PROJECT_BRAND_BINDING_REASON,
+            missing_inputs=["project.primary_brand_id"],
+            missing_sources=["project.primary_brand_id"],
+            formula_status=FORMULA_NO_EVIDENCE_STATUS,
+            formula_diagnostics=formula_diagnostics_for(FORMULA_NO_EVIDENCE_STATUS),
         )
     effective_filters = filters
     if filters.from_date is None and filters.to_date is None:
@@ -1856,6 +1867,7 @@ async def get_query_activity(
         )
         for day, values in sorted(daily_bucket.items())
     ]
+    state = "ok" if query_ids else "empty"
     return QueryActivityOut(
         project_id=project.id,
         brand_id=brand_id,
@@ -1873,7 +1885,14 @@ async def get_query_activity(
         daily=daily,
         sentiment_distribution=sentiment,
         position_distribution=positions,
-        state="ok" if query_ids else "empty",
+        state=state,
+        state_reason=None if state == "ok" else "no_query_activity_rows",
+        missing_inputs=None if state == "ok" else ["query_activity.rows"],
+        missing_sources=None if state == "ok" else ["queries"],
+        formula_status=None if state == "ok" else FORMULA_NO_EVIDENCE_STATUS,
+        formula_diagnostics=(
+            None if state == "ok" else formula_diagnostics_for(FORMULA_NO_EVIDENCE_STATUS)
+        ),
     )
 
 
