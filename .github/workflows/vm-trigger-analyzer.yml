@@ -1,0 +1,78 @@
+name: Trigger Analyzer (enqueue analyze_response for recent BestCoffer responses)
+
+# Companion to vm-bulk-via-runner.yml. After bulk has written rawText into
+# ai_responses, dispatch this to enqueue celery analyze_response per row
+# so the analyzer pipeline picks up the new responses.
+
+on:
+  workflow_dispatch:
+    inputs:
+      count:
+        description: 'How many recent responses to analyze'
+        required: true
+        default: '20'
+        type: string
+      query_text_filter:
+        description: 'SQL ILIKE pattern on queries.query_text'
+        required: true
+        default: '%bestCoffer%'
+        type: string
+      target_llm:
+        description: 'Target LLM'
+        required: true
+        default: 'doubao'
+        type: string
+
+jobs:
+  trigger:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup SSH
+        env:
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_SSH_PORT: ${{ secrets.SERVER_SSH_PORT }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 0700 ~/.ssh
+          printf '%s\n' "$SERVER_SSH_KEY" > ~/.ssh/id_ssh
+          chmod 0600 ~/.ssh/id_ssh
+          PORT="${SERVER_SSH_PORT:-22}"
+          ssh-keyscan -p "$PORT" -H "$SERVER_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: scp + docker exec the trigger script inside worker
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_SSH_PORT: ${{ secrets.SERVER_SSH_PORT }}
+          COUNT: ${{ inputs.count }}
+          QUERY_FILTER: ${{ inputs.query_text_filter }}
+          TARGET_LLM: ${{ inputs.target_llm }}
+        run: |
+          set -euo pipefail
+          PORT="${SERVER_SSH_PORT:-22}"
+          REMOTE="${SERVER_USER}@${SERVER_HOST}"
+          scp -i ~/.ssh/id_ssh -P "$PORT" \
+            scripts/trigger_analyzer.py \
+            "${REMOTE}:/tmp/trigger_analyzer.py"
+          CN=$(ssh -i ~/.ssh/id_ssh -p "$PORT" "$REMOTE" \
+            "sudo docker ps --format '{{.Names}}' | grep -E '^genpano-worker[-_]1' | head -1")
+          if [ -z "$CN" ]; then
+            echo "FATAL: no worker container" >&2
+            exit 5
+          fi
+          echo "running trigger_analyzer.py inside: $CN"
+          ssh -i ~/.ssh/id_ssh -p "$PORT" "$REMOTE" \
+            "sudo docker cp /tmp/trigger_analyzer.py '${CN}:/tmp/trigger_analyzer.py'"
+          ssh -i ~/.ssh/id_ssh -p "$PORT" "$REMOTE" \
+            "sudo docker exec \
+                -e COUNT='${COUNT}' \
+                -e QUERY_FILTER='${QUERY_FILTER}' \
+                -e TARGET_LLM='${TARGET_LLM}' \
+                '${CN}' python -u /tmp/trigger_analyzer.py"
