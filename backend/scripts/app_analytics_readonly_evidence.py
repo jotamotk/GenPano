@@ -290,6 +290,20 @@ GROUP BY cs.domain
 ORDER BY rows_in_unresolved DESC
 LIMIT 30;
 
+\\echo '--- brands.website + aliases registry (issue #1225 domain registration probe) ---'
+SELECT
+  b.id,
+  b.name,
+  b.website,
+  COALESCE(array_length(b.aliases, 1), 0) AS alias_count,
+  (SELECT COUNT(*) FROM brand_official_domains bod WHERE bod.brand_id = b.id)
+    AS official_domain_rows,
+  (SELECT string_agg(bod.domain, ',') FROM brand_official_domains bod
+    WHERE bod.brand_id = b.id) AS official_domains
+FROM brands b
+WHERE b.id = ANY({all_brand_array})
+ORDER BY b.id;
+
 \\echo '--- response_analyses geo_score distribution (issue #1225 geo_score_daily probe) ---'
 SELECT
   ra.target_brand_mentioned,
@@ -300,8 +314,8 @@ SELECT
   COUNT(DISTINCT ra.response_id) AS distinct_responses
 FROM response_analyses ra
 JOIN llm_responses r ON r.id = ra.response_id
-LEFT JOIN queries q ON q.id = r.query_id
-WHERE r.brand_id = {config.brand_id}
+JOIN queries q ON q.id = r.query_id
+WHERE q.brand_id = {config.brand_id}
   AND {response_date_expr}
     BETWEEN '{date_from}'::date AND '{date_to}'::date
 GROUP BY ra.target_brand_mentioned
@@ -320,6 +334,19 @@ FROM queries q
 WHERE q.brand_id = {config.brand_id}
   AND COALESCE(q.finished_at, q.created_at)::date
     BETWEEN '{date_from}'::date AND '{date_to}'::date;
+
+\\echo '--- geo_score_daily cross-project sanity (issue #1225) ---'
+SELECT
+  brand_id,
+  COUNT(*) AS rows_total,
+  MIN(date::date) AS first_date,
+  MAX(date::date) AS last_date,
+  COUNT(avg_geo_score) AS rows_geo_score_non_null
+FROM geo_score_daily
+WHERE date::date BETWEEN '{date_from}'::date AND '{date_to}'::date
+GROUP BY brand_id
+ORDER BY rows_total DESC
+LIMIT 30;
 
 \\echo '--- cited responses date distribution (issue #1021 authority-trend probe) ---'
 WITH target_cited_responses AS (
