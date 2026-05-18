@@ -295,6 +295,71 @@ describe('BrandPanoramaPanel live KPI rendering', () => {
     expect(screen.queryByText('X: Share of Voice')).not.toBeInTheDocument()
   })
 
+  it('falls through partial_competitor_data to plot bubbles with a small partial badge', () => {
+    // Issue #1185 follow-up — fixture mirrors the bestCoffer live API readback
+    // captured in PR #1253's evidence ledger:
+    //   https://github.com/jotamotk/trash_test/actions/runs/26035019036
+    // state=partial, state_reason=partial_competitor_data, competitors[] carries
+    // scoped rows with finite SoV / sentiment. This case must fall through to
+    // bubble render with a small "数据为 partial" badge (mirrors
+    // BrandCompetitorsPage.tsx:368-374 from PR #1253), not the full suppression.
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/brand/overview']}>
+          <LocaleProvider initialLocale="en-US">
+            <BrandPanoramaPanel
+              primary={{
+                id: '24',
+                name: 'bestCoffer',
+                nameZh: 'bestCoffer',
+                nameEn: 'bestCoffer',
+                panoScore: 70,
+                mentionRate: 0.65,
+                sov: 64.96,
+                sentiment: 0.707,
+                ranking: null,
+                industryId: '数据安全',
+              }}
+              competitors={[]}
+              sovDataOverride={[{ name: 'bestCoffer', value: 64.96 }]}
+              bubbleDataOverride={[
+                {
+                  brand: '',
+                  sov: null,
+                  sentiment: null,
+                  mentions: 0,
+                  endpointState: 'partial',
+                  stateReason: 'partial_competitor_data',
+                  missingInputs: ['partial_analyzer_data', 'brand_unresolved'],
+                  configuredCompetitorCount: 1,
+                },
+                { brand: 'bestCoffer', sov: 64.96, sentiment: 0.707, mentions: 0 },
+                { brand: 'IBM Security', sov: 15.94, sentiment: 0.22, mentions: 33 },
+              ]}
+              trendDataOverride={[]}
+              sparklineOverride={{
+                mention: [65],
+                sov: [64.96],
+                sentiment: [0.707],
+                citation: [],
+                rank: [],
+              }}
+              isLive
+            />
+          </LocaleProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+
+    expect(screen.getByText('X: Share of Voice')).toBeInTheDocument()
+    expect(screen.getByText(/数据为 partial/)).toBeInTheDocument()
+    expect(screen.queryByText('Competitor quadrant is partial')).not.toBeInTheDocument()
+  })
+
   it('keeps demo trend labels on ordinal day fallback instead of mock names', () => {
     const localizedDayLabel = '1\u65e5'
 

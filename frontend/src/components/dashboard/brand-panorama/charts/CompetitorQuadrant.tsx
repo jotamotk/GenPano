@@ -29,6 +29,14 @@ function labelize(value: string | null | undefined) {
     .replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
+// Issue #1185 follow-up — partial state_reasons whose payload still carries
+// usable competitor rows. Mirrors BrandCompetitorsPage.tsx:136-140 (PR #1253).
+const PARTIAL_REASONS_THAT_STILL_RENDER_DATA = new Set([
+  'partial_competitor_data',
+  'partial_data',
+  'partial_analyzer_data',
+]);
+
 export default function CompetitorQuadrant({ data, primaryName, t }: CompetitorQuadrantProps) {
   const rows = Array.isArray(data) ? data : [];
   const endpointStateRow = rows.find((row) => row.endpointState && row.endpointState !== 'ok');
@@ -40,7 +48,19 @@ export default function CompetitorQuadrant({ data, primaryName, t }: CompetitorQ
   const axisIncompleteCount = chartRows.length - axisReadyRows.length;
   const missingWeightCount = axisReadyRows.filter((row) => !Number.isFinite(row.mentions) || row.mentions <= 0).length;
 
-  if (endpointStateRow) {
+  // When endpoint state is non-ok but the partiality is just "data is partial,
+  // rows are still scoped and usable", fall through to plot bubbles and surface
+  // the partiality as a small badge above the chart. Metric-trust failures
+  // (missing_formula_inputs, missing_required_inputs, missing_analyzer_rows)
+  // keep the full suppression below because the numbers themselves can't be
+  // trusted.
+  const stateReasonNormalized = String(endpointStateRow?.stateReason || '').toLowerCase();
+  const renderableDespitePartial =
+    !!endpointStateRow &&
+    PARTIAL_REASONS_THAT_STILL_RENDER_DATA.has(stateReasonNormalized) &&
+    axisReadyRows.length >= 1;
+
+  if (endpointStateRow && !renderableDespitePartial) {
     const state = endpointStateRow.endpointState || 'partial';
     const reason = labelize(endpointStateRow.stateReason);
     const missingInputs = endpointStateRow.missingInputs?.map(labelize).filter(Boolean) ?? [];
@@ -100,6 +120,14 @@ export default function CompetitorQuadrant({ data, primaryName, t }: CompetitorQ
         <span className="rounded border border-themed-card px-2 py-1">Y: Sentiment</span>
         <span className="rounded border border-themed-card px-2 py-1">Bubble: co-mentions / evidence count</span>
       </div>
+      {renderableDespitePartial && endpointStateRow && (
+        <div className="rounded border border-themed-card bg-themed-subtle/40 px-3 py-2 text-[11px] leading-relaxed text-themed-muted">
+          <span className="rounded border border-themed-card px-2 py-1">数据为 partial</span>
+          {' '}
+          {labelize(endpointStateRow.stateReason) || 'Partial Competitor Data'}
+          {' '}— 竞品和指标已按当前可用证据计算，部分分析器质量信号尚未补齐。
+        </div>
+      )}
       {(axisIncompleteCount > 0 || missingWeightCount > 0) && (
         <div className="rounded border border-themed-card bg-themed-subtle/40 px-3 py-2 text-[11px] leading-relaxed text-themed-muted">
           {axisIncompleteCount > 0 && (
