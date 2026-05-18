@@ -414,10 +414,15 @@ async def test_sov_package_blocks_legacy_target_only_values_across_overview_and_
     assert _card(overview_body, "geo_score")["formula_status"] == "missing_required_inputs"
 
     assert metrics.status_code == 200, metrics.text
-    sov_series = metrics.json()["series"][0]
+    metrics_body = metrics.json()
+    sov_series = metrics_body["series"][0]
     assert sov_series["points"] == []
     assert sov_series["formula_status"] == "missing_required_inputs"
     assert "target_only_sov" in sov_series["missing_inputs"]
+    assert "brand_mentions.competitive_set" in sov_series["missing_inputs"]
+    sov_evidence = metrics_body["metric_formula_evidence"]["sov"]
+    assert "target_only_sov" in sov_evidence["reason_codes"]
+    assert "brand_mentions.competitive_set" in sov_evidence["reason_codes"]
 
 
 @pytest.mark.asyncio
