@@ -60,9 +60,7 @@ async def user(db_session: AsyncSession) -> User:
 
 
 @pytest_asyncio.fixture
-async def project_with_pinned_competitor(
-    db_session: AsyncSession, user: User
-) -> Project:
+async def project_with_pinned_competitor(db_session: AsyncSession, user: User) -> Project:
     """Mirror of the live captured shape: 1 primary + 1 pinned competitor +
     GeoScoreDaily rows for the competitor.
 
@@ -96,9 +94,7 @@ async def project_with_pinned_competitor(
                 total_queries=10,
             )
         )
-    db_session.add(
-        ProjectCompetitor(project_id=project.id, brand_id=2, pinned_by=user.id)
-    )
+    db_session.add(ProjectCompetitor(project_id=project.id, brand_id=2, pinned_by=user.id))
     await db_session.commit()
     return project
 
