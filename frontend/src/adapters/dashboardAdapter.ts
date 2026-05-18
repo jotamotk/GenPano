@@ -66,8 +66,8 @@ export interface SovEntry {
 
 export interface BubbleEntry {
   brand: string
-  sov: number
-  sentiment: number
+  sov: number | null
+  sentiment: number | null
   mentions: number
 }
 
@@ -330,11 +330,10 @@ export function adaptCompetitorMetricsToBubble(
       sov: normalizeCompetitorSov(metrics, row.avg_sov),
       sentiment: normalizeCompetitorSentiment(metrics, row.avg_sentiment),
     }))
-    .filter((item) => item.sov != null && item.sentiment != null)
     .map(({ row, sov, sentiment }) => ({
       brand: row.brand_name ?? row.brand_key ?? `Brand #${row.brand_id ?? '?'}`,
-      sov: sov as number,
-      sentiment: sentiment as number,
+      sov,
+      sentiment,
       mentions: row.co_mention_count ?? 0,
     }))
 }
