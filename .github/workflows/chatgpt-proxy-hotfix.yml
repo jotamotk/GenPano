@@ -38,7 +38,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Apply hotfix on host
+      - name: Route policy preflight
         env:
           SERVER_HOST: ${{ secrets.SERVER_HOST }}
           SERVER_USER: ${{ secrets.SERVER_USER }}
@@ -49,6 +49,88 @@ jobs:
           printf '%s' "$SERVER_SSH_KEY" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H "$SERVER_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+          # User invariant: 豆包/deepseek must be direct-connect, ChatGPT
+          # must go through the proxy. The code defaults are correct
+          # (DOMESTIC_LLMS = {kimi, doubao, deepseek, zhipu};
+          # DOUBAO_USE_PROXY default False; CLASH_FORCE_GLOBAL_PROXY_ROUTE
+          # default True). Verify production env doesn't override them
+          # before applying the firewall fix.
+          policy=$(ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=accept-new \
+            "$SERVER_USER@$SERVER_HOST" 'bash -s' <<'REMOTE'
+          set -uo pipefail
+          cd /opt/genpano
+
+          docker compose exec -T worker python3 <<'PY'
+          import os
+          env = {
+              "DOUBAO_USE_PROXY": os.getenv("DOUBAO_USE_PROXY"),
+              "CLASH_FORCE_GLOBAL_PROXY_ROUTE": os.getenv("CLASH_FORCE_GLOBAL_PROXY_ROUTE"),
+          }
+          # Replay the production decision functions for every LLM.
+          from geo_tracker.agent.guest_executor import (
+              _should_use_proxy_for_llm,
+              _requires_global_proxy_route,
+              DOMESTIC_LLMS,
+          )
+          proxy_url = os.getenv("QG_PROXY_HTTP") or "http://host.docker.internal:6789"
+          plan = []
+          for llm in ["chatgpt", "gemini", "doubao", "deepseek", "kimi", "zhipu"]:
+              plan.append({
+                  "llm": llm,
+                  "domestic": llm in DOMESTIC_LLMS,
+                  "use_proxy": _should_use_proxy_for_llm(llm, proxy_url),
+                  "requires_global_route": _requires_global_proxy_route(llm),
+              })
+          print("ENV:", env)
+          for row in plan:
+              print(f"PLAN: {row}")
+          PY
+          REMOTE
+          )
+          echo "$policy"
+          echo "$policy" > /tmp/route-policy.txt
+
+          # User constraint enforcement:
+          # - doubao: use_proxy MUST be False, requires_global_route MUST be False
+          # - deepseek: use_proxy MUST be False, requires_global_route MUST be False
+          # - chatgpt: use_proxy MUST be True, requires_global_route MUST be True
+          fail=0
+          assert_match () {
+              local pat="$1"
+              local label="$2"
+              if echo "$policy" | grep -qE "$pat"; then
+                  echo "OK: $label"
+              else
+                  echo "::error::$label — pattern not found: $pat"
+                  fail=1
+              fi
+          }
+          assert_match "'llm': 'doubao'.*'use_proxy': False.*'requires_global_route': False" "豆包 direct-connect"
+          assert_match "'llm': 'deepseek'.*'use_proxy': False.*'requires_global_route': False" "deepseek direct-connect"
+          assert_match "'llm': 'chatgpt'.*'use_proxy': True.*'requires_global_route': True" "chatgpt 走代理 + preflight"
+          if [ "$fail" -ne 0 ]; then
+              echo "::error::Route policy preflight FAILED. Refusing to apply firewall fix."
+              echo "::error::Inspect /opt/genpano/.env for stale DOUBAO_USE_PROXY / CLASH_FORCE_GLOBAL_PROXY_ROUTE overrides."
+              exit 1
+          fi
+          echo "Route policy preflight PASSED — proceeding with UFW fix."
+          {
+            echo "## Route policy preflight"
+            echo
+            echo '```'
+            echo "$policy"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Apply hotfix on host
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          # ssh key already installed by the preflight step; reuse it.
 
           # 1. Sync the updated script onto the host.
           scp -i ~/.ssh/id_rsa -o StrictHostKeyChecking=accept-new \
