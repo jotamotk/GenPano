@@ -52,7 +52,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Queries via VM"])
 
 
-def _cdp_override_for_vm(requested_vm: Optional[str]) -> Optional[str]:
+def _cdp_override_for_vm(requested_vm: str | None) -> str | None:
     """Map vm_id alias to CDP endpoint URL.
 
     Returns None when caller did not pin a specific VM (env-derived
@@ -83,7 +83,7 @@ class _PerQueryOutcome:
 
     status_code: int
     body: dict[str, Any]
-    error_code: Optional[str]
+    error_code: str | None
 
 
 async def _run_one_via_vm(
@@ -92,7 +92,7 @@ async def _run_one_via_vm(
     operator: AdminUser,
     request: Request,
     query_id: int,
-    requested_vm: Optional[str],
+    requested_vm: str | None,
 ) -> _PerQueryOutcome:
     """Run a single retry-via-VM attempt and emit an audit row.
 
@@ -217,7 +217,7 @@ async def _run_one_via_vm(
 
 async def _queries_table_unavailable_response(
     session: AsyncSession,
-) -> Optional[JSONResponse]:
+) -> JSONResponse | None:
     """Return a 503 response when the queries table is absent, else None."""
     try:
         if not await queries_db._table_exists(session, "queries"):

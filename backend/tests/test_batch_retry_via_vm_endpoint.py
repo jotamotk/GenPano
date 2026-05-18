@@ -1,4 +1,3 @@
-# ruff: noqa: RUF001
 """Refs Epic #1110 — ``POST /api/queries/batch_retry_via_vm`` admin endpoint.
 
 The batch endpoint accepts ``{"query_ids": [...]}`` and sequentially
@@ -32,11 +31,11 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-import pytest  # noqa: E402
-import pytest_asyncio  # noqa: E402
-from genpano_models import AdminUser  # noqa: E402
-from sqlalchemy import text as sa_text  # noqa: E402
-from sqlalchemy.ext.asyncio import AsyncSession  # noqa: E402
+import pytest
+import pytest_asyncio
+from genpano_models import AdminUser
+from sqlalchemy import text as sa_text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 os.environ.setdefault("USER_JWT_SECRET", "x" * 64)
 
@@ -113,11 +112,7 @@ async def two_existing_queries(db_session: AsyncSession, _patch_table_exists) ->
         )
     )
     await db_session.commit()
-    rows = (
-        await db_session.execute(
-            sa_text("SELECT id FROM queries ORDER BY id ASC")
-        )
-    ).fetchall()
+    rows = (await db_session.execute(sa_text("SELECT id FROM queries ORDER BY id ASC"))).fetchall()
     return [int(r[0]) for r in rows]
 
 
@@ -290,13 +285,9 @@ async def test_batch_retry_via_vm_rejects_missing_query_ids(client, admin_operat
 
 
 @pytest.mark.asyncio
-async def test_batch_retry_via_vm_rejects_empty_list(
-    client, admin_operator, _patch_table_exists
-):
+async def test_batch_retry_via_vm_rejects_empty_list(client, admin_operator, _patch_table_exists):
     """Empty query_ids list → 400, not a no-op 200."""
-    resp = await client.post(
-        "/api/queries/batch_retry_via_vm", json={"query_ids": []}
-    )
+    resp = await client.post("/api/queries/batch_retry_via_vm", json={"query_ids": []})
     assert resp.status_code == 400, resp.text
     body = resp.json()
     assert body.get("error") == "missing_query_ids"
