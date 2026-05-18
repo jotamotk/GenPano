@@ -547,6 +547,33 @@ async def get_engine_metrics(
             source_provenance=["admin_facts", "brand_mentions", "citation_sources"],
             brand_id=brand_id,
         )
+    fact_rows = await _admin_fact_rows(
+        session,
+        project,
+        from_d,
+        to_d,
+        brand_id_override=brand_id,
+    )
+    fact_items, fact_evidence_count = _engine_metric_rows_from_facts(fact_rows)
+    if fact_items:
+        out = EngineMetricsOut(
+            project_id=project.id,
+            period=_period(from_d, to_d),
+            items=fact_items,
+            state="ok",
+            state_reason="data_available",
+            evidence_count=fact_evidence_count,
+            evidence_counts=_chart_counts(admin_fact_response_count=fact_evidence_count),
+        )
+        return await _with_engine_metric_contract(
+            out,
+            session,
+            project,
+            from_d,
+            to_d,
+            source_provenance=["admin_facts", "brand_mentions", "citation_sources"],
+            brand_id=brand_id,
+        )
     stmt = (
         select(
             GeoScoreDaily.target_llm,

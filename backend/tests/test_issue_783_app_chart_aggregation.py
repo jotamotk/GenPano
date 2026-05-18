@@ -14,6 +14,7 @@ from genpano_models import (
     AnalyzerRun,
     BrandMention,
     CitationSource,
+    GeoScoreDaily,
     Project,
     ProjectCompetitor,
     ResponseAnalysis,
@@ -374,6 +375,363 @@ async def _seed_first_class_v4_facts(
             )
         )
     await db_session.commit()
+
+
+async def _seed_issue_1152_engine_facts(
+    db_session: AsyncSession,
+    *,
+    topic_id: int,
+    prompt_id: int,
+    query_id: int,
+    response_id: int,
+    engine: str = "chatgpt",
+    target_mentions: int = 0,
+    competitor_mentions: int = 0,
+    target_citation: bool = False,
+) -> None:
+    await _seed_chain_response(
+        db_session,
+        topic_id=topic_id,
+        prompt_id=prompt_id,
+        query_id=query_id,
+        response_id=response_id,
+    )
+    await db_session.execute(
+        text(
+            """
+            UPDATE queries SET target_llm = :engine WHERE id = :query_id
+            """
+        ),
+        {"engine": engine, "query_id": query_id},
+    )
+    await db_session.execute(
+        text(
+            """
+            UPDATE llm_responses SET target_llm = :engine WHERE id = :response_id
+            """
+        ),
+        {"engine": engine, "response_id": response_id},
+    )
+    db_session.add(
+        ResponseAnalysis(
+            response_id=response_id,
+            target_brand_mentioned=target_mentions > 0,
+            target_brand_rank=1 if target_mentions > 0 else None,
+            target_brand_sentiment="positive" if target_mentions > 0 else None,
+            sentiment_score=0.7 if target_mentions > 0 else None,
+            geo_score=0.8,
+            raw_analysis_json=None,
+            created_at=DAY,
+            analyzed_at=DAY,
+        )
+    )
+    target: BrandMention | None = None
+    mentions: list[BrandMention] = []
+    if target_mentions > 0:
+        target = BrandMention(
+            response_id=response_id,
+            brand_id=12,
+            brand_name="Estee Lauder",
+            mention_count=target_mentions,
+            position_rank=1,
+            sentiment="positive",
+            sentiment_score=0.7,
+            context_snippet="Estee Lauder was recommended.",
+            created_at=DAY,
+        )
+        mentions.append(target)
+    if competitor_mentions > 0:
+        mentions.append(
+            BrandMention(
+                response_id=response_id,
+                brand_id=99,
+                brand_name="Clinique",
+                mention_count=competitor_mentions,
+                position_rank=2,
+                sentiment="neutral",
+                sentiment_score=0.1,
+                context_snippet="Clinique was also discussed.",
+                created_at=DAY,
+            )
+        )
+    db_session.add_all(mentions)
+    await db_session.flush()
+    if target is not None:
+        db_session.add(
+            SentimentDriver(
+                mention_id=target.id,
+                response_id=response_id,
+                brand_name="Estee Lauder",
+                driver_text="recommended",
+                polarity="positive",
+                category="recommendation",
+                strength=0.8,
+                source_quote="Estee Lauder was recommended.",
+                created_at=DAY,
+            )
+        )
+    if target_citation and target is not None:
+        db_session.add(
+            CitationSource(
+                response_id=response_id,
+                mention_id=target.id,
+                url=f"https://example.com/issue-1152/{response_id}",
+                domain="example.com",
+                title="Issue 1152 evidence",
+                citation_index=1,
+                source_type="official",
+                created_at=DAY,
+            )
+        )
+
+    run = AnalyzerRun(
+        response_id=response_id,
+        schema_version="analyzer_v4",
+        status="done",
+        trigger_source="test",
+        validator_summary_json={
+            "schema_version": "analyzer_v4",
+            "validator_status": "passed",
+            "errors": [],
+            "quality_flag_count": 0,
+        },
+        started_at=DAY,
+        completed_at=DAY,
+    )
+    db_session.add(run)
+    await db_session.flush()
+    entities: list[ResponseEntity] = []
+    if target_mentions > 0:
+        entities.append(
+            ResponseEntity(
+                run_id=run.id,
+                response_id=response_id,
+                entity_key="ent_estee",
+                entity_type="brand",
+                raw_name="Estee Lauder",
+                canonical_id="12",
+                canonical_name="Estee Lauder",
+                canonicalization_status="matched",
+                evidence_quote="Estee Lauder was recommended.",
+                confidence=0.98,
+            )
+        )
+    if competitor_mentions > 0:
+        entities.append(
+            ResponseEntity(
+                run_id=run.id,
+                response_id=response_id,
+                entity_key="ent_clinique",
+                entity_type="brand",
+                raw_name="Clinique",
+                canonical_id="99",
+                canonical_name="Clinique",
+                canonicalization_status="matched",
+                evidence_quote="Clinique was also discussed.",
+                confidence=0.92,
+            )
+        )
+    db_session.add_all(entities)
+    if target_mentions > 0 and competitor_mentions > 0:
+        db_session.add(
+            ResponseRelationFact(
+                run_id=run.id,
+                response_id=response_id,
+                relation_key="relation_compare",
+                subject_entity_key="ent_estee",
+                relation_type="compared_with",
+                object_entity_key="ent_clinique",
+                direction="undirected",
+                evidence_quote="Estee Lauder and Clinique were compared.",
+                confidence=0.88,
+                status="current",
+            )
+        )
+    if target_citation and target is not None:
+        db_session.add(
+            AnalysisFactLink(
+                run_id=run.id,
+                response_id=response_id,
+                fact_type="citation",
+                fact_key="citation_issue_1152",
+                linked_fact_type="mention",
+                linked_fact_key="mention_estee",
+                link_type="supports",
+                evidence_quote="Citation supports the Estee Lauder mention.",
+                source_path="citations.citation_issue_1152.linked_fact_keys",
+                status="current",
+            )
+        )
+    await db_session.commit()
+
+
+def _seed_issue_1152_geo_daily(
+    db_session: AsyncSession,
+    *,
+    mention_rate: float,
+    sov: float,
+    citation_rate: float,
+) -> None:
+    db_session.add(
+        GeoScoreDaily(
+            brand_id=12,
+            date=DAY,
+            target_llm="chatgpt",
+            total_queries=99,
+            mention_count=99,
+            mention_rate=mention_rate,
+            avg_sov=sov,
+            avg_position_rank=1.0,
+            avg_sentiment_score=0.2,
+            citation_rate=citation_rate,
+            avg_visibility=mention_rate,
+            avg_sentiment=0.2,
+            avg_sov_score=sov,
+            avg_citation_score=citation_rate,
+            avg_geo_score=0.9,
+        )
+    )
+
+
+@pytest.mark.asyncio
+async def test_engine_metrics_prefers_fact_backed_visibility_over_stale_daily_rollup(
+    client,
+    user: User,
+    db_session: AsyncSession,
+) -> None:
+    project = await _project(db_session, user)
+    await _seed_admin_chain_tables(db_session)
+    await _seed_issue_1152_engine_facts(
+        db_session,
+        topic_id=115201,
+        prompt_id=115202,
+        query_id=115203,
+        response_id=115204,
+        target_mentions=1,
+        competitor_mentions=2,
+        target_citation=True,
+    )
+    await _seed_issue_1152_engine_facts(
+        db_session,
+        topic_id=115211,
+        prompt_id=115212,
+        query_id=115213,
+        response_id=115214,
+        target_mentions=0,
+        competitor_mentions=1,
+    )
+    _seed_issue_1152_geo_daily(
+        db_session,
+        mention_rate=0.99,
+        sov=0.99,
+        citation_rate=0.99,
+    )
+    await db_session.commit()
+
+    response = await client.get(
+        f"/api/v1/projects/{project.id}/metrics/by-engine",
+        headers=_bearer(user),
+        params={"from": DAY.date().isoformat(), "to": DAY.date().isoformat()},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["state"] == "ok"
+    assert body["formula_status"] == "ok"
+    assert body["source_provenance"]
+    assert "admin_facts" in body["source_provenance"]
+    assert body["evidence_counts"]["admin_fact_response_count"] == 2
+    assert body["metric_formula_evidence"]["coverage"]["formula_status"] == "ok"
+    assert body["metric_formula_evidence"]["sov"]["formula_status"] == "ok"
+    assert body["metric_formula_evidence"]["sov"]["denominator_count"] == 4
+    assert len(body["items"]) == 1
+    row = body["items"][0]
+    assert row["engine"] == "chatgpt"
+    assert row["mention_rate"] == 0.5
+    assert row["sov"] == 0.25
+    assert row["citation_rate"] == 1.0
+
+
+@pytest.mark.asyncio
+async def test_engine_metrics_marks_target_only_sov_partial_and_keeps_mention_rate_fact_backed(
+    client,
+    user: User,
+    db_session: AsyncSession,
+) -> None:
+    project = await _project(db_session, user)
+    await _seed_admin_chain_tables(db_session)
+    await _seed_issue_1152_engine_facts(
+        db_session,
+        topic_id=115221,
+        prompt_id=115222,
+        query_id=115223,
+        response_id=115224,
+        target_mentions=2,
+        competitor_mentions=0,
+        target_citation=True,
+    )
+    _seed_issue_1152_geo_daily(
+        db_session,
+        mention_rate=0.11,
+        sov=1.0,
+        citation_rate=0.77,
+    )
+    await db_session.commit()
+
+    response = await client.get(
+        f"/api/v1/projects/{project.id}/metrics/by-engine",
+        headers=_bearer(user),
+        params={"from": DAY.date().isoformat(), "to": DAY.date().isoformat()},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["state"] == "partial"
+    assert body["state_reason"] == "partial_analyzer_data"
+    assert body["formula_status"] == "partial"
+    assert "target_only_sov" in body["missing_inputs"]
+    assert body["metric_formula_evidence"]["coverage"]["formula_status"] == "ok"
+    sov_evidence = body["metric_formula_evidence"]["sov"]
+    assert sov_evidence["formula_status"] == "missing_required_inputs"
+    assert sov_evidence["numerator_count"] == 2
+    assert sov_evidence["denominator_count"] == 2
+    assert body["items"] == [
+        {
+            "engine": "chatgpt",
+            "mention_rate": 1.0,
+            "sov": None,
+            "citation_rate": 1.0,
+            "sentiment": 0.7,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_engine_metrics_empty_response_keeps_explicit_contract_metadata(
+    client,
+    user: User,
+    db_session: AsyncSession,
+) -> None:
+    project = await _project(db_session, user)
+
+    response = await client.get(
+        f"/api/v1/projects/{project.id}/metrics/by-engine",
+        headers=_bearer(user),
+        params={"from": DAY.date().isoformat(), "to": DAY.date().isoformat()},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["state"] == "empty"
+    assert body["state_reason"] == "no_metric_data"
+    assert body["formula_status"] == "no_evidence"
+    assert body["items"] == []
+    assert isinstance(body["evidence_counts"], dict)
+    assert body["selected_filters"]["date_range"] == {
+        "from": DAY.date().isoformat(),
+        "to": DAY.date().isoformat(),
+    }
+    assert body["source_provenance"]
 
 
 @pytest.mark.asyncio
