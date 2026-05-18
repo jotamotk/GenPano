@@ -234,4 +234,62 @@ describe('BrandSentimentPage response evidence contract', () => {
 
     expect(screen.queryByText(/Mock/i)).not.toBeInTheDocument()
   })
+
+  // Issue #1247: backend's `_label_for_polarity` emits English titlecase
+  // ('Positive' / 'Negative' / 'Neutral'). The previous code compared
+  // `item.label === '正面'` (Chinese), which never matched, so every
+  // badge fell through to the default (pale gray) variant. The fix uses
+  // `item.polarity` (lowercase canonical) for color resolution.
+  it('colors the polarity badge by item.polarity (not item.label) so backend English titlecase still resolves Positive→green / Negative→red / Neutral→default', () => {
+    const polarityFixtures = [
+      { polarity: 'positive', label: 'Positive', expectedClass: 't-badge-success' },
+      { polarity: 'negative', label: 'Negative', expectedClass: 't-badge-danger' },
+      { polarity: 'neutral', label: 'Neutral', expectedClass: 't-badge-default' },
+    ]
+    const polaritySamples = polarityFixtures.map((row, idx) => ({
+      query_id: 7000 + idx,
+      mention_id: 800 + idx,
+      response_id: 900 + idx,
+      label: row.label,
+      polarity: row.polarity,
+      summary: `Polarity row ${row.polarity}`,
+      snippet: `Snippet ${row.polarity}`,
+      response_text: `Full text ${row.polarity}`,
+      engine: 'ChatGPT',
+      topic: `Topic ${row.polarity}`,
+      occurred_at: '2026-05-18T00:00:00Z',
+    }))
+
+    mocks.useMentionSamples.mockImplementation(() => ({
+      data: {
+        project_id: '11111111-2222-3333-4444-555555555555',
+        state: 'ok',
+        metric_formula_evidence: { sentiment: { formula_status: 'ok' } },
+        items: polaritySamples,
+        total: polaritySamples.length,
+        limit: 100,
+        offset: 0,
+        has_more: false,
+        evidence_count: polaritySamples.length,
+        selected_filters: { brand_id: 42, polarity: null },
+      },
+      isLoading: false,
+      error: null,
+    }))
+
+    renderSentimentPage()
+
+    for (const fixture of polarityFixtures) {
+      // The polarity badge sits next to a topic of `Topic <polarity>` and
+      // a summary of `Polarity row <polarity>`. Scope by summary card to
+      // avoid colliding with the polarity *filter* buttons of the same name.
+      const summary = screen.getByText(`Polarity row ${fixture.polarity}`)
+      const card = summary.closest('.rounded-card') as HTMLElement
+      expect(card).not.toBeNull()
+      const badge = card.querySelector('.t-badge') as HTMLElement
+      expect(badge).not.toBeNull()
+      expect(badge).toHaveTextContent(fixture.label)
+      expect(badge).toHaveClass(fixture.expectedClass)
+    }
+  })
 })
