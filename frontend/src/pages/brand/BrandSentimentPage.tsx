@@ -39,6 +39,21 @@ import {
   COMPETITOR_SENTIMENT_BUBBLE,
 } from '../../data/mock';
 
+const RESPONSE_SAMPLE_LIMIT = 100;
+
+type SentimentResponseRow = {
+  label: string;
+  topic: string;
+  engine: string;
+  time: string;
+  summary: string;
+  polarity?: string | null;
+  mentionId?: number | null;
+  responseId?: number | null;
+  snippet?: string | null;
+  fullResponseText?: string | null;
+};
+
 /* ─────────────────────────────────────────────────────────────
    BrandSentimentPage — /brand/sentiment (§4.6-IA-v2.C.2.2 + K/L/N)
    ─────────────────────────────────────────────────────────────
@@ -63,6 +78,7 @@ export default function BrandSentimentPage() {
 
   // Response filter state (kept local — it's a drill-down within the samples card, not a page-level filter)
   const [polarity, setPolarity] = useState('all');
+  const [expandedResponseKey, setExpandedResponseKey] = useState<string | null>(null);
 
   // ── Live data hooks ──
   const { data: liveProjects } = useProjects();
@@ -79,7 +95,7 @@ export default function BrandSentimentPage() {
   const attributionQ = useTopicAttribution(isLive ? liveProjectId : null, 5, chartFilters);
   const samplesQ = useMentionSamples(isLive ? liveProjectId : null, {
     polarity: polarity === 'all' ? undefined : polarity,
-    limit: 30,
+    limit: RESPONSE_SAMPLE_LIMIT,
     filters: chartFilters,
   });
 
@@ -209,8 +225,19 @@ export default function BrandSentimentPage() {
   // ──────────────────────────────────────────────────────────────
   // Filter response samples by polarity (local control)
   // ──────────────────────────────────────────────────────────────
-  const liveSamples = adaptMentionSamples(samplesQ.data);
-  const samplesData = isLive ? liveSamples : SENTIMENT_DETAIL_LIST || [];
+  const rawLiveSamples = samplesQ.data?.items ?? [];
+  const liveSamples = adaptMentionSamples(samplesQ.data).map((sample, idx) => {
+    const raw = rawLiveSamples[idx] || {};
+    return {
+      ...sample,
+      polarity: raw.polarity,
+      mentionId: raw.mention_id,
+      responseId: raw.response_id,
+      snippet: raw.snippet,
+      fullResponseText: (raw as any).full_response_text ?? (raw as any).response_text ?? null,
+    };
+  });
+  const samplesData: SentimentResponseRow[] = isLive ? liveSamples : (SENTIMENT_DETAIL_LIST || []);
   const samplesIsMock = !isLive;
   const positiveKeywords = isLive
     ? (canUseMetricEvidence(sentimentQ.data, 'sentiment') ? sentimentQ.data?.top_keywords || [] : [])
@@ -222,12 +249,23 @@ export default function BrandSentimentPage() {
         .filter((kw) => kw.polarity === 'negative')
         .map((kw) => ({ word: kw.keyword, weight: kw.count }))
     : SENTIMENT_KEYWORDS.negative || [];
-  const filteredResponses = samplesData.filter((item: any) => {
+  const filteredResponses = samplesData.filter((item: SentimentResponseRow) => {
     if (polarity === 'all') return true;
-    if (polarity === 'positive') return item.label === '正面';
-    if (polarity === 'negative') return item.label === '负面';
+    const normalizedPolarity = String(item.polarity || item.label || '').toLowerCase();
+    if (polarity === 'positive') return normalizedPolarity === 'positive' || item.label === '正面';
+    if (polarity === 'negative') return normalizedPolarity === 'negative' || item.label === '负面';
     return true;
   });
+  const fetchedResponseCount = samplesData.length;
+  const visibleResponseCount = filteredResponses.length;
+  const fetchedWindowIsFull = fetchedResponseCount < RESPONSE_SAMPLE_LIMIT;
+  const responseWindowLabel = isLive
+    ? fetchedWindowIsFull
+      ? `Showing ${visibleResponseCount} of ${fetchedResponseCount} fetched responses`
+      : `Showing ${visibleResponseCount} fetched responses; API limit ${RESPONSE_SAMPLE_LIMIT} may hide more`
+    : `Showing ${visibleResponseCount} demo responses`;
+  const responseApiNeed =
+    'Needs backend fields: total_count, has_more, next_cursor, full_response_text, response_id, mention_id.';
 
   return (
     <div className="space-y-4">
@@ -425,14 +463,17 @@ export default function BrandSentimentPage() {
             {t('brand_sentiment.samples_title')}
             {samplesIsMock && <MockDataBadge />}
           </h3>
-          <span className="text-[11px] text-themed-muted">{filteredResponses.length} 条</span>
+          <span className="text-[11px] text-themed-muted">{responseWindowLabel}</span>
         </div>
 
         <div className="flex gap-1.5 mb-4">
           {['all', 'positive', 'negative'].map((pol) => (
             <button
               key={pol}
-              onClick={() => setPolarity(pol)}
+              onClick={() => {
+                setPolarity(pol);
+                setExpandedResponseKey(null);
+              }}
               className="px-3 py-1.5 rounded-pill text-xs font-medium transition-colors"
               style={
                 polarity === pol
@@ -448,7 +489,18 @@ export default function BrandSentimentPage() {
         </div>
 
         <div className="flex flex-col gap-3">
-          {filteredResponses.slice(0, 6).map((item, idx) => (
+          {isLive && (
+            <div className="rounded-card border border-dashed border-themed-subtle bg-themed-subtle/60 p-3">
+              <p className="text-xs text-themed-muted leading-relaxed">
+                {fetchedWindowIsFull
+                  ? 'The page renders every response returned by the current fetch.'
+                  : 'The page renders the fetched window, but backend pagination metadata is needed before this proves the full corpus.'}
+              </p>
+              <p className="text-[11px] text-themed-muted mt-1">{responseApiNeed}</p>
+            </div>
+          )}
+
+          {filteredResponses.map((item, idx) => (
             <div
               key={idx}
               className="rounded-card bg-themed-subtle p-3 border-l-4"
@@ -470,6 +522,54 @@ export default function BrandSentimentPage() {
               </div>
               <p className="font-medium text-[10px] text-themed-muted mb-1">{item.topic}</p>
               <p className="text-sm text-themed-primary leading-relaxed">{item.summary}</p>
+              <div className="mt-3 flex items-center justify-between gap-2">
+                <span className="text-[10px] text-themed-muted">
+                  response_id: {item.responseId ?? 'pending'} · mention_id: {item.mentionId ?? 'pending'}
+                </span>
+                <button
+                  type="button"
+                  aria-expanded={expandedResponseKey === `${item.responseId ?? 'response'}-${item.mentionId ?? idx}`}
+                  aria-label={`Inspect full response for ${item.summary}`}
+                  onClick={() => {
+                    const responseKey = `${item.responseId ?? 'response'}-${item.mentionId ?? idx}`;
+                    setExpandedResponseKey(expandedResponseKey === responseKey ? null : responseKey);
+                  }}
+                  className="px-2.5 py-1 rounded-pill text-[11px] font-medium transition-colors"
+                  style={{
+                    background:
+                      expandedResponseKey === `${item.responseId ?? 'response'}-${item.mentionId ?? idx}`
+                        ? 'var(--color-accent-bg-light)'
+                        : 'var(--color-bg-card)',
+                    border: '1px solid var(--color-border-subtle)',
+                    color:
+                      expandedResponseKey === `${item.responseId ?? 'response'}-${item.mentionId ?? idx}`
+                        ? 'var(--color-text-accent)'
+                        : 'var(--color-text-muted)',
+                  }}
+                >
+                  {expandedResponseKey === `${item.responseId ?? 'response'}-${item.mentionId ?? idx}` ? 'Hide details' : 'Inspect'}
+                </button>
+              </div>
+              {expandedResponseKey === `${item.responseId ?? 'response'}-${item.mentionId ?? idx}` && (
+                <div className="mt-3 rounded-card bg-themed-card border border-themed-subtle p-3">
+                  <p className="text-xs font-semibold text-themed-primary">Full response inspection</p>
+                  {item.fullResponseText ? (
+                    <p className="text-sm text-themed-primary leading-relaxed mt-2 whitespace-pre-wrap">
+                      {item.fullResponseText}
+                    </p>
+                  ) : (
+                    <div className="mt-2 space-y-2">
+                      <p className="text-sm text-themed-primary leading-relaxed">
+                        Full response text is not available from the current API payload.
+                      </p>
+                      {item.snippet && (
+                        <p className="text-xs text-themed-muted leading-relaxed">Current snippet: {item.snippet}</p>
+                      )}
+                      <p className="text-[11px] text-themed-muted">{responseApiNeed}</p>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           ))}
 
