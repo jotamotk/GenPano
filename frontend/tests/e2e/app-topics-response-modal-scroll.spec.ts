@@ -35,9 +35,17 @@ type CandidateScanSummary = {
   queryResponseRequests: number
   queryResponseErrors: number
   candidatesWithAnalyzerFacts: number
+  categoryCounts: CandidateCategoryCounts
   maxRawTextCandidate: CandidateSummary | null
   selectedCandidate: CandidateSummary | null
   blockers: string[]
+}
+
+type CandidateCategoryCounts = {
+  healthyResponseCandidates: number
+  unhealthyResponseCandidates: number
+  rateLimitBlockers: number
+  duplicateAttemptsSkipped: number
 }
 
 type CandidateSummary = {
@@ -252,9 +260,10 @@ function summarizeCandidate(probe: ModalProbe): CandidateSummary {
 }
 
 function candidateScanSummary(
-  scan: Omit<CandidateScanSummary, 'candidatesWithAnalyzerFacts' | 'maxRawTextCandidate' | 'selectedCandidate' | 'blockers'>,
+  scan: Omit<CandidateScanSummary, 'candidatesWithAnalyzerFacts' | 'categoryCounts' | 'maxRawTextCandidate' | 'selectedCandidate' | 'blockers'>,
   candidates: ModalProbe[],
   blockers: string[],
+  overrides: Partial<CandidateCategoryCounts> = {},
 ): CandidateScanSummary {
   const selected = selectStrongestModalProbe(candidates)
   const maxRawTextCandidate = [...candidates].sort((left, right) => {
@@ -264,6 +273,13 @@ function candidateScanSummary(
   return {
     ...scan,
     candidatesWithAnalyzerFacts: candidates.filter(candidate => candidate.analyzerFactCount > 0).length,
+    categoryCounts: {
+      healthyResponseCandidates: candidates.length,
+      unhealthyResponseCandidates: scan.queryResponseErrors,
+      rateLimitBlockers: 0,
+      duplicateAttemptsSkipped: scan.skippedDuplicateAttempts,
+      ...overrides,
+    },
     maxRawTextCandidate: maxRawTextCandidate ? summarizeCandidate(maxRawTextCandidate) : null,
     selectedCandidate: selected ? summarizeCandidate(selected) : null,
     blockers,
@@ -272,7 +288,9 @@ function candidateScanSummary(
 
 function rateLimitWithPartialSummary(error: unknown, scan: Parameters<typeof candidateScanSummary>[0], candidates: ModalProbe[], blockers: string[]) {
   const message = error instanceof Error ? error.message : String(error)
-  return new RateLimitBlockerError(`${message}; partial_candidate_summary=${JSON.stringify(candidateScanSummary(scan, candidates, blockers))}`)
+  return new RateLimitBlockerError(
+    `${message}; partial_candidate_summary=${JSON.stringify(candidateScanSummary(scan, candidates, blockers, { rateLimitBlockers: 1 }))}`,
+  )
 }
 
 function selectStrongestModalProbe(candidates: ModalProbe[]) {
@@ -589,10 +607,29 @@ test.describe('Live App Topics response modal scroll gate', () => {
       analyzerScroll: { before: analyzerBefore },
     }
     await fs.writeFile(`${SCREENSHOT_DIR}/summary.json`, JSON.stringify(summaryPayload, null, 2))
-    assertCondition(
-      mainBefore.canScroll,
-      `DATA_BLOCKER: strongest scanned response did not make the main response pane scrollable. candidate_summary=${JSON.stringify(probe.candidateSummary)} main=${JSON.stringify(mainBefore)}`,
-    )
+    if (!mainBefore.canScroll) {
+      const finalBlocker = {
+        status: 'DATA_BLOCKER',
+        reason: 'strongest_scanned_healthy_response_did_not_overflow_main_pane',
+        categoryCounts: {
+          healthyResponseCandidates: probe.candidateSummary?.categoryCounts.healthyResponseCandidates ?? 0,
+          unhealthyResponseCandidates: probe.candidateSummary?.categoryCounts.unhealthyResponseCandidates ?? 0,
+          rateLimitBlockers: probe.candidateSummary?.categoryCounts.rateLimitBlockers ?? 0,
+          duplicateAttemptsSkipped: probe.candidateSummary?.categoryCounts.duplicateAttemptsSkipped ?? 0,
+          openedNonOverflowingCandidates: 1,
+        },
+        selectedCandidate: probe.candidateSummary?.selectedCandidate,
+        maxRawTextCandidate: probe.candidateSummary?.maxRawTextCandidate,
+        candidateSummary: probe.candidateSummary,
+        modalMetrics: {
+          main: mainBefore,
+          analyzer: analyzerBefore,
+        },
+      }
+      await fs.writeFile(`${SCREENSHOT_DIR}/final-blocker.json`, JSON.stringify(finalBlocker, null, 2))
+      console.log(`FINAL_TOPICS_RESPONSE_MODAL_SCROLL_BLOCKER ${JSON.stringify(finalBlocker)}`)
+      throw new Error(`DATA_BLOCKER: strongest scanned response did not make the main response pane scrollable. final_blocker=${JSON.stringify(finalBlocker)}`)
+    }
 
     const mainAfter = await scrollToBottom(mainPane)
     const analyzerAfter = analyzerBefore.canScroll ? await scrollToBottom(analyzerPane) : analyzerBefore
