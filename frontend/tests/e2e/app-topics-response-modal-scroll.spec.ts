@@ -344,6 +344,12 @@ function attachCandidateSummary(selected: ModalProbe, candidateSummary: Candidat
   return selected
 }
 
+function selectedCandidateCardIndex(cardTexts: string[], queryText: string) {
+  const queryNeedle = compactText(queryText).slice(0, 80)
+  if (!queryNeedle) return -1
+  return cardTexts.findIndex(text => compactText(text).includes(queryNeedle))
+}
+
 async function findModalProbe(baseUrl: string, token: string): Promise<ModalProbe> {
   const blockers: string[] = []
   const candidates: ModalProbe[] = []
@@ -546,11 +552,20 @@ async function openResponseAttemptsModal(page: Page, baseUrl: string, probe: Mod
   const cardTexts = await groupCards.evaluateAll(cards =>
     cards.map(card => String((card as HTMLElement).innerText || card.textContent || '').replace(/\s+/g, ' ').trim()),
   )
-  const queryNeedle = probe.queryText.slice(0, 80)
-  const selectedIndex = queryNeedle
-    ? cardTexts.findIndex(text => text.includes(queryNeedle))
-    : -1
-  const card = groupCards.nth(selectedIndex >= 0 ? selectedIndex : 0)
+  const selectedIndex = selectedCandidateCardIndex(cardTexts, probe.queryText)
+  if (selectedIndex < 0) {
+    const blocker = {
+      status: 'DATA_BLOCKER',
+      reason: 'selected_candidate_card_not_found',
+      selectedQueryId: probe.queryId,
+      selectedQueryTextSnippet: compactText(probe.queryText).slice(0, 160),
+      cardCount: cardTexts.length,
+      firstCardSnippets: cardTexts.slice(0, 5).map(text => text.slice(0, 160)),
+      candidateSummary: probe.candidateSummary,
+    }
+    throw new Error(`DATA_BLOCKER: selected response candidate card not found. blocker=${JSON.stringify(blocker)}`)
+  }
+  const card = groupCards.nth(selectedIndex)
   const responsePath = `/api/v1/projects/${probe.projectId}/queries/${probe.queryId}/response`
   const responsePromise = page
     .waitForResponse(
@@ -588,6 +603,15 @@ async function waitForResponseModalLoaded(modal: Locator, responsePromise: Promi
       loaded: false,
       status: 'RESPONSE_ENDPOINT_BLOCKER',
       reason: 'selected_query_response_api_failed',
+      apiEvidence,
+    }
+  }
+
+  if (!apiEvidence.ok) {
+    return {
+      loaded: false,
+      status: 'RESPONSE_LOAD_BLOCKER',
+      reason: 'selected_query_response_api_not_observed_successfully',
       apiEvidence,
     }
   }
@@ -662,6 +686,16 @@ test.describe('Response modal candidate ranking', () => {
     ]
 
     expect(selectStrongestModalProbe(candidates)?.queryId).toBe(200)
+  })
+
+  test('does not silently fall back when the selected candidate card is missing', () => {
+    const cardTexts = [
+      'Logical query group unrelated first card Response attempts',
+      'Logical query group another unrelated card Response attempts',
+    ]
+
+    expect(selectedCandidateCardIndex(cardTexts, 'selected query text that is not rendered')).toBe(-1)
+    expect(selectedCandidateCardIndex([...cardTexts, 'Logical query group selected query text that is rendered'], 'selected query text that is rendered')).toBe(2)
   })
 })
 
