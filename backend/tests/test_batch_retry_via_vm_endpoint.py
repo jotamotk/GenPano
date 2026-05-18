@@ -31,11 +31,11 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-import pytest
-import pytest_asyncio
-from genpano_models import AdminUser
-from sqlalchemy import text as sa_text
-from sqlalchemy.ext.asyncio import AsyncSession
+import pytest  # noqa: E402
+import pytest_asyncio  # noqa: E402
+from genpano_models import AdminUser  # noqa: E402
+from sqlalchemy import text as sa_text  # noqa: E402
+from sqlalchemy.ext.asyncio import AsyncSession  # noqa: E402
 
 os.environ.setdefault("USER_JWT_SECRET", "x" * 64)
 
