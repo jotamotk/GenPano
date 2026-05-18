@@ -1,9 +1,12 @@
 # Documentation
 
+> **Authoritative navigation:** [`INDEX.md`](INDEX.md). 本文件只列"canonical
+> references"短清单，且**未跟上 PRD 归档**（详情见下）；后续会合并到 INDEX。
+
 Canonical product and implementation references:
 
 - `ACTIVE_SURFACES.md`
-- `PRD.md`
+- `PRD.md` — ⚠️ **stub**：旧 PRD 已 archive，指向 `frontend/src/data/mock.js` + 代码作事实来源
 - `PRD_APP_ANALYTICS_CORRECTION.md`
 - `PRD_ADMIN_ANALYZER_V4.md`
 - `PRD_CODEX_READY.md`

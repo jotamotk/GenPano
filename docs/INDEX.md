@@ -7,8 +7,10 @@ added to the appropriate section below.
 For the project-level entry point see the repository root `README.md`. For
 agent collaboration rules see `AGENTS.md` at the repository root.
 
-> Note: `docs/PRD.md` is currently a single ~500 KB monolithic file. Splitting
-> it per release phase is recommended as a follow-up (out of scope here).
+> Note: 旧的 `docs/PRD.md` (v1.3, ~500 KB) 已 archive 到
+> [`docs/archive/PRD-v1.3-2026-04-15.md`](archive/PRD-v1.3-2026-04-15.md)。
+> 当前 `docs/PRD.md` 是 stub，指向代码 + `frontend/src/data/mock.js` 作为事实来源。
+> Addendum 文档（`PRD_ADDENDUM_PHASE_P.md` 等）尚未处理，下一轮维护再清理。
 
 ---
 
@@ -16,7 +18,7 @@ agent collaboration rules see `AGENTS.md` at the repository root.
 
 Cross-cutting product spec, addenda, and per-area PRDs.
 
-- [`PRD.md`](PRD.md) — canonical product requirements (large; consider splitting)
+- [`PRD.md`](PRD.md) — **stub**：旧 PRD 已 archive，指向代码 + mock.js 作事实来源
 - [`PRD_ADDENDUM_PHASE_P.md`](PRD_ADDENDUM_PHASE_P.md) — Phase P additions
 - [`PRD_CODEX_READY.md`](PRD_CODEX_READY.md) — Codex-implementable PRD snapshot
 - [`PRD_APP_ANALYTICS_CORRECTION.md`](PRD_APP_ANALYTICS_CORRECTION.md) — App analytics no-fallback corrections
@@ -87,6 +89,14 @@ Codex / AI Lead workflow and handoff rules. See also `AGENTS.md` at repo root.
 ## Test Plans
 
 - [`test-plan-auth.md`](test-plan-auth.md) — auth test plan
+
+## Archive
+
+Historical documents kept for grep / context only. See
+[`archive/README.md`](archive/README.md) for the agent reading rule.
+
+- [`archive/README.md`](archive/README.md) — archive policy + index
+- [`archive/PRD-v1.3-2026-04-15.md`](archive/PRD-v1.3-2026-04-15.md) — old monolithic PRD (superseded 2026-05-18)
 
 ## Architecture Decision Records (ADRs)
 
