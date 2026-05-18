@@ -173,6 +173,48 @@ jobs:
           ' </dev/null 2>&1 || true
           echo ""
 
+          echo "=== Host-side reachability to its own socat (loopback + docker0) ==="
+          # If socat is healthy, both should return non-000.
+          # If host->127.0.0.1:9098 fails, socat is broken.
+          # If host->127.0.0.1:9098 works but host->172.17.0.1:9098 fails,
+          # the host's own IP on docker0 is firewalled.
+          echo "--- host -> 127.0.0.1:9098 ---"
+          curl -sS --max-time 3 -o /tmp/h_lo.json \
+            -w "http_code=%{http_code} time=%{time_total}s\n" \
+            http://127.0.0.1:9098/proxies || true
+          head -c 200 /tmp/h_lo.json 2>/dev/null || true
+          echo
+          echo "--- host -> 172.17.0.1:9098 ---"
+          curl -sS --max-time 3 -o /tmp/h_d0.json \
+            -w "http_code=%{http_code} time=%{time_total}s\n" \
+            http://172.17.0.1:9098/proxies || true
+          head -c 200 /tmp/h_d0.json 2>/dev/null || true
+          echo
+
+          echo "=== Host firewall state ==="
+          echo "--- ufw status ---"
+          ufw status verbose 2>&1 | head -25 || echo "(ufw not installed)"
+          echo
+          echo "--- iptables INPUT chain (port-related rules) ---"
+          iptables -L INPUT -n -v 2>&1 | head -30 || true
+          echo
+          echo "--- iptables FORWARD chain (top 30 lines) ---"
+          iptables -L FORWARD -n -v 2>&1 | head -30 || true
+          echo
+          echo "--- iptables DOCKER-USER chain ---"
+          iptables -L DOCKER-USER -n -v 2>&1 | head -30 || echo "(no DOCKER-USER chain)"
+          echo
+          echo "--- iptables nat OUTPUT (for 9098) ---"
+          iptables -t nat -L OUTPUT -n -v 2>&1 | grep -E '9098|9097|dpt:' | head -10 || true
+          echo
+
+          echo "=== Docker networks (which subnet hosts the worker?) ==="
+          docker network ls --format '{{.Name}} driver={{.Driver}} scope={{.Scope}}' 2>&1 | head -10 || true
+          echo
+          worker_net="$(docker inspect genpano-worker-1 --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}={{$v.IPAddress}}/{{$v.Gateway}} {{end}}' 2>&1)"
+          echo "worker_networks: ${worker_net}"
+          echo
+
           echo "=== Same probe through ensure_global_proxy_route (same Python path as production) ==="
           docker compose exec -T worker python - <<'PY' </dev/null 2>&1 || true
           import asyncio, json, os
