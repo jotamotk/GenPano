@@ -50,6 +50,11 @@ on:
         required: false
         default: '0'
         type: string
+      topic_names_filter:
+        description: 'Optional: CSV of topic name substrings to include (empty = all topics). Each comma-separated value is OR-ed via ILIKE %substr%.'
+        required: false
+        default: ''
+        type: string
 
 jobs:
   bulk:
@@ -126,14 +131,34 @@ jobs:
           # gets a 2nd slot. This spreads the N quota across diversity
           # instead of dumping into the largest topic/prompt cluster.
           OFFSET="${{ inputs.offset }}"
+          # Optional topic-name filter: split CSV → build OR-of-ILIKE on
+          # topics.name. Empty filter → all topics. Used to target
+          # under-represented topics (operator-pointed) for extra reps.
+          TOPIC_NAMES_CSV="${{ inputs.topic_names_filter }}"
+          if [ -n "$TOPIC_NAMES_CSV" ]; then
+            TOPIC_CLAUSE="AND ("
+            IFS=',' read -ra TOPIC_PARTS <<< "$TOPIC_NAMES_CSV"
+            FIRST=1
+            for p in "${TOPIC_PARTS[@]}"; do
+              p="${p#"${p%%[![:space:]]*}"}"; p="${p%"${p##*[![:space:]]}"}"
+              [ -z "$p" ] && continue
+              if [ $FIRST -eq 1 ]; then FIRST=0; else TOPIC_CLAUSE="${TOPIC_CLAUSE} OR "; fi
+              TOPIC_CLAUSE="${TOPIC_CLAUSE}t.name ILIKE '%${p}%'"
+            done
+            TOPIC_CLAUSE="${TOPIC_CLAUSE})"
+          else
+            TOPIC_CLAUSE=""
+          fi
           SQL="WITH ranked AS (
                  SELECT q.id, q.query_text, p.topic_id, q.prompt_id,
                         ROW_NUMBER() OVER (PARTITION BY p.topic_id, q.prompt_id ORDER BY q.id DESC) AS rn
                  FROM queries q
                  LEFT JOIN prompts p ON p.id = q.prompt_id
+                 LEFT JOIN topics t ON t.id = p.topic_id
                  WHERE q.target_llm = '${TARGET_LLM}'
                    AND q.query_text ILIKE '${QUERY_FILTER}'
                    AND q.status IN ('failed', 'expired', 'pending', 'no_response')
+                   ${TOPIC_CLAUSE}
                )
                SELECT id || '||' || replace(query_text, E'\\n', ' ')
                FROM ranked
