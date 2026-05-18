@@ -152,9 +152,23 @@ vi.mock('../hooks/useBrandMetrics', () => ({
       primary_brand_id: 12,
       period: { from: '2026-05-01', to: '2026-05-11' },
       state: 'partial',
-      state_reason: 'competitor_rows_missing',
+      state_reason: 'missing_formula_inputs',
+      formula_status: 'missing_required_inputs',
+      missing_inputs: ['eligible_response_denominator'],
       primary: null,
       competitors: [],
+      project_scope: {
+        exists: true,
+        project_id: '95d43022-a5c8-5944-b6d6-34b29faa18b5',
+        primary_brand_id: 12,
+        requested_brand_id: 12,
+        competitor_brand_ids: [2],
+      },
+      evidence_counts: {
+        competitor_brand_count: 1,
+        eligible_response_count: 0,
+        competitive_mention_count: 468,
+      },
       metric_definitions: {
         avg_sov: {
           metric_key: 'avg_sov',
@@ -217,6 +231,10 @@ describe('DashboardPage partial analytics rendering', () => {
 
     expect(screen.getAllByText('82.9%').length).toBeGreaterThan(0)
     expect(screen.getAllByText('97.3%').length).toBeGreaterThan(0)
+    expect(screen.getByText('Competitor quadrant is partial')).toBeInTheDocument()
+    expect(screen.getByText(/missing formula inputs/i)).toBeInTheDocument()
+    expect(screen.getByText(/eligible response denominator/i)).toBeInTheDocument()
+    expect(screen.queryByText('Competitor quadrant is waiting for evidence')).not.toBeInTheDocument()
     expect(screen.getByText('暂无声量份额数据')).toBeInTheDocument()
     expect(screen.getAllByText(/#—|#-/).length).toBeGreaterThan(0)
   })

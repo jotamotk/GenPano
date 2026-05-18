@@ -122,4 +122,63 @@ describe('BrandPanoramaPanel live KPI rendering', () => {
     expect(screen.getByText('Bubble: co-mentions / evidence count')).toBeInTheDocument()
     expect(screen.getByText(/1 brand has incomplete SoV or sentiment evidence/i)).toBeInTheDocument()
   })
+
+  it('shows endpoint partial state instead of plotting finite competitor rows', () => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/brand/overview']}>
+          <LocaleProvider initialLocale="en-US">
+            <BrandPanoramaPanel
+              primary={{
+                id: '12',
+                name: 'Estee Lauder',
+                nameZh: 'Estee Lauder',
+                nameEn: 'Estee Lauder',
+                panoScore: 80,
+                mentionRate: 0.829,
+                sov: 97.3,
+                sentiment: 0,
+                ranking: null,
+                industryId: '7',
+              }}
+              competitors={[]}
+              sovDataOverride={[{ name: 'Estee Lauder', value: 97.3 }]}
+              bubbleDataOverride={[
+                {
+                  brand: '',
+                  sov: null,
+                  sentiment: null,
+                  mentions: 0,
+                  endpointState: 'partial',
+                  stateReason: 'missing_formula_inputs',
+                  missingInputs: ['eligible_response_denominator'],
+                  configuredCompetitorCount: 1,
+                },
+                { brand: 'Estee Lauder', sov: 97.3, sentiment: 0.2, mentions: 9 },
+                { brand: 'La Roche-Posay', sov: 2.7, sentiment: 0.1, mentions: 7 },
+              ]}
+              trendDataOverride={[]}
+              sparklineOverride={{
+                mention: [82.9],
+                sov: [97.3],
+                sentiment: [0],
+                citation: [],
+                rank: [],
+              }}
+              isLive
+            />
+          </LocaleProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+
+    expect(screen.getByText('Competitor quadrant is partial')).toBeInTheDocument()
+    expect(screen.getByText(/missing formula inputs/i)).toBeInTheDocument()
+    expect(screen.getByText(/eligible response denominator/i)).toBeInTheDocument()
+    expect(screen.queryByText('X: Share of Voice')).not.toBeInTheDocument()
+  })
 })

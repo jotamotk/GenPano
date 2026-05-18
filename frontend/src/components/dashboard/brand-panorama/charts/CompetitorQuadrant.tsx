@@ -11,6 +11,10 @@ type BubbleDatum = {
   sov: number | null;
   sentiment: number | null;
   mentions: number;
+  endpointState?: string | null;
+  stateReason?: string | null;
+  missingInputs?: string[];
+  configuredCompetitorCount?: number | null;
 };
 
 type CompetitorQuadrantProps = {
@@ -19,16 +23,47 @@ type CompetitorQuadrantProps = {
   t: TFunction;
 };
 
+function labelize(value: string | null | undefined) {
+  return String(value || '')
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
 export default function CompetitorQuadrant({ data, primaryName, t }: CompetitorQuadrantProps) {
   const rows = Array.isArray(data) ? data : [];
-  const axisReadyRows = rows.filter(
+  const endpointStateRow = rows.find((row) => row.endpointState && row.endpointState !== 'ok');
+  const chartRows = rows.filter((row) => row.brand);
+  const axisReadyRows = chartRows.filter(
     (row): row is BubbleDatum & { sov: number; sentiment: number } =>
       Number.isFinite(row.sov) && Number.isFinite(row.sentiment),
   );
-  const axisIncompleteCount = rows.length - axisReadyRows.length;
+  const axisIncompleteCount = chartRows.length - axisReadyRows.length;
   const missingWeightCount = axisReadyRows.filter((row) => !Number.isFinite(row.mentions) || row.mentions <= 0).length;
 
-  if (rows.length === 0) {
+  if (endpointStateRow) {
+    const state = endpointStateRow.endpointState || 'partial';
+    const reason = labelize(endpointStateRow.stateReason);
+    const missingInputs = endpointStateRow.missingInputs?.map(labelize).filter(Boolean) ?? [];
+    const configuredCount = endpointStateRow.configuredCompetitorCount;
+    return (
+      <div className="flex h-[300px] flex-col items-center justify-center gap-2 text-center">
+        <div className="text-sm font-medium text-themed-primary">
+          Competitor quadrant is {state}
+        </div>
+        <div className="max-w-sm text-xs leading-relaxed text-themed-muted">
+          The metrics endpoint marked this competitive set as incomplete, so SoV and sentiment are not plotted as normal bubbles.
+        </div>
+        <div className="max-w-sm text-[11px] leading-relaxed text-themed-muted">
+          {[reason, ...missingInputs].filter(Boolean).join(' · ')}
+          {configuredCount != null && (
+            <span>{`${reason || missingInputs.length ? ' · ' : ''}${configuredCount} configured competitor${configuredCount === 1 ? '' : 's'}`}</span>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  if (chartRows.length === 0) {
     return (
       <div className="flex h-[300px] flex-col items-center justify-center gap-2 text-center">
         <div className="text-sm font-medium text-themed-primary">Competitor quadrant is waiting for evidence</div>
@@ -44,7 +79,7 @@ export default function CompetitorQuadrant({ data, primaryName, t }: CompetitorQ
       <div className="flex h-[300px] flex-col items-center justify-center gap-2 text-center">
         <div className="text-sm font-medium text-themed-primary">Competitor quadrant is partial</div>
         <div className="max-w-sm text-xs leading-relaxed text-themed-muted">
-          SoV or sentiment evidence is incomplete for {rows.length} brand{rows.length === 1 ? '' : 's'}, so the axes are not trustworthy yet.
+          SoV or sentiment evidence is incomplete for {chartRows.length} brand{chartRows.length === 1 ? '' : 's'}, so the axes are not trustworthy yet.
         </div>
       </div>
     );
