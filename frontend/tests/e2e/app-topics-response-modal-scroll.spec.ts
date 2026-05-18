@@ -76,6 +76,7 @@ const LIVE_API_THROTTLE_MS = Number(process.env.APP_TOPICS_RESPONSE_MODAL_API_TH
 const LIVE_API_RATE_LIMIT_RETRIES = Number(process.env.APP_TOPICS_RESPONSE_MODAL_RATE_LIMIT_RETRIES || 3)
 const LIVE_API_RATE_LIMIT_BUFFER_MS = Number(process.env.APP_TOPICS_RESPONSE_MODAL_RATE_LIMIT_BUFFER_MS || 1500)
 const LIVE_API_RATE_LIMIT_MAX_WAIT_MS = Number(process.env.APP_TOPICS_RESPONSE_MODAL_RATE_LIMIT_MAX_WAIT_MS || 60_000)
+const HIGH_CONFIDENCE_RAW_TEXT_LENGTH = Number(process.env.APP_TOPICS_RESPONSE_MODAL_HIGH_CONFIDENCE_RAW_TEXT_LENGTH || 4000)
 
 class RateLimitBlockerError extends Error {
   constructor(message: string) {
@@ -327,6 +328,22 @@ function selectStrongestModalProbe(candidates: ModalProbe[]) {
   })[0] || null
 }
 
+function isHighConfidenceCandidate(candidate: ModalProbe | null) {
+  return Boolean(candidate && candidate.rawTextLength >= HIGH_CONFIDENCE_RAW_TEXT_LENGTH && candidate.analyzerFactCount > 0)
+}
+
+function attachCandidateSummary(selected: ModalProbe, candidateSummary: CandidateScanSummary, reason: string) {
+  selected.candidateSummary = candidateSummary
+  selected.fallbackReason =
+    `${reason}: scanned_attempts=${candidateSummary.scannedAttempts}; ` +
+    `selected_query_id=${selected.queryId}; selected_raw_text_length=${selected.rawTextLength}; ` +
+    `selected_analyzer_fact_count=${selected.analyzerFactCount}; ` +
+    `max_raw_text_query_id=${candidateSummary.maxRawTextCandidate?.queryId ?? '<none>'}; ` +
+    `max_raw_text_length=${candidateSummary.maxRawTextCandidate?.rawTextLength ?? 0}; ` +
+    `candidates_with_analyzer_facts=${candidateSummary.candidatesWithAnalyzerFacts}`
+  return selected
+}
+
 async function findModalProbe(baseUrl: string, token: string): Promise<ModalProbe> {
   const blockers: string[] = []
   const candidates: ModalProbe[] = []
@@ -493,6 +510,12 @@ async function findModalProbe(baseUrl: string, token: string): Promise<ModalProb
           listEndpointErrors: scan.listEndpointErrors,
         }),
     )
+    const strongestSoFar = selectStrongestModalProbe(candidates)
+    if (isHighConfidenceCandidate(strongestSoFar)) {
+      const candidateSummary = candidateScanSummary(scan, candidates, blockers)
+      console.log(`TOPICS_MODAL_HIGH_CONFIDENCE_CANDIDATE_STOP ${JSON.stringify(candidateSummary)}`)
+      return attachCandidateSummary(strongestSoFar, candidateSummary, 'High-confidence candidate selected before exhausting fallback slices')
+    }
   }
 
   const selected = selectStrongestModalProbe(candidates)
@@ -500,15 +523,7 @@ async function findModalProbe(baseUrl: string, token: string): Promise<ModalProb
   console.log(`TOPICS_MODAL_CANDIDATE_SCAN_SUMMARY ${JSON.stringify(candidateSummary)}`)
 
   if (selected) {
-    selected.candidateSummary = candidateSummary
-    selected.fallbackReason =
-      `Candidate scan complete: scanned_attempts=${scan.scannedAttempts}; ` +
-      `selected_query_id=${selected.queryId}; selected_raw_text_length=${selected.rawTextLength}; ` +
-      `selected_analyzer_fact_count=${selected.analyzerFactCount}; ` +
-      `max_raw_text_query_id=${candidateSummary.maxRawTextCandidate?.queryId ?? '<none>'}; ` +
-      `max_raw_text_length=${candidateSummary.maxRawTextCandidate?.rawTextLength ?? 0}; ` +
-      `candidates_with_analyzer_facts=${candidateSummary.candidatesWithAnalyzerFacts}`
-    return selected
+    return attachCandidateSummary(selected, candidateSummary, 'Candidate scan complete')
   }
   throw new Error(`DATA_BLOCKER: no real response attempt could be selected for Response attempts modal. ${JSON.stringify(candidateSummary)}`)
 }
