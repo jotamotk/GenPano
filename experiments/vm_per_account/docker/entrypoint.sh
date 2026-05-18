@@ -85,8 +85,14 @@ sleep 5
 # start with "another Chrome is using this profile".
 echo "[entrypoint] starting Chrome supervisor (CDP internal=$CDP_INTERNAL_PORT, external via socat=$CDP_PORT, profile=/profile)..."
 (
+  # CRITICAL: subshells inherit `set -euo pipefail` from the parent
+  # entrypoint, so when google-chrome exits non-zero (the common case
+  # for crashes / Doubao-induced kills), `set -e` aborts THIS subshell
+  # and the while-loop never iterates. Disable errexit + pipefail here
+  # so the loop survives Chrome failures.
+  set +eo pipefail
   while true; do
-    rm -f /profile/SingletonLock /profile/SingletonCookie /profile/SingletonSocket 2>/dev/null || true
+    rm -f /profile/SingletonLock /profile/SingletonCookie /profile/SingletonSocket 2>/dev/null
     echo "[chrome-supervisor $(date -u +%Y-%m-%dT%H:%M:%SZ)] launching chrome" >> /var/log/chrome.log
     google-chrome \
       --user-data-dir=/profile \
@@ -95,6 +101,7 @@ echo "[entrypoint] starting Chrome supervisor (CDP internal=$CDP_INTERNAL_PORT, 
       --no-sandbox --no-first-run --no-default-browser-check \
       --disable-blink-features=AutomationControlled \
       --disable-dev-shm-usage \
+      --disable-gpu \
       --window-size=1920,1080 \
       "$CHROME_TARGET_URL" \
       >> /var/log/chrome.log 2>&1
