@@ -532,7 +532,7 @@ def test_v3_package_preserves_zero_eligible_response_count_basis() -> None:
 
 
 @pytest.mark.asyncio
-async def test_brand_override_on_unbound_project_returns_project_binding_state(
+async def test_brand_override_on_unbound_project_returns_validation_error(
     client,
     user: User,
     db_session: AsyncSession,
@@ -561,24 +561,11 @@ async def test_brand_override_on_unbound_project_returns_project_binding_state(
         params={"brand_id": BESTCOFFER_BRAND_ID},
     )
 
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["brand_id"] == BESTCOFFER_BRAND_ID
-    assert body["state"] == "empty"
-    assert body["state_reason"] == "missing_project_brand_binding"
-    assert body["formula_status"] == "missing_required_inputs"
-    assert body["project_scope"]["primary_brand_id"] is None
-    assert body["project_scope"]["requested_brand_id"] == BESTCOFFER_BRAND_ID
-    assert body["project_scope"]["missing_reason"] == "missing_project_brand_binding"
-    assert "project_unbound" in body["missing_reasons"]
-    assert "project.primary_brand_id" in body["missing_inputs"]
-    assert "project_competitors.brand_id" in body["missing_inputs"]
-    assert body["evidence_counts"]["geo_score_daily_rows"] == 1
-    assert body["evidence_counts"]["competitor_brand_count"] == 0
-    assert _card_values(body) == [None, None, None, None]
-    assert body["geo_score_30d"] == []
-    assert body["sov_30d"] == []
-    assert body["sentiment_30d"] == []
+    assert resp.status_code == 422, resp.text
+    detail = resp.json()["detail"]
+    assert detail["code"] == "validation_error"
+    assert detail["field"] == "brand_id"
+    assert detail["reason"] == "must match project primary brand or pinned competitor"
 
 
 @pytest.mark.asyncio
