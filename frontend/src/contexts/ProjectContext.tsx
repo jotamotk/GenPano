@@ -24,6 +24,7 @@
 import React, {
   createContext, useCallback, useContext, useEffect, useMemo, useRef, useState,
 } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { PROJECTS as SEED_PROJECTS, BRANDS, INDUSTRIES } from '../data/mock';
 import { useLocale } from './LocaleContext';
@@ -31,6 +32,8 @@ import { useProjects, PROJECTS_QUERY_KEY, type ProjectOut } from '../hooks/usePr
 import { projectsApi } from '../api/projects';
 import { registerToastPusher } from '../lib/showApiError';
 import { useAuth } from './AuthContext';
+import { findLiveProjectForBrand } from '../lib/liveProject';
+import { brandIdFromSearchParams } from '../lib/projectAnalysisFilters';
 
 /** Convert backend ProjectOut to the legacy mock shape (str ids, camelCase). */
 function toMockShape(p: ProjectOut): {
@@ -114,9 +117,35 @@ export function ProjectProvider({ children, initialAuthenticated = true }) {
   const [toasts, setToasts] = useState([]);
   const debounceMapRef = useRef(new Map()); // key = `${projectId}::${brandId}` → timestamp
 
+  // ── URL-aware override (Epic #1175) ─────────────────────────────
+  // When the current route carries `?brandId=<int>` and at least one live
+  // project owns that brand, treat that project as the effective
+  // activeProject for ALL consumers — DashboardLayout footer/sidebar,
+  // pages that read activeProject.id, and downstream state-keys derived
+  // from activeProject. This eliminates the dual-identity bug where
+  // pages resolved a different project for API calls than the layout
+  // showed in copy (Epic #1175 / Server Diagnostics run 26026163869).
+  //
+  // The override is computed at read time — we do NOT mutate
+  // activeProjectId — so navigating away from the URL restores the
+  // user's last-clicked project unchanged.
+  const [searchParams] = useSearchParams();
+  const urlBrandId = brandIdFromSearchParams(searchParams);
+  const urlOverrideProjectId = useMemo(() => {
+    if (urlBrandId == null) return null;
+    const match = findLiveProjectForBrand(liveProjects, urlBrandId);
+    return match?.id ?? null;
+  }, [urlBrandId, liveProjects]);
+
   const activeProject = useMemo(
-    () => projects.find((p) => p.id === activeProjectId) || projects[0] || null,
-    [projects, activeProjectId]
+    () => {
+      if (urlOverrideProjectId) {
+        const overridden = projects.find((p) => p.id === urlOverrideProjectId);
+        if (overridden) return overridden;
+      }
+      return projects.find((p) => p.id === activeProjectId) || projects[0] || null;
+    },
+    [projects, activeProjectId, urlOverrideProjectId]
   );
 
   /* ── Toast plumbing — minimal stand-in, real impl can use Sonner. ── */

@@ -10,7 +10,7 @@ import BrandAnalysisFilterBar from '../../components/filters/BrandAnalysisFilter
 import { useBrandAnalysisFilters } from '../../hooks/useBrandAnalysisFilters';
 import { useProjects } from '../../hooks/useProjects';
 import { isLiveProjectId } from '../../hooks/useBrandOverview';
-import { resolveLiveProjectIdForBrand } from '../../lib/liveProject';
+import { resolveLiveProjectId } from '../../lib/liveProject';
 import { brandIdFromSearchParams, toProjectAnalysisParams } from '../../lib/projectAnalysisFilters';
 import { canUseMetricEvidence } from '../../api/analyticsContract';
 import { useBrandSentiment } from '../../hooks/useBrandMetrics';
@@ -84,8 +84,15 @@ export default function BrandSentimentPage() {
   const [accumulatedLiveSamples, setAccumulatedLiveSamples] = useState<SentimentResponseRow[]>([]);
 
   // ── Live data hooks ──
+  // activeProject is URL-aware via ProjectContext (Epic #1175): when the
+  // route carries `?brandId=<int>`, the context already overrides
+  // activeProject to the project that owns that brand. We can therefore
+  // call resolveLiveProjectId(activeProject) directly without re-doing
+  // the brand→project lookup at the page level. This keeps liveProjectId
+  // and activeProject.id moving together — eliminating the dual-identity
+  // mismatch that caused the accumulator to reset spuriously.
   const { data: liveProjects } = useProjects();
-  const liveProjectId = resolveLiveProjectIdForBrand(liveProjects, activeProject, brandIdOverride);
+  const liveProjectId = resolveLiveProjectId(liveProjects, activeProject);
   const isLive = isLiveProjectId(liveProjectId);
   const sentimentQ = useBrandSentiment(isLive ? liveProjectId : null, chartFilters);
   const engineQ = useSentimentByEngine(isLive ? liveProjectId : null, chartFilters);

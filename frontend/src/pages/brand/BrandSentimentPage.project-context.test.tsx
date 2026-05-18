@@ -52,15 +52,20 @@ vi.mock('../../components/charts/BrandTopicHeatmap', () => ({
   default: () => <div data-testid="topic-heatmap" />,
 }))
 
+// ProjectContext is now URL-aware (Epic #1175): when the route carries
+// `?brandId=12`, the context overrides activeProject to the Estée project
+// (the one that owns brand 12) regardless of which project the user
+// last clicked. The page now reads activeProject directly and resolves
+// the live project from it; no page-level brand→project resolution.
 vi.mock('../../contexts/ProjectContext', () => ({
   useProject: () => ({
     activeProject: {
-      id: bestCofferProjectId,
-      name: 'BestCoffer App Analytics',
-      primaryBrandId: 24,
-      primaryBrandName: 'BestCoffer',
+      id: esteeProjectId,
+      name: 'Estée Lauder App Analytics',
+      primaryBrandId: 12,
+      primaryBrandName: '雅诗兰黛',
       competitorBrandIds: [],
-      industryId: 3,
+      industryId: 7,
     },
   }),
 }))
@@ -168,7 +173,7 @@ function renderSentimentPage(initialEntry: string) {
 }
 
 describe('BrandSentimentPage project context resolution', () => {
-  it('uses the live project that owns the URL brandId instead of the stale active project', () => {
+  it('calls useMentionSamples with the project from the URL-overridden activeProject (Epic #1175)', () => {
     renderSentimentPage('/brand/sentiment?brandId=12&range=30d&profileGroup=all')
 
     expect(mocks.useMentionSamples).toHaveBeenCalled()
