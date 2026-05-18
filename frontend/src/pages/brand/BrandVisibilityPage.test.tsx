@@ -8,6 +8,8 @@ import BrandVisibilityPage from './BrandVisibilityPage'
 
 const mockState = vi.hoisted(() => ({
   engineData: undefined as any,
+  engineError: null as Error | null,
+  engineIsLoading: false,
 }))
 
 vi.mock('recharts', async () => {
@@ -162,7 +164,11 @@ vi.mock('../../hooks/useBrandMetrics', () => ({
 }))
 
 vi.mock('../../hooks/useCharts', () => ({
-  useEngineMetrics: () => ({ data: mockState.engineData }),
+  useEngineMetrics: () => ({
+    data: mockState.engineData,
+    error: mockState.engineError,
+    isLoading: mockState.engineIsLoading,
+  }),
   usePositionDistribution: () => ({ data: undefined }),
   useTopicHeatmap: () => ({ data: undefined }),
 }))
@@ -186,6 +192,8 @@ function renderVisibilityPage() {
 describe('BrandVisibilityPage KPI cards (issue #988)', () => {
   beforeEach(() => {
     mockState.engineData = undefined
+    mockState.engineError = null
+    mockState.engineIsLoading = false
   })
 
   it('reads KPI values from /overview so numbers match the Overview page, not from /metrics series points', () => {
@@ -249,5 +257,72 @@ describe('BrandVisibilityPage KPI cards (issue #988)', () => {
     expect(within(block).getByText(/Mention Rate and SoV are waiting for analyzer evidence/i)).toBeInTheDocument()
     expect(within(block).getByText(/Citation share is secondary context/i)).toBeInTheDocument()
     expect(within(block).getByText('62.0%')).toBeInTheDocument()
+  })
+
+  it('renders an explicit empty by-engine visibility state', () => {
+    mockState.engineData = {
+      project_id: '11111111-2222-3333-4444-555555555555',
+      period: { from: '2026-05-08', to: '2026-05-15' },
+      state: 'empty',
+      formula_status: 'missing_required_inputs',
+      state_detail: 'No engine-level Mention Rate or SoV rows are available yet.',
+      items: [],
+    }
+
+    renderVisibilityPage()
+
+    const block = screen.getByTestId('engine-visibility-breakdown')
+    expect(within(block).getByText('No by-engine visibility evidence')).toBeInTheDocument()
+    expect(
+      within(block).getByText('No engine-level Mention Rate or SoV rows are available yet.'),
+    ).toBeInTheDocument()
+    expect(within(block).getByText('Engine visibility data unavailable')).toBeInTheDocument()
+  })
+
+  it('renders an explicit by-engine visibility error state from the hook', () => {
+    mockState.engineError = new Error('metrics by-engine request failed')
+
+    renderVisibilityPage()
+
+    const block = screen.getByTestId('engine-visibility-breakdown')
+    expect(within(block).getByText('By-engine visibility error')).toBeInTheDocument()
+    expect(within(block).getByText('Error: metrics by-engine request failed')).toBeInTheDocument()
+    expect(within(block).getByText('Engine visibility data unavailable')).toBeInTheDocument()
+  })
+
+  it('renders healthy by-engine Mention Rate and SoV as primary values while citation remains secondary', () => {
+    mockState.engineData = {
+      project_id: '11111111-2222-3333-4444-555555555555',
+      period: { from: '2026-05-08', to: '2026-05-15' },
+      state: 'ok',
+      formula_status: 'ok',
+      metric_formula_evidence: {
+        mention_rate: { formula_status: 'ok', numerator: 37, denominator: 100 },
+        sov: { formula_status: 'ok', numerator: 24, denominator: 100 },
+        citation: { formula_status: 'ok', numerator: 11, denominator: 100 },
+      },
+      items: [
+        {
+          engine: 'ChatGPT',
+          mention_rate: 0.37,
+          sov: 0.24,
+          citation_rate: 0.11,
+          sentiment: null,
+        },
+      ],
+    }
+
+    renderVisibilityPage()
+
+    const block = screen.getByTestId('engine-visibility-breakdown')
+    expect(within(block).getByText('ChatGPT')).toBeInTheDocument()
+    expect(within(block).getByText('37.0%')).toBeInTheDocument()
+    expect(within(block).getByText('24.0%')).toBeInTheDocument()
+    expect(within(block).getByText('11.0%')).toBeInTheDocument()
+    expect(within(block).getByText(/Citation share is secondary context/i)).toBeInTheDocument()
+    expect(within(block).queryByText('Unavailable')).not.toBeInTheDocument()
+    expect(within(block).queryByText('Partial by-engine visibility evidence')).not.toBeInTheDocument()
+    expect(within(block).queryByText('No by-engine visibility evidence')).not.toBeInTheDocument()
+    expect(within(block).queryByText('By-engine visibility error')).not.toBeInTheDocument()
   })
 })
