@@ -59,6 +59,17 @@ function percentWidth(value: number | null | undefined): string {
   return `${Math.max(0, Math.min(100, value))}%`;
 }
 
+function uniqueReasons(...groups: Array<string[] | undefined>): string[] {
+  return Array.from(
+    new Set(
+      groups
+        .flatMap((group) => group ?? [])
+        .map((reason) => String(reason || '').trim())
+        .filter(Boolean),
+    ),
+  );
+}
+
 function engineMetricTrust(
   source: EngineMetricsOut | undefined,
   metricKey: EngineMetricKey,
@@ -67,7 +78,12 @@ function engineMetricTrust(
   if (!source) return null;
   const evidence = metricEvidenceFor(source, metricKey);
   if (evidence) {
-    return buildMetricTrustState({ ...evidence, metricKey, value });
+    return buildMetricTrustState({
+      ...evidence,
+      metricKey,
+      reason_codes: uniqueReasons(evidence.reason_codes, contractEvidenceReasons(source, metricKey)),
+      value,
+    });
   }
   if (source.state && source.state !== 'ok') {
     return buildMetricTrustState({

@@ -325,4 +325,47 @@ describe('BrandVisibilityPage KPI cards (issue #988)', () => {
     expect(within(block).queryByText('No by-engine visibility evidence')).not.toBeInTheDocument()
     expect(within(block).queryByText('By-engine visibility error')).not.toBeInTheDocument()
   })
+
+  it('renders target-only SoV as unavailable while keeping mention and citation values fact-backed', () => {
+    mockState.engineData = {
+      project_id: '11111111-2222-3333-4444-555555555555',
+      period: { from: '2026-05-08', to: '2026-05-15' },
+      state: 'partial',
+      formula_status: 'partial',
+      state_reason: 'partial_analyzer_data',
+      missing_inputs: ['target_only_sov'],
+      source_provenance: ['admin_facts', 'brand_mentions', 'citation_sources'],
+      evidence_counts: { admin_fact_response_count: 2 },
+      metric_formula_evidence: {
+        coverage: { formula_status: 'ok' },
+        sov: {
+          formula_status: 'missing_required_inputs',
+          numerator_count: 2,
+          denominator_count: 2,
+        },
+        citation: { formula_status: 'ok' },
+      },
+      items: [
+        {
+          engine: 'chatgpt',
+          mention_rate: 1.0,
+          sov: null,
+          citation_rate: 1.0,
+          sentiment: 0.7,
+        },
+      ],
+    }
+
+    renderVisibilityPage()
+
+    const block = screen.getByTestId('engine-visibility-breakdown')
+    expect(within(block).getByText('chatgpt')).toBeInTheDocument()
+    expect(within(block).getByText('Visibility metrics incomplete')).toBeInTheDocument()
+    expect(within(block).getAllByText('100.0%')).toHaveLength(2)
+    expect(within(block).getByText('Unavailable')).toBeInTheDocument()
+    expect(
+      within(block).getByText('SoV has target evidence but no competitive denominator yet.'),
+    ).toBeInTheDocument()
+    expect(within(block).getByText('2 / 2 evidence')).toBeInTheDocument()
+  })
 })
