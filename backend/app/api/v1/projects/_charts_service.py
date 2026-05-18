@@ -87,6 +87,7 @@ from app.api.v1.projects._topic_analysis_service import (
     _date_key,
     _fact_rows,
     _fact_target_mention_count,
+    _iso,
     get_topic_monitoring,
     legacy_table_columns,
     legacy_table_exists,
@@ -1561,98 +1562,277 @@ async def get_mention_samples(
     *,
     polarity: str | None = None,
     limit: int = 20,
+    offset: int = 0,
     from_date: date | None = None,
     to_date: date | None = None,
+    engines: list[str] | None = None,
+    segment_id: str | None = None,
+    profile_id: str | None = None,
+    brand_id_override: int | None = None,
 ) -> MentionSamplesOut:
     from_d, to_d = _resolve_window(from_date, to_date)
-    if project.primary_brand_id is None:
+    brand_id = brand_id_override if brand_id_override is not None else project.primary_brand_id
+    if brand_id is None:
         return MentionSamplesOut(
             project_id=project.id,
             items=[],
             state="empty",
             state_reason="no_primary_brand",
+            limit=limit,
+            offset=offset,
+            selected_filters={
+                "project_id": project.id,
+                "date_range": _period(from_d, to_d),
+                "brand_id": None,
+                "limit": limit,
+                "offset": offset,
+            },
         )
     f, t = _dt_range(from_d, to_d)
 
-    where = [
-        BrandMention.brand_id == project.primary_brand_id,
-        BrandMention.created_at >= f,
-        BrandMention.created_at <= t,
+    selected_filters = {
+        "project_id": project.id,
+        "date_range": _period(from_d, to_d),
+        "brand_id": int(brand_id),
+        "polarity": polarity,
+        "engines": engines or [],
+        "segment_id": segment_id,
+        "profile_id": profile_id,
+        "limit": limit,
+        "offset": offset,
+    }
+
+    brand_conditions = ["bm.brand_id = :brand_id"]
+    params: dict[str, Any] = {
+        "brand_id": int(brand_id),
+        "from_dt": f,
+        "to_dt": t,
+        "limit": int(limit),
+        "offset": int(offset),
+    }
+    names = await brand_mention_names(session, int(brand_id))
+    if names:
+        placeholders: list[str] = []
+        for idx, name in enumerate(sorted(names)):
+            key = f"brand_name_{idx}"
+            params[key] = name.strip().lower()
+            placeholders.append(f":{key}")
+        brand_conditions.append(
+            f"LOWER(TRIM(COALESCE(bm.brand_name, ''))) IN ({', '.join(placeholders)})"
+        )
+
+    joins: list[str] = []
+    response_cols: set[str] = set()
+    query_cols: set[str] = set()
+    prompt_cols: set[str] = set()
+    topic_cols: set[str] = set()
+    has_responses = await legacy_table_exists(session, "llm_responses")
+    if has_responses:
+        response_cols = await legacy_table_columns(session, "llm_responses")
+    if has_responses and "id" in response_cols:
+        joins.append("LEFT JOIN llm_responses r ON r.id = bm.response_id")
+    else:
+        joins.append("LEFT JOIN (SELECT NULL AS id) r ON 1 = 0")
+
+    has_queries = False
+    if (
+        has_responses
+        and "query_id" in response_cols
+        and await legacy_table_exists(session, "queries")
+    ):
+        query_cols = await legacy_table_columns(session, "queries")
+        if "id" in query_cols:
+            has_queries = True
+            joins.append("LEFT JOIN queries q ON q.id = r.query_id")
+    if not has_queries:
+        joins.append("LEFT JOIN (SELECT NULL AS id) q ON 1 = 0")
+
+    has_prompts = False
+    if (
+        has_responses
+        and "prompt_id" in response_cols
+        and await legacy_table_exists(session, "prompts")
+    ):
+        prompt_cols = await legacy_table_columns(session, "prompts")
+        if "id" in prompt_cols:
+            has_prompts = True
+            joins.append("LEFT JOIN prompts p ON p.id = r.prompt_id")
+    if not has_prompts:
+        joins.append("LEFT JOIN (SELECT NULL AS id) p ON 1 = 0")
+
+    has_topics = False
+    if has_prompts and "topic_id" in prompt_cols and await legacy_table_exists(session, "topics"):
+        topic_cols = await legacy_table_columns(session, "topics")
+        if "id" in topic_cols:
+            has_topics = True
+            joins.append("LEFT JOIN topics t ON t.id = p.topic_id")
+    if not has_topics:
+        joins.append("LEFT JOIN (SELECT NULL AS id) t ON 1 = 0")
+
+    where_sql = [
+        f"({' OR '.join(brand_conditions)})",
+        "bm.created_at >= :from_dt",
+        "bm.created_at <= :to_dt",
     ]
     if polarity in ("positive", "negative", "neutral"):
-        where.append(BrandMention.sentiment == polarity)
+        params["polarity"] = polarity
+        where_sql.append("LOWER(COALESCE(bm.sentiment, 'neutral')) = :polarity")
 
-    stmt = (
-        select(BrandMention)
-        .where(and_(*where))
-        .order_by(BrandMention.created_at.desc())
-        .limit(limit)
-    )
-    rows = list((await session.execute(stmt)).scalars().all())
+    engine_exprs: list[str] = []
+    if has_queries and "target_llm" in query_cols:
+        engine_exprs.append("q.target_llm")
+    if has_responses and "target_llm" in response_cols:
+        engine_exprs.append("r.target_llm")
+    engine_expr = _coalesce_sql(engine_exprs)
+    if engines:
+        if engine_expr is None:
+            where_sql.append("1 = 0")
+        else:
+            engine_placeholders: list[str] = []
+            for idx, engine in enumerate(engines):
+                key = f"engine_{idx}"
+                params[key] = engine
+                engine_placeholders.append(f":{key}")
+            where_sql.append(f"{engine_expr} IN ({', '.join(engine_placeholders)})")
 
-    # Engine + topic enrichment via llm_responses (best-effort).
-    engine_by_resp: dict[int, str] = {}
-    topic_by_resp: dict[int, str] = {}
-    if rows:
-        resp_ids = list({m.response_id for m in rows})
-        try:
-            r = await session.execute(
+    if profile_id:
+        if not (has_queries and "profile_id" in query_cols):
+            where_sql.append("1 = 0")
+        else:
+            params["profile_id"] = str(profile_id)
+            where_sql.append(
+                "(q.profile_id IS NULL OR CAST(q.profile_id AS TEXT) = :profile_id)"
+            )
+
+    if segment_id:
+        profile_cols = (
+            await legacy_table_columns(session, "profiles")
+            if await legacy_table_exists(session, "profiles")
+            else set()
+        )
+        if not (
+            has_queries
+            and "profile_id" in query_cols
+            and {"id", "segment_id"}.issubset(profile_cols)
+        ):
+            where_sql.append("1 = 0")
+        else:
+            params["segment_id"] = str(segment_id)
+            where_sql.append(
+                "EXISTS ("
+                "SELECT 1 FROM profiles pf "
+                "WHERE CAST(pf.id AS TEXT) = CAST(q.profile_id AS TEXT) "
+                "AND CAST(pf.segment_id AS TEXT) = :segment_id"
+                ")"
+            )
+
+    response_text_expr = "NULL"
+    if "raw_text" in response_cols:
+        response_text_expr = "r.raw_text"
+    elif "response_text" in response_cols:
+        response_text_expr = "r.response_text"
+    elif "text" in response_cols:
+        response_text_expr = "r.text"
+    query_id_expr = "r.query_id" if "query_id" in response_cols else "NULL"
+    topic_expr = "t.text" if has_topics and "text" in topic_cols else "NULL"
+    engine_select = engine_expr or "NULL"
+    joins_sql = "\n".join(joins)
+    where_clause = " AND ".join(where_sql)
+    total = int(
+        (
+            await session.execute(
                 text(
-                    """
-                    SELECT r.id, r.target_llm, t.text
-                    FROM llm_responses r
-                    LEFT JOIN prompts p ON p.id = r.prompt_id
-                    LEFT JOIN topics t ON t.id = p.topic_id
-                    WHERE r.id = ANY(:ids)
+                    f"""
+                    SELECT COUNT(*)
+                    FROM brand_mentions bm
+                    {joins_sql}
+                    WHERE {where_clause}
                     """
                 ),
-                {"ids": resp_ids},
+                params,
             )
-            for rid, eng, topic in r.all():
-                if eng:
-                    engine_by_resp[int(rid)] = eng
-                if topic:
-                    topic_by_resp[int(rid)] = topic
-        except Exception:
-            pass
-
-    label_map = {"positive": "正面", "negative": "负面", "neutral": "中性"}
+        ).scalar_one()
+        or 0
+    )
+    raw_rows = (
+        (
+            await session.execute(
+                text(
+                    f"""
+                    SELECT
+                        bm.id AS mention_id,
+                        bm.response_id AS response_id,
+                        {query_id_expr} AS query_id,
+                        LOWER(COALESCE(bm.sentiment, 'neutral')) AS polarity,
+                        bm.context_snippet AS context_snippet,
+                        {response_text_expr} AS response_text,
+                        {engine_select} AS engine,
+                        {topic_expr} AS topic,
+                        bm.created_at AS occurred_at
+                    FROM brand_mentions bm
+                    {joins_sql}
+                    WHERE {where_clause}
+                    ORDER BY bm.created_at DESC, bm.id DESC
+                    LIMIT :limit OFFSET :offset
+                    """
+                ),
+                params,
+            )
+        )
+        .mappings()
+        .all()
+    )
     items = [
         MentionSampleRow(
-            mention_id=m.id,
-            response_id=m.response_id,
-            label=label_map.get(m.sentiment or "neutral", "中性"),
-            polarity=m.sentiment or "neutral",
-            summary=(m.context_snippet or "")[:280],
-            snippet=m.context_snippet,
-            engine=engine_by_resp.get(m.response_id),
-            topic=topic_by_resp.get(m.response_id),
-            occurred_at=m.created_at.isoformat() if m.created_at else None,
+            mention_id=int(row["mention_id"]),
+            response_id=int(row["response_id"]),
+            query_id=_as_int(row.get("query_id")),
+            label=_label_for_polarity(row.get("polarity") or "neutral"),
+            polarity=row.get("polarity") or "neutral",
+            summary=(row.get("context_snippet") or row.get("response_text") or "")[:280] or None,
+            snippet=row.get("context_snippet"),
+            response_text=row.get("response_text"),
+            engine=row.get("engine"),
+            topic=row.get("topic"),
+            occurred_at=_iso(row.get("occurred_at")),
         )
-        for m in rows
+        for row in (dict(raw_row) for raw_row in raw_rows)
     ]
-    if not items:
-        fact_rows = await _admin_fact_rows(session, project, from_d, to_d)
+    if total <= 0:
+        fact_rows = await _admin_fact_rows(
+            session,
+            project,
+            from_d,
+            to_d,
+            engines=engines,
+            segment_id=segment_id,
+            profile_id=profile_id,
+            brand_id_override=int(brand_id),
+        )
         seen: set[int] = set()
-        fact_items: list[MentionSampleRow] = []
+        all_fact_items: list[MentionSampleRow] = []
         for row in fact_rows:
             rid = _as_int(row.get("response_id"))
             if rid is None or rid in seen or _fact_target_mention_count(row) <= 0:
                 continue
-            seen.add(rid)
             polarity_value = _polarity_from_score(
                 row.get("target_sentiment_score")
                 if row.get("target_sentiment_score") is not None
                 else row.get("sentiment_score")
             )
-            fact_items.append(
+            if polarity in ("positive", "negative", "neutral") and polarity_value != polarity:
+                continue
+            seen.add(rid)
+            all_fact_items.append(
                 MentionSampleRow(
                     mention_id=rid,
                     response_id=rid,
+                    query_id=_as_int(row.get("query_id")),
                     label=_label_for_polarity(polarity_value),
                     polarity=polarity_value,
                     summary=str(row.get("response_raw_text") or "")[:280] or None,
                     snippet=row.get("response_raw_text"),
+                    response_text=row.get("response_raw_text"),
                     engine=row.get("target_llm") or row.get("response_target_llm"),
                     topic=row.get("topic_name"),
                     occurred_at=str(
@@ -1664,24 +1844,35 @@ async def get_mention_samples(
                     or None,
                 )
             )
-            if len(fact_items) >= limit:
-                break
+        total = len(all_fact_items)
+        fact_items = all_fact_items[offset : offset + limit]
         state = "ok" if fact_items else "empty"
         return MentionSamplesOut(
             project_id=project.id,
             items=fact_items,
             state=state,
             state_reason=_state_reason(state, "no_mention_sample_data"),
-            evidence_count=len(seen),
-            evidence_counts=_chart_counts(admin_fact_response_count=len(seen)),
+            evidence_count=total,
+            evidence_counts=_chart_counts(admin_fact_response_count=total),
+            total=total,
+            limit=limit,
+            offset=offset,
+            has_more=offset + len(fact_items) < total,
+            selected_filters=selected_filters,
         )
+    state = "ok" if items else "empty"
     return MentionSamplesOut(
         project_id=project.id,
         items=items,
-        state="ok",
-        state_reason="data_available",
-        evidence_count=len(items),
-        evidence_counts=_chart_counts(brand_mention_count=len(items)),
+        state=state,
+        state_reason=_state_reason(state, "no_mention_sample_page"),
+        evidence_count=total,
+        evidence_counts=_chart_counts(brand_mention_count=total),
+        total=total,
+        limit=limit,
+        offset=offset,
+        has_more=offset + len(items) < total,
+        selected_filters=selected_filters,
     )
 
 

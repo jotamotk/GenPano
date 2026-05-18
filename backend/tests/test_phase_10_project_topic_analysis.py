@@ -834,6 +834,45 @@ async def test_topic_prompt_query_response_drilldown(client, db_session, user):
 
 
 @pytest.mark.asyncio
+async def test_mention_samples_expose_query_detail_key_full_text_and_pagination(
+    client, db_session, user
+):
+    project = await _seed_admin_chain(db_session, user)
+    headers = _bearer(user)
+
+    samples = await client.get(
+        f"/api/v1/projects/{project.id}/mention-samples?limit=1&offset=1",
+        headers=headers,
+    )
+
+    assert samples.status_code == 200, samples.text
+    body = samples.json()
+    assert body["total"] == 2
+    assert body["limit"] == 1
+    assert body["offset"] == 1
+    assert body["has_more"] is False
+    assert body["evidence_count"] == 2
+    assert body["selected_filters"]["limit"] == 1
+    assert body["selected_filters"]["offset"] == 1
+
+    [sample] = body["items"]
+    assert sample["mention_id"] > 0
+    assert sample["response_id"] == 401
+    assert sample["query_id"] == 301
+    assert sample["response_text"] == "Test Brand is a strong barrier option."
+    assert sample["snippet"] == "strong barrier option"
+    assert sample["engine"] == "chatgpt"
+    assert sample["topic"] == "Barrier repair"
+
+    detail = await client.get(
+        f"/api/v1/projects/{project.id}/queries/{sample['query_id']}/response",
+        headers=headers,
+    )
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["response"]["raw_text"] == sample["response_text"]
+
+
+@pytest.mark.asyncio
 async def test_query_response_detail_coverage_is_scoped_to_selected_response(
     client, db_session, user
 ):
