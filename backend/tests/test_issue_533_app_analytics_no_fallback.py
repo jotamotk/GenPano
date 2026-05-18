@@ -16,6 +16,7 @@ from genpano_models import (
     ProjectCompetitor,
     User,
 )
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.user_auth.jwt import sign_user_access_token
@@ -54,7 +55,36 @@ async def _project(
     user: User,
     *,
     primary_brand_id: int | None = 12,
+    competitor_brand_ids: tuple[int, ...] = (),
+    competitor_brand_names: tuple[str, ...] = (),
+    industry: str = "Beauty",
 ) -> Project:
+    # Issue #1185 / #1192: the /competitors/metrics endpoint now fails
+    # closed when ``brands.industry`` is NULL for the primary brand.
+    # Seed primary + named competitors with the same industry so the
+    # behavior under test (no fallback, name-only competitor evidence,
+    # etc.) is still observable in this fixture.
+    if primary_brand_id is not None:
+        for col in ("industry", "name_zh", "name_en", "name", "primary_name"):
+            try:
+                await db_session.execute(text(f"ALTER TABLE brands ADD COLUMN {col} TEXT"))
+            except Exception:
+                pass
+        await db_session.execute(
+            text("INSERT INTO brands (id, industry, name_en) VALUES (:id, :ind, :name)"),
+            {"id": primary_brand_id, "ind": industry, "name": "Estee Lauder"},
+        )
+        for bid in competitor_brand_ids:
+            await db_session.execute(
+                text("INSERT INTO brands (id, industry) VALUES (:id, :ind)"),
+                {"id": bid, "ind": industry},
+            )
+        for bname in competitor_brand_names:
+            await db_session.execute(
+                text("INSERT INTO brands (industry, name_en) VALUES (:ind, :name)"),
+                {"ind": industry, "name": bname},
+            )
+
     p = Project(
         user_id=user.id,
         name=f"Issue 533 {uuid.uuid4().hex[:6]}",
@@ -184,7 +214,9 @@ async def test_name_only_competitor_mentions_count_as_competitive_evidence(
     user: User,
     db_session: AsyncSession,
 ) -> None:
-    p = await _project(db_session, user)
+    # Issue #1185 / #1192: same-industry seed for the name-only competitor
+    # so the unified industry filter keeps the bucket alive.
+    p = await _project(db_session, user, competitor_brand_names=("Clinique",))
     now = datetime.now()
     db_session.add(
         GeoScoreDaily(
@@ -564,7 +596,9 @@ async def test_competitor_metrics_target_only_extraction_does_not_emit_sov_100(
     user: User,
     db_session: AsyncSession,
 ) -> None:
-    p = await _project(db_session, user)
+    # Issue #1185 / #1192: brand 99 needs an industry for the pinned-
+    # competitors fallback path (no name-only mention here).
+    p = await _project(db_session, user, competitor_brand_ids=(99,))
     db_session.add(ProjectCompetitor(project_id=p.id, brand_id=99, pinned_by=user.id))
     db_session.add(
         BrandMention(

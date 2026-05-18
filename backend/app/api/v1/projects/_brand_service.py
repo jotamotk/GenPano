@@ -49,6 +49,7 @@ from app.api.v1.projects._brand_dto import (
 )
 from app.api.v1.projects._legacy_lookups import (
     resolve_brand_industry,
+    resolve_brand_industry_by_name,
     resolve_brand_names,
 )
 from app.api.v1.projects._mention_rollups import (
@@ -280,6 +281,52 @@ async def _fact_primary_competitor_row(
     )
 
 
+async def _filter_competitors_by_industry(
+    session: AsyncSession,
+    competitors: list[CompetitorBrandRow],
+    primary_industry: str | None,
+) -> list[CompetitorBrandRow]:
+    """Drop competitors whose resolved industry does not match ``primary_industry``.
+
+    Issue #1185 / #1192 — unified industry filter. The pre-revert
+    #975/#978 attempts only scoped competitor rows that carried a real
+    ``brand_id``; name-only buckets (``brand_id is None``, populated
+    from ``brand_mentions.brand_name`` when the analyzer could not FK
+    the mention) were passed through unfiltered. The bestCoffer
+    BEFORE readback at
+    https://github.com/jotamotk/trash_test/actions/runs/26013912049
+    shows the leak: IBM Security, Microsoft, OpenAI, etc. all arrive
+    as name-only buckets and crowd out real same-industry competitors.
+
+    Resolution per row:
+      * ``brand_id`` set         -> ``brands.industry`` via id.
+      * ``brand_id is None``     -> resolve name via
+        ``resolve_brand_industry_by_name`` (canonical / aliases).
+      * Unresolvable             -> dropped (returning ``None`` means
+        the row cannot be safely placed inside or outside the panel).
+
+    Compare case-insensitively. Caller is responsible for the
+    primary-industry-NULL short-circuit (this helper assumes the
+    primary has a non-empty industry; if ``primary_industry`` is
+    falsy, every competitor is dropped, which is the intended
+    fail-closed behavior).
+    """
+    if not primary_industry:
+        return []
+    primary_key = primary_industry.strip().casefold()
+    kept: list[CompetitorBrandRow] = []
+    for row in competitors:
+        if row.brand_id is not None:
+            resolved = await resolve_brand_industry(session, row.brand_id)
+        else:
+            resolved = await resolve_brand_industry_by_name(session, row.brand_name)
+        if not resolved:
+            continue
+        if resolved.strip().casefold() == primary_key:
+            kept.append(row)
+    return kept
+
+
 async def _response_entity_competitor_metrics(
     session: AsyncSession,
     project: Project,
@@ -287,8 +334,14 @@ async def _response_entity_competitor_metrics(
     from_d: date,
     to_d: date,
     filters: AnalysisFilters | None = None,
-) -> tuple[CompetitorBrandRow | None, list[CompetitorBrandRow], str] | None:
-    """Build SoV from response-level brand_mentions, including name-only rivals."""
+) -> tuple[CompetitorBrandRow | None, list[CompetitorBrandRow], str, str | None] | None:
+    """Build SoV from response-level brand_mentions, including name-only rivals.
+
+    Return tuple is ``(primary_row, competitors, state, state_reason)``.
+    ``state_reason`` is ``None`` for the normal happy path and carries a
+    sentinel like ``"primary_brand_industry_missing"`` when the
+    industry filter short-circuits.
+    """
 
     from_dt = datetime.combine(from_d, datetime.min.time())
     to_dt = datetime.combine(to_d, datetime.max.time())
@@ -304,7 +357,7 @@ async def _response_entity_competitor_metrics(
         int(row["response_id"]) for row in fact_rows if row.get("response_id") is not None
     }
     if await _has_admin_chain(session) and not scoped_response_ids:
-        return None, [], "empty"
+        return None, [], "empty", None
 
     conditions = [BrandMention.created_at >= from_dt, BrandMention.created_at <= to_dt]
     if scoped_response_ids:
@@ -325,7 +378,7 @@ async def _response_entity_competitor_metrics(
     if not rows:
         fact_primary = await _fact_primary_competitor_row(session, primary_id, fact_rows)
         if fact_primary is not None:
-            return fact_primary, [], "partial"
+            return fact_primary, [], "partial", None
         return None
 
     primary_names = await brand_mention_names(session, primary_id)
@@ -404,24 +457,27 @@ async def _response_entity_competitor_metrics(
     if primary_row is None and fact_brand_override is not None:
         fact_primary = await _fact_primary_competitor_row(session, primary_id, fact_rows)
         if fact_primary is not None:
-            return fact_primary, [], "partial"
+            return fact_primary, [], "partial", None
     competitors = [
         make_row(bucket)
         for key, bucket in buckets.items()
         if key != _brand_entity_key(primary_id, None)
     ]
-    # Issue #975: drop competitor buckets whose brand_id falls outside the
-    # primary brand's industry. Name-only buckets (brand_id=None) cannot be
-    # scoped reliably and are kept as-is.
+
+    # Issue #1185 / #1192 — unified industry filter. Applied AFTER bucket
+    # aggregation so every competitor (brand_id or name-only) is scoped
+    # by the primary brand's industry. When the primary brand's
+    # ``brands.industry`` is NULL/empty we cannot scope safely; fail
+    # closed with a sentinel reason instead of leaking cross-industry
+    # mentions (#975 recurrence root cause).
     primary_industry = await resolve_brand_industry(session, primary_id)
-    industry_brand_ids = await _industry_brand_ids(session, primary_industry)
-    if industry_brand_ids:
-        competitors = [
-            row for row in competitors if row.brand_id is None or row.brand_id in industry_brand_ids
-        ]
+    if not primary_industry:
+        return primary_row, [], "empty", "primary_brand_industry_missing"
+    competitors = await _filter_competitors_by_industry(session, competitors, primary_industry)
+
     competitors.sort(key=lambda row: (-(row.avg_sov or 0), row.brand_name or row.brand_key or ""))
     state = "partial" if primary_row and not competitors else "ok"
-    return primary_row, competitors, state
+    return primary_row, competitors, state, None
 
 
 # ─── /products ─────────────────────────────────────────────────────
@@ -762,7 +818,7 @@ async def get_competitor_metrics(
         filters or AnalysisFilters(from_date=from_d, to_date=to_d),
     )
     if response_entities is not None:
-        primary_row, competitor_rows, entity_state = response_entities
+        primary_row, competitor_rows, entity_state, entity_state_reason = response_entities
         hydrated_rows = await _hydrate_competitor_rows_from_daily_scores(
             session,
             [row for row in [primary_row, *competitor_rows] if row is not None],
@@ -774,16 +830,36 @@ async def get_competitor_metrics(
             competitor_rows = hydrated_rows[1:] if primary_row is not None else hydrated_rows
         primary_row = _normalize_competitor_row(primary_row)
         competitor_rows = _normalize_competitor_rows(competitor_rows)
+        # Issue #1185 / #1192 — when the primary brand has no industry the
+        # entity path emits ``("empty", "primary_brand_industry_missing")``;
+        # force the user-visible surface to ``primary=None, competitors=[]``
+        # so the frontend cannot accidentally show leaked names from
+        # rendering primary alone.
+        if entity_state_reason == "primary_brand_industry_missing":
+            primary_row = None
+            competitor_rows = []
         has_data = primary_row is not None or bool(competitor_rows)
-        out = CompetitorMetricsOut(
-            project_id=project.id,
-            primary_brand_id=primary_id,
-            period=_period(from_d, to_d),
-            primary=primary_row,
-            competitors=competitor_rows,
-            state=entity_state,
-            metric_definitions=_competitor_metric_definitions(),
-        )
+        # Resolve the state_reason precedence: industry-missing sentinel
+        # wins over the older partial reason, otherwise leave the DTO
+        # default (or set partial when the entity branch emitted that).
+        if entity_state_reason:
+            base_state_reason: str | None = entity_state_reason
+        elif entity_state == "partial":
+            base_state_reason = "partial_competitor_data"
+        else:
+            base_state_reason = None
+        out_kwargs: dict[str, Any] = {
+            "project_id": project.id,
+            "primary_brand_id": primary_id,
+            "period": _period(from_d, to_d),
+            "primary": primary_row,
+            "competitors": competitor_rows,
+            "state": entity_state,
+            "metric_definitions": _competitor_metric_definitions(),
+        }
+        if entity_state_reason:
+            out_kwargs["state_reason"] = entity_state_reason
+        out = CompetitorMetricsOut(**out_kwargs)
         context = await build_contract_context(
             session,
             project,
@@ -792,11 +868,51 @@ async def get_competitor_metrics(
             to_date=to_d,
             has_data=has_data,
             base_state=entity_state,
-            base_state_reason="partial_competitor_data" if entity_state == "partial" else None,
+            base_state_reason=base_state_reason,
+        )
+        merged = out.model_copy(update=context_update(context))
+        if entity_state_reason == "primary_brand_industry_missing":
+            # The contract context can re-classify state to "partial" when
+            # underlying brand_mention evidence exists; the industry gate
+            # is upstream of that, so pin the user-visible state back to
+            # "empty" with the specific reason so frontends can branch on
+            # it deterministically.
+            merged = merged.model_copy(
+                update={
+                    "state": "empty",
+                    "state_reason": "primary_brand_industry_missing",
+                }
+            )
+        return merged
+
+    primary_industry = await resolve_brand_industry(session, primary_id)
+    # Issue #1185 / #1192 — same fail-closed gate as the response-entity
+    # path: when the primary brand has no industry recorded we cannot
+    # scope competitors safely, so return controlled empty instead of
+    # leaking cross-industry brands through the fallback.
+    if not primary_industry:
+        out = CompetitorMetricsOut(
+            project_id=project.id,
+            primary_brand_id=primary_id,
+            period=_period(from_d, to_d),
+            primary=None,
+            competitors=[],
+            state="empty",
+            state_reason="primary_brand_industry_missing",
+            metric_definitions=_competitor_metric_definitions(),
+        )
+        context = await build_contract_context(
+            session,
+            project,
+            brand_id=primary_id,
+            from_date=from_d,
+            to_date=to_d,
+            has_data=False,
+            base_state="empty",
+            base_state_reason="primary_brand_industry_missing",
         )
         return out.model_copy(update=context_update(context))
 
-    primary_industry = await resolve_brand_industry(session, primary_id)
     if has_effective_override:
         competitor_ids = await discover_related_brand_ids(
             session, primary_id, from_d, to_d, industry_name=primary_industry
@@ -806,17 +922,6 @@ async def get_competitor_metrics(
             ProjectCompetitor.project_id == project.id
         )
         competitor_ids = [r[0] for r in (await session.execute(competitor_stmt)).all()]
-        # Issue #975: drop pinned competitors that fall outside the primary
-        # brand's industry. Cross-industry pins (manual or auto-seeded by
-        # an older worker) were leaking into the competitor panel even
-        # after #978 scoped the auto-discovery path.
-        industry_brand_ids = await _industry_brand_ids(session, primary_industry)
-        if industry_brand_ids and competitor_ids:
-            competitor_ids = [bid for bid in competitor_ids if bid in industry_brand_ids]
-        if not competitor_ids:
-            competitor_ids = await discover_related_brand_ids(
-                session, primary_id, from_d, to_d, industry_name=primary_industry
-            )
     competitor_ids = [bid for bid in competitor_ids if bid is not None and bid != primary_id]
 
     async def _row_for(brand_id: int) -> CompetitorBrandRow:
@@ -906,6 +1011,13 @@ async def get_competitor_metrics(
     for c in comp_rows:
         if c.brand_id is not None:
             c.brand_name = name_map.get(c.brand_id)
+
+    # Issue #1185 / #1192 — apply the unified industry filter on the
+    # pinned-competitors / discovered-ids fallback path too. The
+    # primary_industry was already proven non-empty by the gate above,
+    # so this strictly drops cross-industry rows without re-fetching.
+    comp_rows = await _filter_competitors_by_industry(session, comp_rows, primary_industry)
+
     primary_row = _normalize_competitor_row(primary_row)
     comp_rows = _normalize_competitor_rows(comp_rows)
 

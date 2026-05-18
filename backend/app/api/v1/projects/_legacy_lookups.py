@@ -85,6 +85,107 @@ async def resolve_brand_industry(session: AsyncSession, brand_id: int) -> str | 
         return None
 
 
+async def resolve_brand_industry_by_name(
+    session: AsyncSession, brand_name: str | None
+) -> str | None:
+    """Resolve a free-form brand mention to ``brands.industry`` (or None).
+
+    Issue #1192 / #1185 — competitor leak fix: name-only mention buckets
+    (``brand_mentions.brand_id IS NULL``) need an industry attribution
+    before the unified industry filter can keep or drop them. This
+    helper does the forward lookup that ``brand_mention_names`` does in
+    reverse (id -> set of names).
+
+    Match strategy (case-insensitive, trimmed) - first hit wins:
+      1. Any of the legacy display columns (``name_zh``, ``name_en``,
+         ``name``, ``primary_name``).
+      2. The ``aliases`` JSONB array if present.
+
+    Returns ``None`` when no match resolves OR when the resolved row's
+    ``industry`` is empty - callers treat ``None`` as 'cannot scope -
+    drop'.
+    """
+    if brand_name is None:
+        return None
+    cleaned = str(brand_name).strip()
+    if not cleaned:
+        return None
+    cleaned_lower = cleaned.casefold()
+
+    cols = await brand_table_columns(session)
+    name_cols = [c for c in BRAND_NAME_COLUMNS if c in cols]
+    if not name_cols and "aliases" not in cols:
+        return None
+
+    # Step 1: direct name-column match. Build a portable case-insensitive
+    # comparison across both Postgres and SQLite.
+    if name_cols:
+        or_parts = [f"LOWER(TRIM({c})) = :n" for c in name_cols]
+        sql = f"SELECT industry FROM brands WHERE {' OR '.join(or_parts)} LIMIT 1"
+        try:
+            row = (await session.execute(text(sql), {"n": cleaned_lower})).one_or_none()
+            if row is not None and row[0]:
+                return str(row[0])
+        except Exception:
+            pass
+
+    # Step 2: scan aliases JSONB. Use Postgres jsonb_array_elements_text
+    # when available; fall back to a Python scan for SQLite tests where
+    # aliases is stored as JSON text.
+    if "aliases" in cols:
+        try:
+            alias_rows = (
+                await session.execute(
+                    text(
+                        """
+                        SELECT industry
+                        FROM brands b,
+                             LATERAL jsonb_array_elements_text(
+                               CASE WHEN jsonb_typeof(b.aliases) = 'array'
+                                    THEN b.aliases ELSE '[]'::jsonb END
+                             ) AS a(alias)
+                        WHERE LOWER(TRIM(a.alias)) = :n
+                        LIMIT 1
+                        """
+                    ),
+                    {"n": cleaned_lower},
+                )
+            ).one_or_none()
+            if alias_rows is not None and alias_rows[0]:
+                return str(alias_rows[0])
+        except Exception:
+            # SQLite fallback: scan all rows and JSON-parse the aliases
+            # column in Python.
+            try:
+                import json
+
+                rows = (
+                    await session.execute(
+                        text("SELECT industry, aliases FROM brands WHERE aliases IS NOT NULL")
+                    )
+                ).all()
+                for industry, aliases_val in rows:
+                    if not aliases_val or not industry:
+                        continue
+                    try:
+                        aliases = (
+                            json.loads(aliases_val) if isinstance(aliases_val, str) else aliases_val
+                        )
+                    except Exception:
+                        continue
+                    if not isinstance(aliases, list):
+                        continue
+                    for entry in aliases:
+                        if entry is None:
+                            continue
+                        if str(entry).strip().casefold() == cleaned_lower:
+                            return str(industry)
+            except Exception:
+                pass
+
+    return None
+
+
 async def resolve_topic_name(session: AsyncSession, topic_id: int) -> str | None:
     """Return the legacy `topics.text` (the human-readable topic title)."""
     try:
