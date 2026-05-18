@@ -156,10 +156,12 @@ class TopicAttributionOut(ChartState):
 class MentionSampleRow(BaseModel):
     mention_id: int
     response_id: int
+    query_id: int | None = None
     label: str  # "正面" | "负面" | "中性"
     polarity: str  # "positive" | "negative" | "neutral"
     summary: str | None = None
     snippet: str | None = None
+    response_text: str | None = None
     engine: str | None = None
     topic: str | None = None
     occurred_at: str | None = None
@@ -168,6 +170,10 @@ class MentionSampleRow(BaseModel):
 class MentionSamplesOut(ChartState):
     project_id: str
     items: list[MentionSampleRow]
+    total: int = 0
+    limit: int = 20
+    offset: int = 0
+    has_more: bool = False
 
 
 # ── /citations/authority-trend ──────────────────────────────────────

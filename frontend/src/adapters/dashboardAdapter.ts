@@ -22,6 +22,7 @@ import {
   normalizeRatioLikeOrNull,
   normalizeScore0To100OrNull,
   normalizeSentimentRawOrNull,
+  type ContractListItem,
   type MetricContractFields,
 } from '../api/analyticsContract'
 import type { DiagnosticOut } from '../api/diagnostics'
@@ -66,9 +67,13 @@ export interface SovEntry {
 
 export interface BubbleEntry {
   brand: string
-  sov: number
-  sentiment: number
+  sov: number | null
+  sentiment: number | null
   mentions: number
+  endpointState?: string | null
+  stateReason?: string | null
+  missingInputs?: string[]
+  configuredCompetitorCount?: number | null
 }
 
 export interface TrendPoint {
@@ -137,6 +142,31 @@ function normalizeCompetitorSentiment(
   )
   if (!canUseContractMetricValue(metrics.state, definition)) return null
   return normalizeSentimentRawOrNull(value, definition?.value_scale, definition?.unit)
+}
+
+function contractItemText(item: ContractListItem): string {
+  if (typeof item === 'string') return item
+  return String(item.field || item.source || item.reason || '').trim()
+}
+
+function competitorConfiguredCount(metrics: CompetitorMetricsOut): number | null {
+  const scoped = metrics.project_scope?.competitor_brand_ids
+  if (Array.isArray(scoped)) return scoped.length
+  const evidenceCount = asFiniteNumber(metrics.evidence_counts?.competitor_brand_count)
+  return evidenceCount == null ? null : evidenceCount
+}
+
+function competitorEndpointStateEntry(metrics: CompetitorMetricsOut): BubbleEntry {
+  return {
+    brand: '',
+    sov: null,
+    sentiment: null,
+    mentions: 0,
+    endpointState: metrics.state,
+    stateReason: metrics.state_reason ?? metrics.formula_status ?? null,
+    missingInputs: (metrics.missing_inputs ?? []).map(contractItemText).filter(Boolean),
+    configuredCompetitorCount: competitorConfiguredCount(metrics),
+  }
 }
 
 function labelText(card: ContractKpiCard): string {
@@ -324,19 +354,21 @@ export function adaptCompetitorMetricsToBubble(
     ...(metrics.primary ? [metrics.primary] : []),
     ...(Array.isArray(metrics.competitors) ? metrics.competitors : []),
   ]
-  return all
+  const rows = all
     .map((row) => ({
       row,
       sov: normalizeCompetitorSov(metrics, row.avg_sov),
       sentiment: normalizeCompetitorSentiment(metrics, row.avg_sentiment),
     }))
-    .filter((item) => item.sov != null && item.sentiment != null)
     .map(({ row, sov, sentiment }) => ({
       brand: row.brand_name ?? row.brand_key ?? `Brand #${row.brand_id ?? '?'}`,
-      sov: sov as number,
-      sentiment: sentiment as number,
+      sov,
+      sentiment,
       mentions: row.co_mention_count ?? 0,
     }))
+  return metrics.state && metrics.state !== 'ok'
+    ? [competitorEndpointStateEntry(metrics), ...rows]
+    : rows
 }
 
 export function adaptOverviewToTrend(
