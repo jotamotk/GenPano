@@ -115,10 +115,12 @@ export interface TopicAttributionOut extends AnalyticsContractMetadata {
 export interface MentionSampleRow {
   mention_id: number
   response_id: number
+  query_id?: number | null
   label: string
   polarity: 'positive' | 'negative' | 'neutral'
   summary: string | null
   snippet: string | null
+  response_text?: string | null
   engine: string | null
   topic: string | null
   occurred_at: string | null
@@ -127,6 +129,12 @@ export interface MentionSampleRow {
 export interface MentionSamplesOut extends AnalyticsContractMetadata {
   project_id: string
   items: MentionSampleRow[]
+  total?: number
+  limit?: number
+  offset?: number
+  has_more?: boolean
+  evidence_count?: number
+  selected_filters?: Record<string, unknown>
   state: 'ok' | 'empty' | 'partial'
 }
 
@@ -384,13 +392,14 @@ export const projectChartsApi = {
   },
   mentionSamples(
     projectId: string,
-    opts: { polarity?: string; limit?: number; filters?: ProjectAnalysisParams } = {},
+    opts: { polarity?: string; limit?: number; offset?: number; filters?: ProjectAnalysisParams } = {},
   ): Promise<MentionSamplesOut> {
     return apiClient.get<MentionSamplesOut>(
       `/v1/projects/${projectId}/mention-samples${buildQuery({
         ...(opts.filters || {}),
         polarity: opts.polarity,
         limit: opts.limit,
+        offset: opts.offset,
       })}`,
     )
   },

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
 import { useLocale } from '../../contexts/LocaleContext';
@@ -48,10 +48,11 @@ type SentimentResponseRow = {
   time: string;
   summary: string;
   polarity?: string | null;
+  queryId?: number | null;
   mentionId?: number | null;
   responseId?: number | null;
   snippet?: string | null;
-  fullResponseText?: string | null;
+  responseText?: string | null;
 };
 
 /* ─────────────────────────────────────────────────────────────
@@ -79,6 +80,8 @@ export default function BrandSentimentPage() {
   // Response filter state (kept local — it's a drill-down within the samples card, not a page-level filter)
   const [polarity, setPolarity] = useState('all');
   const [expandedResponseKey, setExpandedResponseKey] = useState<string | null>(null);
+  const [responseOffset, setResponseOffset] = useState(0);
+  const [accumulatedLiveSamples, setAccumulatedLiveSamples] = useState<SentimentResponseRow[]>([]);
 
   // ── Live data hooks ──
   const { data: liveProjects } = useProjects();
@@ -96,6 +99,7 @@ export default function BrandSentimentPage() {
   const samplesQ = useMentionSamples(isLive ? liveProjectId : null, {
     polarity: polarity === 'all' ? undefined : polarity,
     limit: RESPONSE_SAMPLE_LIMIT,
+    offset: responseOffset,
     filters: chartFilters,
   });
 
@@ -225,19 +229,44 @@ export default function BrandSentimentPage() {
   // ──────────────────────────────────────────────────────────────
   // Filter response samples by polarity (local control)
   // ──────────────────────────────────────────────────────────────
-  const rawLiveSamples = samplesQ.data?.items ?? [];
-  const liveSamples = adaptMentionSamples(samplesQ.data).map((sample, idx) => {
-    const raw = rawLiveSamples[idx] || {};
-    return {
-      ...sample,
-      polarity: raw.polarity,
-      mentionId: raw.mention_id,
-      responseId: raw.response_id,
-      snippet: raw.snippet,
-      fullResponseText: (raw as any).full_response_text ?? (raw as any).response_text ?? null,
-    };
-  });
-  const samplesData: SentimentResponseRow[] = isLive ? liveSamples : (SENTIMENT_DETAIL_LIST || []);
+  const livePageSignature = useMemo(
+    () =>
+      `${responseOffset}|${(samplesQ.data?.items ?? [])
+        .map((item, idx) => `${item.query_id ?? 'query'}-${item.mention_id ?? item.response_id ?? idx}`)
+        .join('|')}`,
+    [responseOffset, samplesQ.data],
+  );
+  const responseScopeKey = useMemo(
+    () => JSON.stringify({ projectId: liveProjectId, polarity, filters: chartFilters }),
+    [liveProjectId, polarity, chartFilters],
+  );
+
+  useEffect(() => {
+    setResponseOffset(0);
+    setExpandedResponseKey(null);
+    setAccumulatedLiveSamples([]);
+  }, [responseScopeKey]);
+
+  useEffect(() => {
+    if (!isLive || !samplesQ.data) return;
+    const liveSamples = adaptMentionSamples(samplesQ.data);
+    setAccumulatedLiveSamples((prev) => {
+      const next = responseOffset === 0 ? [] : [...prev];
+      const seen = new Set(
+        next.map((item, idx) => `${item.queryId ?? 'query'}-${item.mentionId ?? item.responseId ?? idx}`),
+      );
+      for (const item of liveSamples) {
+        const key = `${item.queryId ?? 'query'}-${item.mentionId ?? item.responseId ?? next.length}`;
+        if (!seen.has(key)) {
+          next.push(item);
+          seen.add(key);
+        }
+      }
+      return next;
+    });
+  }, [isLive, livePageSignature]);
+
+  const samplesData: SentimentResponseRow[] = isLive ? accumulatedLiveSamples : (SENTIMENT_DETAIL_LIST || []);
   const samplesIsMock = !isLive;
   const positiveKeywords = isLive
     ? (canUseMetricEvidence(sentimentQ.data, 'sentiment') ? sentimentQ.data?.top_keywords || [] : [])
@@ -249,7 +278,7 @@ export default function BrandSentimentPage() {
         .filter((kw) => kw.polarity === 'negative')
         .map((kw) => ({ word: kw.keyword, weight: kw.count }))
     : SENTIMENT_KEYWORDS.negative || [];
-  const filteredResponses = samplesData.filter((item: SentimentResponseRow) => {
+  const filteredResponses = isLive ? samplesData : samplesData.filter((item: SentimentResponseRow) => {
     if (polarity === 'all') return true;
     const normalizedPolarity = String(item.polarity || item.label || '').toLowerCase();
     if (polarity === 'positive') return normalizedPolarity === 'positive' || item.label === '正面';
@@ -258,14 +287,20 @@ export default function BrandSentimentPage() {
   });
   const fetchedResponseCount = samplesData.length;
   const visibleResponseCount = filteredResponses.length;
-  const fetchedWindowIsFull = fetchedResponseCount < RESPONSE_SAMPLE_LIMIT;
+  const responseTotal = isLive ? (samplesQ.data?.total ?? fetchedResponseCount) : fetchedResponseCount;
+  const responseHasMore = isLive ? Boolean(samplesQ.data?.has_more) && fetchedResponseCount < responseTotal : false;
+  const evidenceCount = isLive ? (samplesQ.data?.evidence_count ?? responseTotal) : fetchedResponseCount;
   const responseWindowLabel = isLive
-    ? fetchedWindowIsFull
-      ? `Showing ${visibleResponseCount} of ${fetchedResponseCount} fetched responses`
-      : `Showing ${visibleResponseCount} fetched responses; API limit ${RESPONSE_SAMPLE_LIMIT} may hide more`
+    ? responseHasMore
+      ? `Showing ${visibleResponseCount} of ${responseTotal} responses`
+      : `Showing all ${visibleResponseCount} responses`
     : `Showing ${visibleResponseCount} demo responses`;
   const responseApiNeed =
-    'Needs backend fields: total_count, has_more, next_cursor, full_response_text, response_id, mention_id.';
+    'Needs backend fields from #1191: query_id, response_text, total, limit, offset, has_more, evidence_count, selected_filters.';
+  const handleLoadMoreResponses = () => {
+    if (!isLive || !responseHasMore || samplesQ.isFetching) return;
+    setResponseOffset(fetchedResponseCount);
+  };
 
   return (
     <div className="space-y-4">
@@ -470,9 +505,12 @@ export default function BrandSentimentPage() {
           {['all', 'positive', 'negative'].map((pol) => (
             <button
               key={pol}
+              aria-label={pol === 'all' ? 'All' : pol === 'positive' ? 'Positive' : 'Negative'}
               onClick={() => {
                 setPolarity(pol);
                 setExpandedResponseKey(null);
+                setResponseOffset(0);
+                setAccumulatedLiveSamples([]);
               }}
               className="px-3 py-1.5 rounded-pill text-xs font-medium transition-colors"
               style={
@@ -492,17 +530,19 @@ export default function BrandSentimentPage() {
           {isLive && (
             <div className="rounded-card border border-dashed border-themed-subtle bg-themed-subtle/60 p-3">
               <p className="text-xs text-themed-muted leading-relaxed">
-                {fetchedWindowIsFull
-                  ? 'The page renders every response returned by the current fetch.'
-                  : 'The page renders the fetched window, but backend pagination metadata is needed before this proves the full corpus.'}
+                {responseHasMore
+                  ? `Loaded ${visibleResponseCount} of ${responseTotal} matching responses. ${evidenceCount} evidence rows match the current scope.`
+                  : `All ${visibleResponseCount} loaded responses are visible for the current scope. ${evidenceCount} evidence rows match the API filters.`}
               </p>
-              <p className="text-[11px] text-themed-muted mt-1">{responseApiNeed}</p>
+              {responseHasMore && <p className="text-[11px] text-themed-muted mt-1">{responseApiNeed}</p>}
             </div>
           )}
 
-          {filteredResponses.map((item, idx) => (
+          {filteredResponses.map((item, idx) => {
+            const responseKey = `${item.queryId ?? 'query'}-${item.mentionId ?? item.responseId ?? idx}`;
+            return (
             <div
-              key={idx}
+              key={responseKey}
               className="rounded-card bg-themed-subtle p-3 border-l-4"
               style={{
                 borderLeftColor:
@@ -524,38 +564,38 @@ export default function BrandSentimentPage() {
               <p className="text-sm text-themed-primary leading-relaxed">{item.summary}</p>
               <div className="mt-3 flex items-center justify-between gap-2">
                 <span className="text-[10px] text-themed-muted">
+                  query_id: {item.queryId ?? 'pending'} ·{' '}
                   response_id: {item.responseId ?? 'pending'} · mention_id: {item.mentionId ?? 'pending'}
                 </span>
                 <button
                   type="button"
-                  aria-expanded={expandedResponseKey === `${item.responseId ?? 'response'}-${item.mentionId ?? idx}`}
+                  aria-expanded={expandedResponseKey === responseKey}
                   aria-label={`Inspect full response for ${item.summary}`}
                   onClick={() => {
-                    const responseKey = `${item.responseId ?? 'response'}-${item.mentionId ?? idx}`;
                     setExpandedResponseKey(expandedResponseKey === responseKey ? null : responseKey);
                   }}
                   className="px-2.5 py-1 rounded-pill text-[11px] font-medium transition-colors"
                   style={{
                     background:
-                      expandedResponseKey === `${item.responseId ?? 'response'}-${item.mentionId ?? idx}`
+                      expandedResponseKey === responseKey
                         ? 'var(--color-accent-bg-light)'
                         : 'var(--color-bg-card)',
                     border: '1px solid var(--color-border-subtle)',
                     color:
-                      expandedResponseKey === `${item.responseId ?? 'response'}-${item.mentionId ?? idx}`
+                      expandedResponseKey === responseKey
                         ? 'var(--color-text-accent)'
                         : 'var(--color-text-muted)',
                   }}
                 >
-                  {expandedResponseKey === `${item.responseId ?? 'response'}-${item.mentionId ?? idx}` ? 'Hide details' : 'Inspect'}
+                  {expandedResponseKey === responseKey ? 'Hide details' : 'Inspect'}
                 </button>
               </div>
-              {expandedResponseKey === `${item.responseId ?? 'response'}-${item.mentionId ?? idx}` && (
+              {expandedResponseKey === responseKey && (
                 <div className="mt-3 rounded-card bg-themed-card border border-themed-subtle p-3">
                   <p className="text-xs font-semibold text-themed-primary">Full response inspection</p>
-                  {item.fullResponseText ? (
+                  {item.responseText ? (
                     <p className="text-sm text-themed-primary leading-relaxed mt-2 whitespace-pre-wrap">
-                      {item.fullResponseText}
+                      {item.responseText}
                     </p>
                   ) : (
                     <div className="mt-2 space-y-2">
@@ -571,7 +611,26 @@ export default function BrandSentimentPage() {
                 </div>
               )}
             </div>
-          ))}
+            );
+          })}
+
+          {responseHasMore && (
+            <div className="flex justify-center pt-1">
+              <button
+                type="button"
+                onClick={handleLoadMoreResponses}
+                disabled={samplesQ.isFetching}
+                className="px-3 py-1.5 rounded-pill text-xs font-medium transition-colors"
+                style={{
+                  background: 'var(--color-bg-card)',
+                  border: '1px solid var(--color-border-subtle)',
+                  color: 'var(--color-text-muted)',
+                }}
+              >
+                {samplesQ.isFetching ? 'Loading responses...' : 'Load more responses'}
+              </button>
+            </div>
+          )}
 
           {filteredResponses.length === 0 && (
             <div className="text-center py-8">

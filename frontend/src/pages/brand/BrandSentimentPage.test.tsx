@@ -6,17 +6,48 @@ import { describe, expect, it, vi } from 'vitest'
 import { LocaleProvider } from '../../contexts/LocaleContext'
 import BrandSentimentPage from './BrandSentimentPage'
 
-const mockSamples = Array.from({ length: 8 }, (_, idx) => ({
-  mention_id: idx + 1,
-  response_id: 1000 + idx,
-  label: idx % 2 === 0 ? 'Positive' : 'Negative',
-  polarity: idx % 2 === 0 ? 'positive' : 'negative',
-  summary: `Response summary ${idx + 1}`,
-  snippet: `Full response text ${idx + 1}`,
-  engine: 'ChatGPT',
-  topic: `Topic ${idx + 1}`,
-  occurred_at: '2026-05-18T00:00:00Z',
-}))
+const mocks = vi.hoisted(() => {
+  const allSamples = Array.from({ length: 108 }, (_, idx) => ({
+    query_id: 9000 + idx,
+    mention_id: idx + 1,
+    response_id: 1000 + idx,
+    label: idx % 2 === 0 ? 'Positive' : 'Negative',
+    polarity: idx % 2 === 0 ? 'positive' : 'negative',
+    summary: `Response summary ${idx + 1}`,
+    snippet: `Response snippet ${idx + 1}`,
+    response_text: `Full response text from API ${idx + 1}`,
+    engine: 'ChatGPT',
+    topic: `Topic ${idx + 1}`,
+    occurred_at: '2026-05-18T00:00:00Z',
+  }))
+
+  return {
+    useMentionSamples: vi.fn((_: string | null | undefined, opts: { offset?: number; limit?: number; polarity?: string } = {}) => {
+    const offset = opts.offset ?? 0
+    const limit = opts.limit ?? 100
+    const pageItems = allSamples.slice(offset, offset + limit)
+    return {
+      data: {
+        project_id: '11111111-2222-3333-4444-555555555555',
+        state: 'ok',
+        metric_formula_evidence: { sentiment: { formula_status: 'ok' } },
+        items: pageItems,
+        total: allSamples.length,
+        limit,
+        offset,
+        has_more: offset + pageItems.length < allSamples.length,
+        evidence_count: allSamples.length,
+        selected_filters: {
+          brand_id: 42,
+          polarity: opts.polarity ?? null,
+        },
+      },
+      isLoading: false,
+      error: null,
+    }
+  }),
+  }
+})
 
 vi.mock('recharts', async () => {
   const React = await import('react')
@@ -77,7 +108,7 @@ vi.mock('../../hooks/useTopicAnalysis', () => ({
 }))
 
 vi.mock('../../hooks/useBrandAnalysisFilters', () => ({
-  useBrandAnalysisFilters: () => ({ filters: {} }),
+  useBrandAnalysisFilters: () => ({ filters: { engines: ['ChatGPT'] } }),
 }))
 
 vi.mock('../../hooks/useBrandMetrics', () => ({
@@ -129,16 +160,7 @@ vi.mock('../../hooks/useCharts', () => ({
       items: [],
     },
   }),
-  useMentionSamples: () => ({
-    data: {
-      project_id: '11111111-2222-3333-4444-555555555555',
-      state: 'ok',
-      metric_formula_evidence: { sentiment: { formula_status: 'ok' } },
-      items: mockSamples,
-    },
-    isLoading: false,
-    error: null,
-  }),
+  useMentionSamples: mocks.useMentionSamples,
 }))
 
 function renderSentimentPage() {
@@ -158,17 +180,57 @@ function renderSentimentPage() {
 }
 
 describe('BrandSentimentPage response evidence contract', () => {
-  it('renders every fetched response and exposes a full response interaction', () => {
+  it('renders every fetched response without a silent six-item cap', () => {
     renderSentimentPage()
 
     expect(screen.getByText('Response summary 1')).toBeInTheDocument()
     expect(screen.getByText('Response summary 8')).toBeInTheDocument()
-    expect(screen.getByText(/Showing 8 of 8 fetched responses/)).toBeInTheDocument()
+    expect(screen.getByText('Response summary 100')).toBeInTheDocument()
+    expect(screen.queryByText('Response summary 101')).not.toBeInTheDocument()
+    expect(screen.getByText(/Showing 100 of 108 responses/)).toBeInTheDocument()
+  })
 
-    fireEvent.click(screen.getByRole('button', { name: /Inspect full response for Response summary 1/ }))
+  it('uses response_text from the API for full response inspection', () => {
+    renderSentimentPage()
+
+    fireEvent.click(screen.getByRole('button', { name: /^Inspect full response for Response summary 1$/ }))
 
     expect(screen.getByText('Full response inspection')).toBeInTheDocument()
-    expect(screen.getByText(/Full response text is not available from the current API payload/)).toBeInTheDocument()
-    expect(screen.getByText(/response_id: 1000/)).toBeInTheDocument()
+    expect(screen.getByText('Full response text from API 1')).toBeInTheDocument()
+    expect(screen.getByText(/query_id: 9000/)).toBeInTheDocument()
+  })
+
+  it('loads additional pages using total and has_more metadata', async () => {
+    renderSentimentPage()
+
+    fireEvent.click(screen.getByRole('button', { name: /Load more responses/ }))
+
+    expect(await screen.findByText('Response summary 108')).toBeInTheDocument()
+    expect(screen.getByText(/Showing all 108 responses/)).toBeInTheDocument()
+  })
+
+  it('preserves project, brand, engine, and polarity scope when filters change', () => {
+    renderSentimentPage()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Positive' }))
+
+    expect(mocks.useMentionSamples).toHaveBeenLastCalledWith(
+      '11111111-2222-3333-4444-555555555555',
+      expect.objectContaining({
+        polarity: 'positive',
+        limit: 100,
+        offset: 0,
+        filters: expect.objectContaining({
+          brand_id: 42,
+          engine: 'ChatGPT',
+        }),
+      }),
+    )
+  })
+
+  it('does not show demo badges on live response evidence', () => {
+    renderSentimentPage()
+
+    expect(screen.queryByText(/Mock/i)).not.toBeInTheDocument()
   })
 })
