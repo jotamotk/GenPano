@@ -559,8 +559,18 @@ async def run_quick_retry(
                 detail=f"playwright start failed: {exc!r}",
             ) from exc
 
+        # Chrome 117+ DNS-rebinding protection rejects /json/version (and
+        # /devtools/page WebSocket upgrade) with HTTP 500 unless the Host
+        # header is localhost / 127.0.0.1. When the bulk-retry path
+        # reaches doubao-NN via docker DNS (http://doubao-01:9222), the
+        # Host header is `doubao-01:9222` -> rejected. Override the Host
+        # header to `localhost` to bypass the check while keeping the
+        # actual TCP destination derived from the URL.
         try:
-            browser = await playwright_handle.chromium.connect_over_cdp(cdp)
+            browser = await playwright_handle.chromium.connect_over_cdp(
+                cdp,
+                headers={"Host": "localhost"},
+            )
         except Exception as exc:
             raise QuickRetryError(
                 ERR_CDP_UNREACHABLE,
