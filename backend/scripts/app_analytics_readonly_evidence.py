@@ -290,12 +290,11 @@ GROUP BY cs.domain
 ORDER BY rows_in_unresolved DESC
 LIMIT 30;
 
-\\echo '--- brands.website + aliases registry (issue #1225 domain registration probe) ---'
+\\echo '--- brands.website + official_domains registry (issue #1225 domain registration probe) ---'
 SELECT
   b.id,
   b.name,
   b.website,
-  COALESCE(array_length(b.aliases, 1), 0) AS alias_count,
   (SELECT COUNT(*) FROM brand_official_domains bod WHERE bod.brand_id = b.id)
     AS official_domain_rows,
   (SELECT string_agg(bod.domain, ',') FROM brand_official_domains bod
