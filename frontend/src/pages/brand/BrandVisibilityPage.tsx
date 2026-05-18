@@ -1,8 +1,5 @@
 import React from 'react';
 import { useSearchParams } from 'react-router-dom';
-import {
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
-} from 'recharts';
 import { useLocale } from '../../contexts/LocaleContext';
 import { useProject } from '../../contexts/ProjectContext';
 import { Card, Badge, MockDataBadge, InfoTooltip, MetricLabel } from '../../components/ui';
@@ -29,9 +26,17 @@ import {
 } from '../../adapters/dashboardAdapter';
 import {
   adaptEngineMetricsToBreakdown,
+  type EngineBreakdownBar,
   adaptPositionDistribution,
   adaptHeatmap,
 } from '../../adapters/chartAdapters';
+import type { EngineMetricsOut } from '../../api/charts';
+import {
+  buildMetricTrustState,
+  contractEvidenceReasons,
+  metricEvidenceFor,
+  type MetricTrustState,
+} from '../../api/analyticsContract';
 import QueryStateView from '../../components/QueryStateView';
 import {
   BRANDS,
@@ -42,6 +47,231 @@ import {
   SOV_DATA,
   TREND_DATA,
 } from '../../data/mock';
+
+type EngineMetricKey = 'mention_rate' | 'sov' | 'citation';
+
+function formatEnginePercent(value: number | null | undefined): string | null {
+  return value == null || !Number.isFinite(value) ? null : `${Number(value).toFixed(1)}%`;
+}
+
+function percentWidth(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return '0%';
+  return `${Math.max(0, Math.min(100, value))}%`;
+}
+
+function engineMetricTrust(
+  source: EngineMetricsOut | undefined,
+  metricKey: EngineMetricKey,
+  value: number | null,
+): MetricTrustState | null {
+  if (!source) return null;
+  const evidence = metricEvidenceFor(source, metricKey);
+  if (evidence) {
+    return buildMetricTrustState({ ...evidence, metricKey, value });
+  }
+  if (source.state && source.state !== 'ok') {
+    return buildMetricTrustState({
+      formula_status: source.formula_status || source.state,
+      metricKey,
+      reason_codes: contractEvidenceReasons(source, metricKey),
+      value,
+    });
+  }
+  return null;
+}
+
+function primaryMetricShell(value: number | null, trust: MetricTrustState | null): string {
+  if (value == null) return 'border-amber-300/70 bg-amber-50/70';
+  if (trust?.tone === 'partial') return 'border-amber-300/70 bg-amber-50/50';
+  return 'border-themed-subtle bg-themed-card';
+}
+
+function primaryMetricStatus(value: number | null, trust: MetricTrustState | null): string | null {
+  if (value == null) return 'Unavailable';
+  if (trust?.tone === 'partial') return trust.label;
+  return null;
+}
+
+function EnginePrimaryMetric({
+  label,
+  value,
+  color,
+  trust,
+}: {
+  label: string;
+  value: number | null;
+  color: string;
+  trust: MetricTrustState | null;
+}) {
+  const formatted = formatEnginePercent(value);
+  const status = primaryMetricStatus(value, trust);
+  const showTrustCopy = trust && (trust.tone !== 'ok' || value == null);
+  const trustSummary =
+    value == null && trust?.tone === 'ok'
+      ? 'No engine-level value returned for this metric.'
+      : trust?.summary;
+
+  return (
+    <div className={`rounded-btn border p-2.5 ${primaryMetricShell(value, trust)}`}>
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className="text-[11px] font-semibold uppercase text-themed-muted">{label}</div>
+          <div className="mt-1 text-lg font-bold leading-none tabular-nums text-themed-primary">
+            {formatted ?? '--'}
+          </div>
+        </div>
+        {status && (
+          <span className="shrink-0 rounded-pill bg-themed-subtle px-2 py-0.5 text-[10px] font-semibold text-themed-muted">
+            {status}
+          </span>
+        )}
+      </div>
+      <div className="mt-2 h-1.5 overflow-hidden rounded-pill bg-themed-subtle">
+        <div
+          className="h-full rounded-pill"
+          style={{ width: percentWidth(value), background: color }}
+        />
+      </div>
+      {showTrustCopy && (
+        <div className="mt-2 text-[11px] leading-snug text-themed-muted">
+          {trustSummary}
+          {trust.details.length > 0 && (
+            <span className="block">{trust.details.slice(0, 2).join(' · ')}</span>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function EngineVisibilityBreakdown({
+  rows,
+  source,
+  isLive,
+  isLoading,
+  error,
+  isMock,
+  title,
+  subtitle,
+}: {
+  rows: EngineBreakdownBar[];
+  source: EngineMetricsOut | undefined;
+  isLive: boolean;
+  isLoading?: boolean;
+  error?: unknown;
+  isMock: boolean;
+  title: string;
+  subtitle: string;
+}) {
+  const state = String(source?.state || '').toLowerCase();
+  const missingPrimaryMetric = rows.some((row) => row.mentionRate == null || row.sov == null);
+  const shouldShowState =
+    Boolean(error) ||
+    state === 'partial' ||
+    state === 'empty' ||
+    state === 'error' ||
+    missingPrimaryMetric;
+  const stateTitle = error || state === 'error'
+    ? 'By-engine visibility error'
+    : state === 'empty'
+      ? 'No by-engine visibility evidence'
+      : 'Partial by-engine visibility evidence';
+  const evidenceContext =
+    (error ? String(error) : '') ||
+    source?.state_detail ||
+    source?.state_reason ||
+    contractEvidenceReasons(source, ['mention_rate', 'sov']).slice(0, 3).join(' · ') ||
+    'Mention Rate or SoV is unavailable for at least one engine. Citation share remains secondary context.';
+
+  return (
+    <div data-testid="engine-visibility-breakdown">
+      <Card className="p-3">
+        <div className="flex items-baseline justify-between gap-3 mb-2">
+          <h3 className="text-[13px] font-semibold text-themed-primary flex items-center gap-2">
+            {title}
+            <InfoTooltip text={subtitle} />
+            {isMock && <MockDataBadge />}
+          </h3>
+        </div>
+
+        {shouldShowState && (
+          <div className="mb-2 rounded-btn border border-amber-300/70 bg-amber-50/70 px-2.5 py-2 text-xs leading-snug text-themed-primary">
+            <div className="font-semibold">{stateTitle}</div>
+            <div className="mt-0.5 text-themed-muted">{evidenceContext}</div>
+          </div>
+        )}
+
+        {isLive && isLoading ? (
+          <div className="h-[200px] rounded-btn bg-themed-subtle flex items-center justify-center text-xs text-themed-muted">
+            Loading engine visibility
+          </div>
+        ) : rows.length === 0 ? (
+          <div className="h-[200px] rounded-btn bg-themed-subtle flex items-center justify-center text-xs text-themed-muted">
+            Engine visibility data unavailable
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {rows.map((row) => {
+              const mentionTrust = engineMetricTrust(source, 'mention_rate', row.mentionRate);
+              const sovTrust = engineMetricTrust(source, 'sov', row.sov);
+              const citationTrust = engineMetricTrust(source, 'citation', row.citationShare);
+              const citationText = formatEnginePercent(row.citationShare);
+              const citationStatus = row.citationShare == null
+                ? 'Unavailable'
+                : citationTrust?.tone === 'partial'
+                  ? citationTrust.label
+                  : null;
+
+              return (
+                <div
+                  key={row.engine}
+                  className="rounded-btn border border-themed-subtle bg-themed-subtle p-2.5"
+                >
+                  <div className="mb-2 flex items-center justify-between gap-2">
+                    <div className="text-sm font-semibold text-themed-primary">{row.engine}</div>
+                    {(row.mentionRate == null || row.sov == null) && (
+                      <span className="rounded-pill bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-900">
+                        Visibility metrics incomplete
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <EnginePrimaryMetric
+                      label="Mention Rate"
+                      value={row.mentionRate}
+                      color="var(--color-accent)"
+                      trust={mentionTrust}
+                    />
+                    <EnginePrimaryMetric
+                      label="SoV"
+                      value={row.sov}
+                      color="var(--color-chart-7)"
+                      trust={sovTrust}
+                    />
+                  </div>
+
+                  <div className="mt-2 border-t border-themed-card pt-2">
+                    <div className="flex items-center justify-between gap-2 text-[11px]">
+                      <span className="font-medium text-themed-muted">Citation share</span>
+                      <span className="tabular-nums text-themed-muted">
+                        {citationText ?? '--'}
+                        {citationStatus ? ` · ${citationStatus}` : ''}
+                      </span>
+                    </div>
+                    <p className="mt-1 text-[11px] leading-snug text-themed-muted">
+                      Citation share is secondary context; it does not fill missing Mention Rate or SoV.
+                    </p>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}
 
 /* ─────────────────────────────────────────────────────────────
    BrandVisibilityPage — /brand/visibility (§4.6-IA-v2.C.2.2 + K/L/N)
@@ -262,35 +492,16 @@ export default function BrandVisibilityPage() {
 
       {/* ② Engine breakdown + Position distribution (2-col) */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-        <Card className="p-3">
-          <div className="flex items-baseline justify-between mb-1">
-            <h3 className="text-[13px] font-semibold text-themed-primary flex items-center gap-2">
-              {t('brand_visibility.by_engine_title')}
-              <InfoTooltip text={t('brand_visibility.by_engine_subtitle')} />
-              {engineIsMock && <MockDataBadge />}
-            </h3>
-          </div>
-          <ResponsiveContainer width="100%" height={200}>
-            <BarChart data={engineBreakdownData} margin={{ top: 4, right: 12, bottom: 4, left: 0 }}>
-              <CartesianGrid stroke="var(--color-chart-line-grid)" strokeDasharray="3 3" vertical={false} />
-              <XAxis dataKey="engine" tick={{ fontSize: 10, fill: 'var(--color-chart-axis-text)' }} axisLine={{ stroke: 'var(--color-border-subtle)' }} tickLine={false} />
-              <YAxis tick={{ fontSize: 10, fill: 'var(--color-chart-axis-text)' }} axisLine={{ stroke: 'var(--color-border-subtle)' }} tickLine={false} tickFormatter={(v) => `${Math.round(v)}%`} />
-              <Tooltip
-                contentStyle={{
-                  background: 'var(--color-tooltip-bg)',
-                  border: '1px solid var(--color-border-subtle)',
-                  borderRadius: 'var(--radius-btn)',
-                  fontSize: 12,
-                }}
-                formatter={(v) => v == null ? '—' : `${Math.round(Number(v))}%`}
-              />
-              <Legend wrapperStyle={{ fontSize: 11, color: 'var(--color-text-muted)' }} iconType="square" />
-              <Bar dataKey="mentionRate" fill="var(--color-accent)" name={t('brand_visibility.mention_rate')} radius={[3, 3, 0, 0]} />
-              <Bar dataKey="sov" fill="var(--color-chart-7)" name={t('brand_visibility.kpi_sov')} radius={[3, 3, 0, 0]} />
-              <Bar dataKey="citationShare" fill="var(--color-chart-3)" name={t('brand_visibility.citation_share')} radius={[3, 3, 0, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
-        </Card>
+        <EngineVisibilityBreakdown
+          rows={engineBreakdownData}
+          source={engineQ.data}
+          isLive={isLive}
+          isLoading={engineQ.isLoading}
+          error={engineQ.error}
+          isMock={engineIsMock}
+          title={t('brand_visibility.by_engine_title')}
+          subtitle={t('brand_visibility.by_engine_subtitle')}
+        />
 
         <Card className="p-3">
           <div className="flex items-baseline justify-between mb-1">
