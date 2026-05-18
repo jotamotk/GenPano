@@ -553,14 +553,14 @@ export default function BrandSentimentPage() {
               className="rounded-card bg-themed-subtle p-3 border-l-4"
               style={{
                 borderLeftColor:
-                  item.label === '正面' ? 'var(--color-chart-7)'
-                  : item.label === '负面' ? 'var(--color-danger)'
+                  item.polarity === 'positive' ? 'var(--color-chart-7)'
+                  : item.polarity === 'negative' ? 'var(--color-danger)'
                   : 'var(--color-chart-line-grid)',
               }}
             >
               <div className="flex items-center justify-between mb-2">
                 <Badge
-                  variant={item.label === '正面' ? 'green' : item.label === '负面' ? 'red' : 'default'}
+                  variant={item.polarity === 'positive' ? 'green' : item.polarity === 'negative' ? 'red' : 'default'}
                   size="sm"
                 >
                   {item.label}
