@@ -31,6 +31,9 @@ type CandidateScanSummary = {
   scannedPrompts: number
   scannedQueries: number
   scannedAttempts: number
+  skippedDuplicateAttempts: number
+  queryResponseRequests: number
+  queryResponseErrors: number
   candidatesWithAnalyzerFacts: number
   maxRawTextCandidate: CandidateSummary | null
   selectedCandidate: CandidateSummary | null
@@ -60,6 +63,16 @@ const SCREENSHOT_DIR = 'test-results/live-app-topics-response-modal-scroll'
 const MIN_RAW_TEXT_LENGTH = Number(process.env.MIN_RESPONSE_MODAL_RAW_TEXT_LENGTH || 1200)
 const MIN_ANALYZER_FACTS_FOR_SCROLL = Number(process.env.MIN_ANALYZER_FACTS_FOR_SCROLL || 12)
 const LIVE_API_THROTTLE_MS = Number(process.env.APP_TOPICS_RESPONSE_MODAL_API_THROTTLE_MS || 250)
+const LIVE_API_RATE_LIMIT_RETRIES = Number(process.env.APP_TOPICS_RESPONSE_MODAL_RATE_LIMIT_RETRIES || 3)
+const LIVE_API_RATE_LIMIT_BUFFER_MS = Number(process.env.APP_TOPICS_RESPONSE_MODAL_RATE_LIMIT_BUFFER_MS || 1500)
+const LIVE_API_RATE_LIMIT_MAX_WAIT_MS = Number(process.env.APP_TOPICS_RESPONSE_MODAL_RATE_LIMIT_MAX_WAIT_MS || 60_000)
+
+class RateLimitBlockerError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'RateLimitBlockerError'
+  }
+}
 
 function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message)
@@ -71,6 +84,10 @@ function compactText(value: unknown) {
 
 function sleep(ms: number) {
   return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+function isRateLimitBlocker(error: unknown) {
+  return error instanceof RateLimitBlockerError || (error instanceof Error && error.message.includes('RATE_LIMIT_BLOCKER'))
 }
 
 function jsonB64(value: unknown) {
@@ -93,8 +110,21 @@ function signJwt(userId: string, secret: string) {
   return `${body}.${signature}`
 }
 
+function parseRetryAfterSeconds(response: Response, text: string) {
+  let retryAfter = Number(response.headers.get('retry-after') || 0)
+  try {
+    const payload = text ? JSON.parse(text) : null
+    const detail = payload?.detail || payload
+    retryAfter = Number(detail?.retry_after_seconds || detail?.retry_after || retryAfter)
+  } catch {
+    // Keep header-derived retryAfter if the payload is not JSON.
+  }
+  return Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : 0
+}
+
 async function api(baseUrl: string, token: string, name: string, path: string) {
-  for (let attempt = 0; attempt < 3; attempt += 1) {
+  const maxAttempts = Math.max(1, LIVE_API_RATE_LIMIT_RETRIES + 1)
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     const response = await fetch(`${baseUrl}${path}`, {
       headers: {
         Authorization: `Bearer ${token}`,
@@ -103,25 +133,40 @@ async function api(baseUrl: string, token: string, name: string, path: string) {
       },
     })
     const text = await response.text()
-    if (response.status === 429 && attempt < 2) {
-      let retryAfter = Number(response.headers.get('retry-after') || 0)
-      try {
-        const payload = text ? JSON.parse(text) : null
-        retryAfter = Number(payload?.detail?.retry_after_seconds || payload?.detail?.retry_after || retryAfter)
-      } catch {
-        // Keep header-derived retryAfter if the payload is not JSON.
+    if (response.status === 429) {
+      const retryAfterSeconds = parseRetryAfterSeconds(response, text)
+      const waitMs = Math.max(
+        1000,
+        Math.min(
+          LIVE_API_RATE_LIMIT_MAX_WAIT_MS,
+          (retryAfterSeconds > 0 ? retryAfterSeconds * 1000 : 2000) + LIVE_API_RATE_LIMIT_BUFFER_MS,
+        ),
+      )
+      if (attempt < maxAttempts - 1) {
+        console.log(
+          'LIVE_API_RATE_LIMIT_RETRY ' +
+            JSON.stringify({
+              name,
+              path,
+              attempt: attempt + 1,
+              maxRetries: LIVE_API_RATE_LIMIT_RETRIES,
+              retryAfterSeconds,
+              waitMs,
+            }),
+        )
+        await sleep(waitMs)
+        continue
       }
-      const waitMs = Math.max(1000, Math.min(35_000, retryAfter * 1000 || 2000))
-      console.log(`LIVE_API_RATE_LIMIT_RETRY name=${name} attempt=${attempt + 1} wait_ms=${waitMs}`)
-      await sleep(waitMs)
-      continue
+      throw new RateLimitBlockerError(
+        `RATE_LIMIT_BLOCKER: ${name} ${path} -> HTTP 429 after ${LIVE_API_RATE_LIMIT_RETRIES} retry-after retries: ${text.slice(0, 800)}`,
+      )
     }
     if (!response.ok) {
       throw new Error(`${name} ${path} -> HTTP ${response.status}: ${text.slice(0, 800)}`)
     }
     return text ? JSON.parse(text) : null
   }
-  throw new Error(`${name} ${path} -> HTTP 429 after retries`)
+  throw new RateLimitBlockerError(`RATE_LIMIT_BLOCKER: ${name} ${path} -> HTTP 429 after retry loop exited`)
 }
 
 async function seedLiveAuth(page: Page, token: string, slice: LiveSlice) {
@@ -206,6 +251,30 @@ function summarizeCandidate(probe: ModalProbe): CandidateSummary {
   }
 }
 
+function candidateScanSummary(
+  scan: Omit<CandidateScanSummary, 'candidatesWithAnalyzerFacts' | 'maxRawTextCandidate' | 'selectedCandidate' | 'blockers'>,
+  candidates: ModalProbe[],
+  blockers: string[],
+): CandidateScanSummary {
+  const selected = selectStrongestModalProbe(candidates)
+  const maxRawTextCandidate = [...candidates].sort((left, right) => {
+    if (right.rawTextLength !== left.rawTextLength) return right.rawTextLength - left.rawTextLength
+    return right.analyzerFactCount - left.analyzerFactCount
+  })[0]
+  return {
+    ...scan,
+    candidatesWithAnalyzerFacts: candidates.filter(candidate => candidate.analyzerFactCount > 0).length,
+    maxRawTextCandidate: maxRawTextCandidate ? summarizeCandidate(maxRawTextCandidate) : null,
+    selectedCandidate: selected ? summarizeCandidate(selected) : null,
+    blockers,
+  }
+}
+
+function rateLimitWithPartialSummary(error: unknown, scan: Parameters<typeof candidateScanSummary>[0], candidates: ModalProbe[], blockers: string[]) {
+  const message = error instanceof Error ? error.message : String(error)
+  return new RateLimitBlockerError(`${message}; partial_candidate_summary=${JSON.stringify(candidateScanSummary(scan, candidates, blockers))}`)
+}
+
 function selectStrongestModalProbe(candidates: ModalProbe[]) {
   const candidatesWithFacts = candidates.filter(candidate => candidate.analyzerFactCount > 0)
   const pool = candidatesWithFacts.length ? candidatesWithFacts : candidates
@@ -224,17 +293,27 @@ async function findModalProbe(baseUrl: string, token: string): Promise<ModalProb
     scannedPrompts: 0,
     scannedQueries: 0,
     scannedAttempts: 0,
+    skippedDuplicateAttempts: 0,
+    queryResponseRequests: 0,
+    queryResponseErrors: 0,
   }
+  const seenQueryResponses = new Set<string>()
 
   for (const slice of candidateSlices()) {
     scan.scannedSlices += 1
     const params = dateParams(slice)
-    const monitoring = await api(
-      baseUrl,
-      token,
-      'topics_monitoring',
-      `/api/v1/projects/${slice.projectId}/topics/monitoring?${params}`,
-    )
+    let monitoring: JsonMap
+    try {
+      monitoring = await api(
+        baseUrl,
+        token,
+        'topics_monitoring',
+        `/api/v1/projects/${slice.projectId}/topics/monitoring?${params}`,
+      )
+    } catch (error) {
+      if (isRateLimitBlocker(error)) throw rateLimitWithPartialSummary(error, scan, candidates, blockers)
+      throw error
+    }
     const topics = (Array.isArray(monitoring?.topics) ? monitoring.topics : [])
       .filter((topic: JsonMap) => Number(topic.response_count || 0) > 0)
     scan.scannedTopics += topics.length
@@ -245,23 +324,35 @@ async function findModalProbe(baseUrl: string, token: string): Promise<ModalProb
 
     for (const topic of topics) {
       const topicId = Number(topic.topic_id)
-      const promptsPayload = await api(
-        baseUrl,
-        token,
-        'topic_prompts',
-        `/api/v1/projects/${slice.projectId}/topics/${topicId}/prompts?${params}`,
-      )
+      let promptsPayload: JsonMap
+      try {
+        promptsPayload = await api(
+          baseUrl,
+          token,
+          'topic_prompts',
+          `/api/v1/projects/${slice.projectId}/topics/${topicId}/prompts?${params}`,
+        )
+      } catch (error) {
+        if (isRateLimitBlocker(error)) throw rateLimitWithPartialSummary(error, scan, candidates, blockers)
+        throw error
+      }
       const prompts = (Array.isArray(promptsPayload?.items) ? promptsPayload.items : [])
         .filter((prompt: JsonMap) => Number(prompt.response_count || 0) > 0)
       scan.scannedPrompts += prompts.length
       for (const prompt of prompts) {
         const promptId = Number(prompt.prompt_id)
-        const queriesPayload = await api(
-          baseUrl,
-          token,
-          'prompt_queries',
-          `/api/v1/projects/${slice.projectId}/prompts/${promptId}/queries?${params}`,
-        )
+        let queriesPayload: JsonMap
+        try {
+          queriesPayload = await api(
+            baseUrl,
+            token,
+            'prompt_queries',
+            `/api/v1/projects/${slice.projectId}/prompts/${promptId}/queries?${params}`,
+          )
+        } catch (error) {
+          if (isRateLimitBlocker(error)) throw rateLimitWithPartialSummary(error, scan, candidates, blockers)
+          throw error
+        }
         const queries = Array.isArray(queriesPayload?.items) ? queriesPayload.items : []
         scan.scannedQueries += queries.length
         for (const query of queries) {
@@ -269,12 +360,34 @@ async function findModalProbe(baseUrl: string, token: string): Promise<ModalProb
             scan.scannedAttempts += 1
             const queryId = Number(attempt.query_id || query.query_id)
             if (!Number.isFinite(queryId)) continue
-            const detail = await api(
-              baseUrl,
-              token,
-              'query_response',
-              `/api/v1/projects/${slice.projectId}/queries/${queryId}/response?brand_id=${slice.brandId}`,
-            )
+            const responseKey = `${slice.projectId}:${slice.brandId}:${queryId}`
+            if (seenQueryResponses.has(responseKey)) {
+              scan.skippedDuplicateAttempts += 1
+              continue
+            }
+            seenQueryResponses.add(responseKey)
+            const detailPath = `/api/v1/projects/${slice.projectId}/queries/${queryId}/response?brand_id=${slice.brandId}`
+            let detail: JsonMap
+            try {
+              scan.queryResponseRequests += 1
+              detail = await api(baseUrl, token, 'query_response', detailPath)
+            } catch (error) {
+              if (isRateLimitBlocker(error)) throw rateLimitWithPartialSummary(error, scan, candidates, blockers)
+              scan.queryResponseErrors += 1
+              const message = error instanceof Error ? error.message : String(error)
+              const skipSummary = {
+                projectId: slice.projectId,
+                brandId: slice.brandId,
+                topicId,
+                promptId,
+                queryId,
+                error: message.slice(0, 300),
+              }
+              blockers.push(`${slice.projectId}/${slice.brandId}: skipped query_id=${queryId} detail error: ${message.slice(0, 240)}`)
+              console.log(`TOPICS_MODAL_RESPONSE_DETAIL_SKIP ${JSON.stringify(skipSummary)}`)
+              if (LIVE_API_THROTTLE_MS > 0) await sleep(LIVE_API_THROTTLE_MS)
+              continue
+            }
             if (LIVE_API_THROTTLE_MS > 0) await sleep(LIVE_API_THROTTLE_MS)
             const rawTextLength = compactText(detail?.response?.raw_text).length
             const analyzerFactCount = countAnalyzerFacts(detail)
@@ -288,6 +401,10 @@ async function findModalProbe(baseUrl: string, token: string): Promise<ModalProb
               analyzerFactCount,
             }
             candidates.push(probe)
+            const strongest = selectStrongestModalProbe(candidates)
+            if (strongest?.queryId === probe.queryId) {
+              console.log(`TOPICS_MODAL_STRONGEST_CANDIDATE ${JSON.stringify(summarizeCandidate(probe))}`)
+            }
           }
         }
       }
@@ -297,17 +414,27 @@ async function findModalProbe(baseUrl: string, token: string): Promise<ModalProb
     const maxRawText = Math.max(0, ...sliceCandidates.map(candidate => candidate.rawTextLength))
     const withFacts = sliceCandidates.filter(candidate => candidate.analyzerFactCount > 0).length
     blockers.push(`${slice.projectId}/${slice.brandId}: scanned ${sliceCandidates.length} attempts; max_raw_text=${maxRawText}; with_analyzer_facts=${withFacts}`)
+    console.log(
+      'TOPICS_MODAL_CANDIDATE_SLICE_SUMMARY ' +
+        JSON.stringify({
+          projectId: slice.projectId,
+          brandId: slice.brandId,
+          fromDate: slice.fromDate,
+          toDate: slice.toDate,
+          sliceCandidates: sliceCandidates.length,
+          maxRawText,
+          withAnalyzerFacts: withFacts,
+          scannedAttempts: scan.scannedAttempts,
+          skippedDuplicateAttempts: scan.skippedDuplicateAttempts,
+          queryResponseRequests: scan.queryResponseRequests,
+          queryResponseErrors: scan.queryResponseErrors,
+        }),
+    )
   }
 
   const selected = selectStrongestModalProbe(candidates)
-  const maxRawTextCandidate = selectStrongestModalProbe([...candidates].sort((left, right) => right.rawTextLength - left.rawTextLength).slice(0, 1))
-  const candidateSummary: CandidateScanSummary = {
-    ...scan,
-    candidatesWithAnalyzerFacts: candidates.filter(candidate => candidate.analyzerFactCount > 0).length,
-    maxRawTextCandidate: maxRawTextCandidate ? summarizeCandidate(maxRawTextCandidate) : null,
-    selectedCandidate: selected ? summarizeCandidate(selected) : null,
-    blockers,
-  }
+  const candidateSummary = candidateScanSummary(scan, candidates, blockers)
+  console.log(`TOPICS_MODAL_CANDIDATE_SCAN_SUMMARY ${JSON.stringify(candidateSummary)}`)
 
   if (selected) {
     selected.candidateSummary = candidateSummary

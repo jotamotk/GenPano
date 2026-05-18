@@ -2406,6 +2406,9 @@ jobs:
 
     env:
       APP_TOPICS_RESPONSE_MODAL_LIVE_E2E: "1"
+      APP_TOPICS_RESPONSE_MODAL_API_THROTTLE_MS: "750"
+      APP_TOPICS_RESPONSE_MODAL_RATE_LIMIT_RETRIES: "3"
+      APP_TOPICS_RESPONSE_MODAL_RATE_LIMIT_BUFFER_MS: "1500"
       PLAYWRIGHT_BASE_URL: http://116.62.36.173
       PROJECT_ID: ${{ inputs.project_id }}
       BRAND_ID: ${{ inputs.brand_id }}
@@ -2437,7 +2440,7 @@ jobs:
 
       - name: Verify live App Topics response modal scroll
         working-directory: frontend
-        run: npx playwright test --project=chromium-desktop tests/e2e/app-topics-response-modal-scroll.spec.ts
+        run: npx playwright test --retries=0 --project=chromium-desktop tests/e2e/app-topics-response-modal-scroll.spec.ts
 
       - name: Upload live Topics modal screenshots and traces
         if: always()
