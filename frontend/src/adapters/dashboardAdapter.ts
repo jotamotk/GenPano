@@ -156,6 +156,19 @@ function competitorConfiguredCount(metrics: CompetitorMetricsOut): number | null
   return evidenceCount == null ? null : evidenceCount
 }
 
+function competitorEndpointStateEntry(metrics: CompetitorMetricsOut): BubbleEntry {
+  return {
+    brand: '',
+    sov: null,
+    sentiment: null,
+    mentions: 0,
+    endpointState: metrics.state,
+    stateReason: metrics.state_reason ?? metrics.formula_status ?? null,
+    missingInputs: (metrics.missing_inputs ?? []).map(contractItemText).filter(Boolean),
+    configuredCompetitorCount: competitorConfiguredCount(metrics),
+  }
+}
+
 function labelText(card: ContractKpiCard): string {
   return `${card.label_zh || ''} ${card.label_en || ''}`.toLowerCase()
 }
@@ -341,19 +354,7 @@ export function adaptCompetitorMetricsToBubble(
     ...(metrics.primary ? [metrics.primary] : []),
     ...(Array.isArray(metrics.competitors) ? metrics.competitors : []),
   ]
-  if (all.length === 0 && metrics.state && metrics.state !== 'ok') {
-    return [{
-      brand: '',
-      sov: null,
-      sentiment: null,
-      mentions: 0,
-      endpointState: metrics.state,
-      stateReason: metrics.state_reason ?? metrics.formula_status ?? null,
-      missingInputs: (metrics.missing_inputs ?? []).map(contractItemText).filter(Boolean),
-      configuredCompetitorCount: competitorConfiguredCount(metrics),
-    }]
-  }
-  return all
+  const rows = all
     .map((row) => ({
       row,
       sov: normalizeCompetitorSov(metrics, row.avg_sov),
@@ -365,6 +366,9 @@ export function adaptCompetitorMetricsToBubble(
       sentiment,
       mentions: row.co_mention_count ?? 0,
     }))
+  return metrics.state && metrics.state !== 'ok'
+    ? [competitorEndpointStateEntry(metrics), ...rows]
+    : rows
 }
 
 export function adaptOverviewToTrend(

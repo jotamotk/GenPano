@@ -40,7 +40,7 @@ export default function CompetitorQuadrant({ data, primaryName, t }: CompetitorQ
   const axisIncompleteCount = chartRows.length - axisReadyRows.length;
   const missingWeightCount = axisReadyRows.filter((row) => !Number.isFinite(row.mentions) || row.mentions <= 0).length;
 
-  if (endpointStateRow && axisReadyRows.length === 0) {
+  if (endpointStateRow) {
     const state = endpointStateRow.endpointState || 'partial';
     const reason = labelize(endpointStateRow.stateReason);
     const missingInputs = endpointStateRow.missingInputs?.map(labelize).filter(Boolean) ?? [];

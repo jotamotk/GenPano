@@ -140,6 +140,7 @@ export default function BrandCompetitorsPage() {
   // Higher = more threatening.
   // ──────────────────────────────────────────────────────────────
   const threatCards = useMemo(() => {
+    if (liveCompetitorEvidenceState) return [];
     const bubbleByName = isLive
       ? new Map()
       : new Map((COMPETITOR_SENTIMENT_BUBBLE || []).map((b) => [b.brand, b]));
@@ -173,12 +174,14 @@ export default function BrandCompetitorsPage() {
       .filter((card) => !isLive || card.threatScore != null)
       .sort((a, b) => (b.threatScore ?? -Infinity) - (a.threatScore ?? -Infinity))
       .slice(0, 3);
-  }, [competitors, analyticsPrimary, isLive]);
+  }, [competitors, analyticsPrimary, isLive, liveCompetitorEvidenceState]);
 
   const [focusCompetitorId, setFocusCompetitorId] = useState(
     threatCards[0]?.brand?.id || competitors[0]?.id,
   );
-  const focus = competitors.find((c) => c.id === focusCompetitorId) || threatCards[0]?.brand || competitors[0];
+  const focus = liveCompetitorEvidenceState
+    ? null
+    : competitors.find((c) => c.id === focusCompetitorId) || threatCards[0]?.brand || competitors[0];
 
   // ──────────────────────────────────────────────────────────────
   // ②a Authority Radar — 1:1 我 vs 所选竞品 vs 行业中位
