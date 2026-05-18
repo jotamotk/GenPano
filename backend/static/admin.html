@@ -6647,6 +6647,12 @@ P-010-01,SEG-010,功效护肤用户,女性 20-28,比较功效证据和价格,1.1
                         :disabled="selectedAttemptCount === 0 || batchTriggering"
                         @click="batchTriggerSelected()"
                         x-text="batchTriggering ? '重试中…' : ('批量重试 Query ' + (selectedAttemptCount ? '(' + selectedAttemptCount + ')' : ''))"></button>
+                <!-- Refs Epic #1110: parallel "批量 retry via VM" path. Sequential per-id call to /batch_retry_via_vm. -->
+                <button data-testid="attempt-query-batch-via-vm-button"
+                        class="h-8 px-3 rounded-btn border border-accent/40 text-accent text-[12px] font-semibold bg-white hover:bg-accent/5 disabled:opacity-40 disabled:cursor-not-allowed"
+                        :disabled="selectedAttemptCount === 0 || batchRetryingViaVm"
+                        @click="batchRetryViaVm()"
+                        x-text="batchRetryingViaVm ? 'VM 执行中…' : ('批量 retry via VM ' + (selectedAttemptCount ? '(' + selectedAttemptCount + ')' : ''))"></button>
                 <button data-testid="attempt-analyzer-batch-button"
                         class="h-8 px-3 rounded-btn bg-accent text-white text-[12px] font-semibold shadow-btn hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed"
                         :disabled="(attemptsTotal || filteredAttempts.length) === 0"
@@ -13705,6 +13711,48 @@ function adminApp() {
         this.toast('批量触发失败: ' + (e.message || e));
       } finally {
         this.batchTriggering = false;
+      }
+    },
+
+    // Refs Epic #1110: parallel "批量 retry via VM" path. POSTs all
+    // selected query_ids to /queries/batch_retry_via_vm; backend
+    // sequentially runs each through the VM CDP path (supports doubao
+    // + deepseek). Coexists with batchTriggerSelected() — the cookie
+    // inject + celery path is unchanged.
+    batchRetryingViaVm: false,
+    async batchRetryViaVm() {
+      const ids = Object.keys(this.selectedAttemptIds)
+        .map(x => Number(x))
+        .filter(n => Number.isFinite(n) && n > 0);
+      if (ids.length === 0) { this.toast('未选中任何 query'); return; }
+      if (!confirm('确认通过 VM 重试 ' + ids.length + ' 条 query？将逐条调用 retry_via_vm。')) return;
+      this.batchRetryingViaVm = true;
+      try {
+        const res = await fetch(API_BASE + '/queries/batch_retry_via_vm', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query_ids: ids }),
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error((body && body.error) || ('HTTP ' + res.status));
+        const failed = Array.isArray(body.failed) ? body.failed : [];
+        const total = Number(body.total || 0);
+        const success = Number(body.success || 0);
+        let msg = 'VM 批量重试完成 · 共 ' + total + ' · 成功 ' + success;
+        if (failed.length) {
+          const errs = failed.slice(0, 3).map(f => '#' + f.id + '(' + f.error + ')').join(', ');
+          msg += ' · 失败 ' + failed.length + (failed.length > 0 ? ': ' + errs : '');
+        }
+        this.toast(msg);
+        if (success > 0 || failed.length < total) {
+          this.selectedAttemptIds = {};
+          try { await this.loadAttempts(); } catch (_) {}
+        }
+      } catch (e) {
+        this.toast('VM 批量重试失败: ' + (e.message || e));
+      } finally {
+        this.batchRetryingViaVm = false;
       }
     },
 

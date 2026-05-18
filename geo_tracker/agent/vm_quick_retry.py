@@ -125,6 +125,43 @@ DOUBAO_LOGIN_KEYWORDS = (
 )
 
 
+# ── DeepSeek selectors COPIED VERBATIM from guest_executor.py ──
+# Source: ``GUEST_LLM_CONFIG['deepseek']`` in guest_executor.py
+# (lines ~531-541). Architecture decision (Epic #1110): DeepSeek shares
+# the same Chrome profile as Doubao inside doubao-01 / doubao-02
+# containers — operator logs in DeepSeek in the SAME noVNC Chrome
+# (different tab); poc_runner opens a new page with chat.deepseek.com
+# per rep — cookies are domain-scoped so they coexist.
+DEEPSEEK_URL = "https://chat.deepseek.com"
+DEEPSEEK_INPUT_SELECTOR = "textarea, [contenteditable=true], input[type=text]"
+# guest_executor.py uses submit_key="Enter" for DeepSeek (no submit_button
+# in the config). We provide a best-effort submit button selector to match
+# the Doubao-style fallback chain — if click fails, Enter is pressed (which
+# is the configured behavior anyway).
+DEEPSEEK_SUBMIT_BUTTON = (
+    "button[type='submit'], "
+    "button[aria-label*='Send' i], "
+    "button[aria-label*='发送'], "
+    "div[role='button'][aria-disabled='false']"
+)
+DEEPSEEK_RESPONSE_SELECTOR = (
+    ".ds-markdown, "
+    "[class*='message-content'] .markdown, "
+    "[class*='message'] .markdown"
+)
+DEEPSEEK_LOGIN_REDIRECT_DOMAINS = (
+    "login.deepseek.com",
+    "deepseek.com/sign_in",
+)
+# guest_executor.py has no explicit DeepSeek login-keyword list (it relies
+# on login_redirect_domains alone for DeepSeek). Empty tuple keeps the
+# _detect_login_page semantics URL-only for DeepSeek; in-page login form
+# detection is therefore a no-op for this engine. Matches production
+# behavior in guest_executor.py:1190-1205 which special-cases the Doubao
+# keyword list and does not apply it to other engines.
+DEEPSEEK_LOGIN_KEYWORDS: tuple[str, ...] = ()
+
+
 # ── Quick-path error wrapper ────────────────────────────────────────
 
 
@@ -153,18 +190,78 @@ ERR_CDP_UNREACHABLE = "cdp_unreachable"
 ERR_VM_NOT_LOGGED_IN = "vm_not_logged_in"
 
 
+# ── Engine config dispatcher ────────────────────────────────────────
+
+
+def _engine_config(target_llm: str) -> dict[str, Any]:
+    """Return URL + selectors + login signals for the requested engine.
+
+    The quick-retry path supports doubao + deepseek (both run in the
+    same doubao-NN container, sharing the noVNC Chrome profile —
+    operator logs both engines in separate tabs of the same browser).
+    Selectors are sourced verbatim from
+    ``geo_tracker/agent/guest_executor.py`` ``GUEST_LLM_CONFIG`` and
+    duplicated as module constants above so this PoC path cannot drift
+    the production selectors.
+
+    Args:
+        target_llm: engine key from ``queries.target_llm``. Case-
+            insensitive. Unknown engines raise
+            ``QuickRetryError("cdp_unreachable", ...)`` upstream — the
+            route layer catches that and surfaces a structured 503.
+
+    Returns:
+        dict with keys: ``url``, ``input_selector``, ``submit_button``,
+        ``response_selector``, ``login_redirect_domains``,
+        ``login_keywords``. The dispatcher in ``run_quick_retry`` reads
+        these to drive page.goto / page.type / page.click / response
+        poll without an engine-specific code path.
+    """
+    key = (target_llm or "").lower()
+    if key == "doubao":
+        return {
+            "url": DOUBAO_URL,
+            "input_selector": DOUBAO_INPUT_SELECTOR,
+            "submit_button": DOUBAO_SUBMIT_BUTTON,
+            "response_selector": DOUBAO_RESPONSE_SELECTOR,
+            "login_redirect_domains": DOUBAO_LOGIN_REDIRECT_DOMAINS,
+            "login_keywords": DOUBAO_LOGIN_KEYWORDS,
+        }
+    if key == "deepseek":
+        return {
+            "url": DEEPSEEK_URL,
+            "input_selector": DEEPSEEK_INPUT_SELECTOR,
+            "submit_button": DEEPSEEK_SUBMIT_BUTTON,
+            "response_selector": DEEPSEEK_RESPONSE_SELECTOR,
+            "login_redirect_domains": DEEPSEEK_LOGIN_REDIRECT_DOMAINS,
+            "login_keywords": DEEPSEEK_LOGIN_KEYWORDS,
+        }
+    raise QuickRetryError(
+        ERR_CDP_UNREACHABLE,
+        detail=f"vm_quick_retry: engine {target_llm!r} not supported (doubao, deepseek only)",
+    )
+
+
 # ── Helpers (login detection / response polling) ────────────────────
 
 
-async def _detect_login_page(page) -> bool:
-    """Return True when the page is rendering Doubao's login form.
+async def _detect_login_page(
+    page,
+    *,
+    login_redirect_domains: tuple[str, ...] = DOUBAO_LOGIN_REDIRECT_DOMAINS,
+    login_keywords: tuple[str, ...] = DOUBAO_LOGIN_KEYWORDS,
+) -> bool:
+    """Return True when the page is rendering an engine login form.
 
     Two signals (mirrored from guest_executor.py:1190-1205 — same data
     source, but expressed standalone so this helper doesn't import the
     production module):
 
-    1. URL is on a Volcengine / Douyin passport redirect domain.
-    2. ``document.body.innerText`` contains >= 2 login-form keywords.
+    1. URL is on the engine's known login redirect domain set.
+    2. ``document.body.innerText`` contains >= 2 login-form keywords
+       (Doubao-style in-page form detection). When ``login_keywords``
+       is empty (e.g. DeepSeek, which has no keyword set in
+       guest_executor.py), only signal 1 applies.
 
     Either alone is enough; the production code uses (2) for the
     "didn't redirect but rendered login in-place" case and the route
@@ -175,15 +272,20 @@ async def _detect_login_page(page) -> bool:
     except Exception:
         url = ""
     lower_url = url.lower()
-    for domain in DOUBAO_LOGIN_REDIRECT_DOMAINS:
+    for domain in login_redirect_domains:
         if domain in lower_url:
             return True
+
+    # Engines without a keyword set (DeepSeek per guest_executor.py) skip
+    # the in-page form detection — URL alone is the signal.
+    if not login_keywords:
+        return False
 
     try:
         body_text = await page.evaluate("document.body?.innerText || ''")
     except Exception:
         body_text = ""
-    matched = [kw for kw in DOUBAO_LOGIN_KEYWORDS if kw in body_text]
+    matched = [kw for kw in login_keywords if kw in body_text]
     return len(matched) >= 2
 
 
@@ -492,11 +594,12 @@ async def run_quick_retry(
 
     Args:
         query_id: row id in ``queries`` table.
-        query_text: the prompt text to send to Doubao.
-        target_llm: must be ``"doubao"`` for the Phase 0 quick path.
+        query_text: the prompt text to send to the target engine.
+        target_llm: ``"doubao"`` or ``"deepseek"``. Both engines run in
+            the same doubao-NN container — DeepSeek shares the Chrome
+            profile via a separate tab in the same noVNC session.
             Other engines raise ``QuickRetryError("cdp_unreachable",
-            detail="engine not supported")`` for now — Phase 2 of the
-            VM rollout will add deepseek.
+            detail="engine not supported")``.
         session: SQLAlchemy AsyncSession; used for the
             ``llm_responses`` UPSERT + ``query_attempts`` INSERT.
         cdp_endpoint: override the env-derived endpoint (tests pass a
@@ -516,23 +619,25 @@ async def run_quick_retry(
 
     Raises:
         QuickRetryError(code="cdp_unreachable"): Playwright connect
-            failed.
+            failed or engine is not supported (only doubao + deepseek).
         QuickRetryError(code="vm_not_logged_in"): page rendered login
-            form (URL on passport domain OR >= 2 login keywords in DOM).
+            form (URL on passport/login domain OR >= 2 login keywords
+            in DOM for Doubao).
     """
     cdp = (cdp_endpoint or _resolve_cdp_endpoint()).strip()
     vm = (vm_id or _resolve_vm_id()).strip()
     started_at = _now_iso()
     t0 = time.monotonic()
 
-    if (target_llm or "").lower() != "doubao":
-        # Phase 0 quick path is doubao-only; the issue scope cite is
-        # 执行追踪 → Doubao retry. Surfacing as cdp_unreachable keeps
-        # the API surface narrow (one code for "this path can't run").
-        raise QuickRetryError(
-            ERR_CDP_UNREACHABLE,
-            detail=f"vm_quick_retry: engine {target_llm!r} not supported (doubao only)",
-        )
+    # Per-engine selectors + URL come from the dispatcher; raises
+    # QuickRetryError(cdp_unreachable) for unsupported engines.
+    engine_cfg = _engine_config(target_llm)
+    engine_url = engine_cfg["url"]
+    engine_input_selector = engine_cfg["input_selector"]
+    engine_submit_button = engine_cfg["submit_button"]
+    engine_response_selector = engine_cfg["response_selector"]
+    engine_login_redirect_domains = engine_cfg["login_redirect_domains"]
+    engine_login_keywords = engine_cfg["login_keywords"]
 
     if playwright_factory is None and _async_playwright is None:
         # Playwright is not installed in this environment. Surface as
@@ -595,14 +700,14 @@ async def run_quick_retry(
 
         try:
             await page.goto(
-                DOUBAO_URL,
+                engine_url,
                 wait_until="domcontentloaded",
                 timeout=30_000,
             )
         except Exception as exc:
             raise QuickRetryError(
                 ERR_CDP_UNREACHABLE,
-                detail=f"page.goto({DOUBAO_URL}) failed: {exc!r}",
+                detail=f"page.goto({engine_url}) failed: {exc!r}",
             ) from exc
 
         # Wait briefly for the page to settle, then check for login form.
@@ -611,11 +716,15 @@ async def run_quick_retry(
         except Exception:
             pass
 
-        if await _detect_login_page(page):
+        if await _detect_login_page(
+            page,
+            login_redirect_domains=engine_login_redirect_domains,
+            login_keywords=engine_login_keywords,
+        ):
             raise QuickRetryError(
                 ERR_VM_NOT_LOGGED_IN,
                 detail=(
-                    "Doubao login form detected on vm Chrome; "
+                    f"{target_llm} login form detected on vm Chrome; "
                     "the VM-side session has expired and needs manual "
                     "re-login via noVNC."
                 ),
@@ -624,14 +733,18 @@ async def run_quick_retry(
         # Wait for the input selector to be ready.
         try:
             await page.wait_for_selector(
-                DOUBAO_INPUT_SELECTOR,
+                engine_input_selector,
                 state="visible",
                 timeout=15_000,
             )
         except Exception as exc:
             # Could be login mid-render: re-check login state before
             # giving up.
-            if await _detect_login_page(page):
+            if await _detect_login_page(
+                page,
+                login_redirect_domains=engine_login_redirect_domains,
+                login_keywords=engine_login_keywords,
+            ):
                 raise QuickRetryError(
                     ERR_VM_NOT_LOGGED_IN,
                     detail=f"login detected after input timeout: {exc!r}",
@@ -644,17 +757,17 @@ async def run_quick_retry(
         # Fill the prompt + submit. Use ``type`` to mimic user input
         # (per the experiments/vm_per_account M1 PoC runner).
         try:
-            await page.type(DOUBAO_INPUT_SELECTOR, query_text or "", delay=20)
+            await page.type(engine_input_selector, query_text or "", delay=20)
         except Exception as exc:
             raise QuickRetryError(
                 ERR_CDP_UNREACHABLE,
                 detail=f"page.type() failed: {exc!r}",
             ) from exc
 
-        # Try the submit button first; fall back to Enter (Doubao
-        # accepts both, matching guest_executor.py:514 ``submit_key``).
+        # Try the submit button first; fall back to Enter (both engines
+        # accept Enter, matching guest_executor.py ``submit_key`` setting).
         try:
-            await page.click(DOUBAO_SUBMIT_BUTTON, timeout=10_000)
+            await page.click(engine_submit_button, timeout=10_000)
         except Exception:
             try:
                 await page.keyboard.press("Enter")
@@ -667,7 +780,7 @@ async def run_quick_retry(
         # Poll for response stabilization.
         raw_text = await _wait_for_response_stable(
             page,
-            DOUBAO_RESPONSE_SELECTOR,
+            engine_response_selector,
             timeout_secs=response_timeout_secs,
         )
 
@@ -680,7 +793,7 @@ async def run_quick_retry(
                     if (!nodes || nodes.length === 0) return "";
                     return nodes[nodes.length - 1].innerHTML || "";
                 }""",
-                DOUBAO_RESPONSE_SELECTOR,
+                engine_response_selector,
             )
         except Exception:
             response_html = None
@@ -737,10 +850,17 @@ async def run_quick_retry(
 
 
 __all__ = [
+    "DEEPSEEK_INPUT_SELECTOR",
+    "DEEPSEEK_LOGIN_KEYWORDS",
+    "DEEPSEEK_LOGIN_REDIRECT_DOMAINS",
+    "DEEPSEEK_RESPONSE_SELECTOR",
+    "DEEPSEEK_SUBMIT_BUTTON",
+    "DEEPSEEK_URL",
     "DEFAULT_CDP_ENDPOINT",
     "DEFAULT_VM_ID",
     "ERR_CDP_UNREACHABLE",
     "ERR_VM_NOT_LOGGED_IN",
     "QuickRetryError",
+    "_engine_config",
     "run_quick_retry",
 ]

@@ -29,7 +29,7 @@ on:
         default: '%bestCoffer%'
         type: string
       target_llm:
-        description: 'Target LLM (doubao only for now)'
+        description: 'Target LLM (doubao or deepseek — share same Chrome profile in doubao-NN container)'
         required: true
         default: 'doubao'
         type: string
@@ -139,6 +139,7 @@ jobs:
           SERVER_HOST: ${{ secrets.SERVER_HOST }}
           SERVER_USER: ${{ secrets.SERVER_USER }}
           SERVER_SSH_PORT: ${{ secrets.SERVER_SSH_PORT }}
+          TARGET_LLM: ${{ inputs.target_llm }}
         run: |
           set -uo pipefail
           PORT="${SERVER_SSH_PORT:-22}"
@@ -178,16 +179,21 @@ jobs:
             esac
             echo "=== rep $((idx+1))/$n  query=$qid  vm=$vm_id ==="
             total=$((total+1))
+            # Refs Epic #1110: poc_runner --engine takes the workflow's
+            # target_llm input (doubao or deepseek). DeepSeek queries
+            # run inside the same doubao-NN container — operator logs
+            # in DeepSeek in a separate tab of the same noVNC Chrome,
+            # cookies are domain-scoped so doubao + deepseek coexist.
             python experiments/vm_per_account/poc_runner.py \
               --cdp-endpoint "http://127.0.0.1:${cdp_port}" \
-              --engine doubao \
+              --engine "${TARGET_LLM}" \
               --prompt-text "$qtext" \
               --prompt-id "q${qid}" \
               --reps 1 \
               --output-dir "artifacts/q${qid}" \
               --timeout-secs 120 || echo "[rep $idx FAIL]"
 
-            rawfile="artifacts/q${qid}/doubao/q${qid}/1/rawText.txt"
+            rawfile="artifacts/q${qid}/${TARGET_LLM}/q${qid}/1/rawText.txt"
             if [ -s "$rawfile" ]; then
               chars=$(wc -c < "$rawfile")
               if [ "$chars" -ge 50 ]; then
