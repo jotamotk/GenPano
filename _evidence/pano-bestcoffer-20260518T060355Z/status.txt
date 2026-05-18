@@ -1,4 +1,0 @@
-db_ready=true
-api_ready=true
-evidence_db_log_exists=yes
-evidence_api_jsonl_exists=yes
