@@ -24,7 +24,7 @@ on:
         required: false
         default: "2026-05-07"
       scraper_mode:
-        description: "diagnostics, query_status, bestcoffer_batch, account_quota_reset, doubao_auth_false_success_repair, doubao_sms_forensics, chatgpt_sms_env_check, vninja_proxy_check, vninja_subscription_update, or app_analytics_business_completeness"
+        description: "diagnostics, query_status, bestcoffer_batch, account_quota_reset, doubao_auth_false_success_repair, doubao_sms_forensics, chatgpt_sms_env_check, vninja_proxy_check, vninja_subscription_update, app_analytics_business_completeness, or app_topics_response_modal_scroll"
         required: false
         default: "diagnostics"
       target_llm:
@@ -83,7 +83,7 @@ on:
 jobs:
   diagnostics:
     name: Inspect live test-environment server
-    if: ${{ inputs.scraper_mode != 'app_analytics_business_completeness' }}
+    if: ${{ inputs.scraper_mode != 'app_analytics_business_completeness' && inputs.scraper_mode != 'app_topics_response_modal_scroll' }}
     runs-on: ubuntu-latest
 
     steps:
@@ -2392,6 +2392,63 @@ jobs:
           name: live-app-analytics-business-completeness-${{ github.run_id }}
           path: |
             frontend/test-results/live-app-analytics-business-completeness
+            frontend/test-results
+            frontend/playwright-report
+          if-no-files-found: ignore
+
+  live-app-topics-response-modal-scroll-e2e:
+    name: Live App Topics response modal scroll Playwright E2E
+    if: ${{ inputs.scraper_mode == 'app_topics_response_modal_scroll' }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 18
+    permissions:
+      contents: read
+
+    env:
+      APP_TOPICS_RESPONSE_MODAL_LIVE_E2E: "1"
+      APP_TOPICS_RESPONSE_MODAL_API_THROTTLE_MS: "750"
+      APP_TOPICS_RESPONSE_MODAL_RATE_LIMIT_RETRIES: "3"
+      APP_TOPICS_RESPONSE_MODAL_RATE_LIMIT_BUFFER_MS: "1500"
+      PLAYWRIGHT_BASE_URL: http://116.62.36.173
+      PROJECT_ID: ${{ inputs.project_id }}
+      BRAND_ID: ${{ inputs.brand_id }}
+      BRAND_NAME: ${{ inputs.brand_query }}
+      COMPETITOR_ID: "2"
+      FROM_DATE: ${{ inputs.from_date }}
+      TO_DATE: ${{ inputs.to_date }}
+      OWNER_USER_ID: fe25eff1-8462-43eb-a027-bc8eb2c3db81
+      USER_JWT_SECRET: ${{ secrets.USER_JWT_SECRET || secrets.JWT_SECRET }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Install Playwright Chromium
+        working-directory: frontend
+        run: npx playwright install chromium
+
+      - name: Verify live App Topics response modal scroll
+        working-directory: frontend
+        run: npx playwright test --retries=0 --project=chromium-desktop tests/e2e/app-topics-response-modal-scroll.spec.ts
+
+      - name: Upload live Topics modal screenshots and traces
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-app-topics-response-modal-scroll-${{ github.run_id }}
+          path: |
+            frontend/test-results/live-app-topics-response-modal-scroll
             frontend/test-results
             frontend/playwright-report
           if-no-files-found: ignore
