@@ -232,6 +232,26 @@ def _series_missing_inputs(
     package_missing = metric_missing_inputs(context, metric)
     if package_missing:
         return package_missing
+    # Issue #1225: citation_share collapses to target-only attribution when
+    # competitors are configured but ZERO citation_sources rows are
+    # attributable to a competitive brand_mention. The analyzer-evidence
+    # rollup for citations (`contracts/builder.py:372-406`) checks
+    # citation_total / attributed_citations / fact_link_count but does NOT
+    # check for the target-only-denominator case, so `metric_missing_inputs`
+    # above can return `[]` while the denominator is still degenerate.
+    # This must run regardless of `evidence_source` because admin_facts
+    # short-circuits the metric-specific branches below; the captured
+    # bestCoffer surface (#1225, project 7380c0e0-…, brand_id=24) uses
+    # `evidence_source="admin_facts"`. Symmetric to the SoV / mention_rate
+    # path which the analyzer rollup already covers via `target_only_sov`.
+    # See PRD-APP-ANALYTICS-002/003/008.
+    if (
+        metric == "citation"
+        and context.evidence_counts.get("citation_source_count", 0) > 0
+        and context.evidence_counts.get("competitor_brand_count", 0) > 0
+        and context.evidence_counts.get("competitive_citation_count", 0) <= 0
+    ):
+        return ["brand_mentions.competitive_set"]
     if evidence_source == "admin_facts":
         return []
     inputs = {*context.missing_inputs, *context.missing_sources}

@@ -1012,6 +1012,34 @@ async def build_contract_context(
         ).scalar_one()
         or 0
     )
+    # Issue #1225: count citation_sources rows attributable to a competitive
+    # brand_mention. When competitors are configured but this counter is 0,
+    # citation_share collapses to target-only attribution (denominator =
+    # target citations only), so the ratio degenerates to 1.0 (= 100%).
+    # _series_missing_inputs uses this counter as the symmetric gate to the
+    # existing competitive_mention_count gate that already guards SoV.
+    competitive_citation_count = int(
+        (
+            await session.execute(
+                select(func.count(CitationSource.id))
+                .join(BrandMention, BrandMention.id == CitationSource.mention_id)
+                .where(
+                    and_(
+                        or_(
+                            and_(
+                                BrandMention.brand_id.isnot(None),
+                                BrandMention.brand_id != brand_id,
+                            ),
+                            and_(*name_only_competitor_conditions),
+                        ),
+                        BrandMention.created_at >= from_dt,
+                        BrandMention.created_at <= to_dt,
+                    )
+                )
+            )
+        ).scalar_one()
+        or 0
+    )
     if repair_missing:
         missing_inputs.extend(repair_missing)
         missing_sources.extend(repair_missing)
@@ -1050,6 +1078,7 @@ async def build_contract_context(
         "eligible_response_count": eligible_response_count,
         "admin_fact_response_count": admin_fact_response_count,
         "competitive_mention_count": competitive_mention_count,
+        "competitive_citation_count": competitive_citation_count,
         "canonical_alias_repair_count": repair_count,
     }
     has_any_evidence = has_data or any(

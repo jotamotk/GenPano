@@ -269,6 +269,85 @@ GROUP BY coverage_bucket, sc.brand_id, sc.brand_name
 ORDER BY coverage_bucket, citation_rows DESC, domains DESC
 LIMIT 80;
 
+\\echo '--- unresolved citation top-30 domains (issue #1225 citation attribution probe) ---'
+SELECT
+  cs.domain,
+  COUNT(*) AS rows_in_unresolved,
+  COUNT(DISTINCT cs.response_id) AS cited_responses,
+  MIN(cs.source_type) AS sample_source_type,
+  (SELECT bod.brand_id FROM brand_official_domains bod
+    WHERE LOWER(bod.domain) = LOWER(cs.domain) LIMIT 1) AS owning_brand_id,
+  (SELECT b.name FROM brand_official_domains bod
+    JOIN brands b ON b.id = bod.brand_id
+    WHERE LOWER(bod.domain) = LOWER(cs.domain) LIMIT 1) AS owning_brand_name
+FROM citation_sources cs
+LEFT JOIN llm_responses r ON r.id = cs.response_id
+LEFT JOIN queries q ON q.id = r.query_id
+WHERE cs.mention_id IS NULL
+  AND {response_date_expr}
+    BETWEEN '{date_from}'::date AND '{date_to}'::date
+GROUP BY cs.domain
+ORDER BY rows_in_unresolved DESC
+LIMIT 30;
+
+\\echo '--- brands.website + official_domains registry (issue #1225 domain registration probe) ---'
+SELECT
+  b.id,
+  b.name,
+  b.website,
+  (SELECT COUNT(*) FROM brand_official_domains bod WHERE bod.brand_id = b.id)
+    AS official_domain_rows,
+  (SELECT string_agg(bod.domain, ',') FROM brand_official_domains bod
+    WHERE bod.brand_id = b.id) AS official_domains
+FROM brands b
+WHERE b.id = ANY({all_brand_array})
+ORDER BY b.id;
+
+\\echo '--- response_analyses geo_score distribution (issue #1225 geo_score_daily probe) ---'
+SELECT
+  ra.target_brand_mentioned,
+  COUNT(*) AS rows,
+  COUNT(ra.geo_score) AS geo_score_non_null,
+  COUNT(*) FILTER (WHERE ra.geo_score IS NULL) AS geo_score_null,
+  ROUND(AVG(ra.geo_score)::numeric, 4) AS avg_geo_score,
+  COUNT(DISTINCT ra.response_id) AS distinct_responses
+FROM response_analyses ra
+JOIN llm_responses r ON r.id = ra.response_id
+JOIN queries q ON q.id = r.query_id
+WHERE q.brand_id = {config.brand_id}
+  AND {response_date_expr}
+    BETWEEN '{date_from}'::date AND '{date_to}'::date
+GROUP BY ra.target_brand_mentioned
+ORDER BY ra.target_brand_mentioned NULLS LAST;
+
+\\echo '--- queries intent/prompt coverage for geo_score eligibility (issue #1225) ---'
+SELECT
+  COUNT(*) AS total_queries,
+  COUNT(q.prompt_id) AS queries_with_prompt_id,
+  COUNT(p.intent) AS prompts_with_intent,
+  COUNT(*) FILTER (WHERE p.intent IS NULL) AS prompts_intent_null,
+  COUNT(DISTINCT p.intent) AS distinct_intents,
+  COUNT(DISTINCT p.language) AS distinct_languages,
+  COUNT(DISTINCT q.target_llm) AS distinct_target_llms
+FROM queries q
+LEFT JOIN prompts p ON p.id = q.prompt_id
+WHERE q.brand_id = {config.brand_id}
+  AND COALESCE(q.finished_at, q.created_at)::date
+    BETWEEN '{date_from}'::date AND '{date_to}'::date;
+
+\\echo '--- geo_score_daily cross-project sanity (issue #1225) ---'
+SELECT
+  brand_id,
+  COUNT(*) AS rows_total,
+  MIN(date::date) AS first_date,
+  MAX(date::date) AS last_date,
+  COUNT(avg_geo_score) AS rows_geo_score_non_null
+FROM geo_score_daily
+WHERE date::date BETWEEN '{date_from}'::date AND '{date_to}'::date
+GROUP BY brand_id
+ORDER BY rows_total DESC
+LIMIT 30;
+
 \\echo '--- cited responses date distribution (issue #1021 authority-trend probe) ---'
 WITH target_cited_responses AS (
   SELECT DISTINCT
