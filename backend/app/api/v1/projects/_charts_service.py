@@ -536,11 +536,14 @@ def _with_engine_target_only_sov_contract(
         if out.formula_status not in {None, FORMULA_OK_STATUS}
         else FORMULA_PARTIAL_STATUS
     )
-    evidence = {
+    evidence: dict[str, Any] = {
         key: dict(value) if isinstance(value, dict) else value
         for key, value in out.metric_formula_evidence.items()
     }
-    sov_evidence = dict(evidence.get("sov")) if isinstance(evidence.get("sov"), dict) else {}
+    sov_evidence_value = evidence.get("sov")
+    sov_evidence: dict[str, Any] = (
+        dict(sov_evidence_value) if isinstance(sov_evidence_value, dict) else {}
+    )
     if sov_evidence:
         sov_evidence["reason_codes"] = _unique(
             [*(sov_evidence.get("reason_codes") or []), "target_only_sov"]
