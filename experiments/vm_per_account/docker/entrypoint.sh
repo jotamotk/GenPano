@@ -75,22 +75,36 @@ dbus-launch --exit-with-session startxfce4 \
   > /var/log/xfce.log 2>&1 &
 sleep 5
 
-# ---- 4. Chrome (persistent /profile, CDP on internal loopback port) ----
-echo "[entrypoint] starting Chrome (CDP internal=$CDP_INTERNAL_PORT, external via socat=$CDP_PORT, profile=/profile)..."
-# Chrome 116+ refuses to listen on non-loopback for CDP. Bind to localhost
-# only; socat below exposes it on $CDP_PORT.
-google-chrome \
-  --user-data-dir=/profile \
-  --remote-debugging-port="$CDP_INTERNAL_PORT" \
-  --remote-allow-origins=* \
-  --no-sandbox --no-first-run --no-default-browser-check \
-  --disable-blink-features=AutomationControlled \
-  --disable-dev-shm-usage \
-  --window-size=1920,1080 \
-  "$CHROME_TARGET_URL" \
-  > /var/log/chrome.log 2>&1 &
+# ---- 4. Chrome supervisor (auto-restart on crash) ----
+# Chrome is the most fragile process in this container — it gets killed
+# by Doubao's anti-automation, memory pressure, or its own internal
+# crashes. The container's PID 1 is websockify (so the container stays
+# alive after Chrome dies), but without a supervisor Chrome would
+# never come back. This loop restarts Chrome forever, cleaning the
+# SingletonLock each iteration so the new process doesn't refuse to
+# start with "another Chrome is using this profile".
+echo "[entrypoint] starting Chrome supervisor (CDP internal=$CDP_INTERNAL_PORT, external via socat=$CDP_PORT, profile=/profile)..."
+(
+  while true; do
+    rm -f /profile/SingletonLock /profile/SingletonCookie /profile/SingletonSocket 2>/dev/null || true
+    echo "[chrome-supervisor $(date -u +%Y-%m-%dT%H:%M:%SZ)] launching chrome" >> /var/log/chrome.log
+    google-chrome \
+      --user-data-dir=/profile \
+      --remote-debugging-port="$CDP_INTERNAL_PORT" \
+      --remote-allow-origins=* \
+      --no-sandbox --no-first-run --no-default-browser-check \
+      --disable-blink-features=AutomationControlled \
+      --disable-dev-shm-usage \
+      --window-size=1920,1080 \
+      "$CHROME_TARGET_URL" \
+      >> /var/log/chrome.log 2>&1
+    rc=$?
+    echo "[chrome-supervisor $(date -u +%Y-%m-%dT%H:%M:%SZ)] chrome exited rc=$rc, restart in 5s" >> /var/log/chrome.log
+    sleep 5
+  done
+) &
 
-# Wait for Chrome's internal CDP to come up
+# Wait for Chrome's internal CDP to come up on the first launch.
 for i in $(seq 1 30); do
   if curl -sf "http://127.0.0.1:$CDP_INTERNAL_PORT/json/version" >/dev/null 2>&1; then break; fi
   sleep 1
