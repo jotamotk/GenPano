@@ -79,7 +79,7 @@ function labelizeContractValue(value) {
 export default function BrandCompetitorsPage() {
   const { t } = useLocale();
   const { activeProject } = useProject();
-  const primary = BRANDS.find((b) => b.id === activeProject?.primaryBrandId) || BRANDS[1];
+  const mockPrimary = BRANDS.find((b) => b.id === activeProject?.primaryBrandId) || BRANDS[1];
   const [searchParams] = useSearchParams();
   const brandIdOverride = brandIdFromSearchParams(searchParams);
   const { filters } = useBrandAnalysisFilters(); // C10
@@ -105,7 +105,16 @@ export default function BrandCompetitorsPage() {
   const liveCompetitors = liveCompetitorPayload?.competitors ?? [];
   const analyticsPrimary = isLive && liveCompetitorPayload?.primary
     ? liveCompetitorPayload.primary
-    : primary;
+    : mockPrimary;
+  // Issue #1185 follow-up — bestCoffer (live brand_id=24) is not in the
+  // mock `BRANDS` array, so the original `find(...) || BRANDS[1]` lookup
+  // silently fell back to the second cosmetics mock entry (雅诗兰黛).
+  // That mock leaked into chart titles ("Authority Radar · 雅诗兰黛 vs
+  // IBM Security") even though the actual chart data was correctly
+  // hydrated from live API. Rebind `primary` to the live-aware
+  // analyticsPrimary so titles + legends + chart series keys all agree
+  // with the rendered data.
+  const primary = analyticsPrimary;
   const competitors = useMemo(
     () =>
       isLive
