@@ -542,6 +542,59 @@ describe('dashboard adapter', () => {
     ])
   })
 
+  it('preserves competitor bubble rows with missing axis evidence for the visualization state', () => {
+    const metrics = {
+      project_id: '95d43022-a5c8-5944-b6d6-34b29faa18b5',
+      primary_brand_id: 12,
+      period: { from: '2026-05-01', to: '2026-05-11' },
+      state: 'partial',
+      state_reason: 'competitive_axis_missing',
+      metric_definitions: {
+        avg_sov: {
+          metric_key: 'avg_sov',
+          unit: 'percent',
+          value_scale: 'percent',
+          formula_status: 'ok',
+        },
+        avg_sentiment: {
+          metric_key: 'avg_sentiment',
+          unit: 'score',
+          value_scale: 'raw_-1_1',
+          formula_status: 'sentiment_evidence_missing',
+        },
+      },
+      primary: {
+        brand_id: 12,
+        brand_key: 'bestcoffer',
+        brand_name: 'bestCoffer',
+        avg_geo_score: 80,
+        avg_mention_rate: 82.9,
+        avg_sov: 97.3,
+        avg_sentiment: 0,
+        co_mention_count: 9,
+        delta_30d_pct: null,
+      },
+      competitors: [
+        {
+          brand_id: 34,
+          brand_key: 'lancome',
+          brand_name: 'Lancome',
+          avg_geo_score: 73,
+          avg_mention_rate: 12.4,
+          avg_sov: 2.7,
+          avg_sentiment: null,
+          co_mention_count: 7,
+          delta_30d_pct: null,
+        },
+      ],
+    } as CompetitorMetricsOut
+
+    expect(adaptCompetitorMetricsToBubble(metrics)).toEqual([
+      { brand: 'bestCoffer', sov: 97.3, sentiment: null, mentions: 9 },
+      { brand: 'Lancome', sov: 2.7, sentiment: null, mentions: 7 },
+    ])
+  })
+
   it('uses /metrics mention_rate for competitor trend rows and never rebuilds it from SoV', () => {
     const overview = {
       ...emptyOverview,
