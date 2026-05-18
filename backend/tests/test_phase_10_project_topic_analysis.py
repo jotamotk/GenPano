@@ -18,7 +18,7 @@ from genpano_models import (
     Segment,
     User,
 )
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.projects._topic_analysis_service import _not_deleted_condition
@@ -986,6 +986,50 @@ async def test_query_response_detail_coverage_is_scoped_to_selected_response(
     assert missing_coverage["formula_status"] == "partial"
     assert missing_coverage["sample_response_ids"] == [403]
     assert "missing_analyzer_fact_packages" in missing_coverage["reason_codes"]
+
+
+@pytest.mark.asyncio
+async def test_query_response_detail_sanitizes_malformed_relation_summary_fields(
+    client, db_session, user
+):
+    project = await _seed_admin_chain(db_session, user)
+    analysis = (
+        await db_session.execute(
+            select(ResponseAnalysis).where(ResponseAnalysis.response_id == 401)
+        )
+    ).scalar_one()
+    analysis.raw_analysis_json = {
+        **_v3_raw_package(
+            response_id=401,
+            query_id=301,
+            prompt_id=201,
+            topic_id=101,
+            collected_at=datetime.now() - timedelta(days=1),
+        ),
+        "relations": [
+            {
+                "type": "competes_with",
+                "entity_kind": {"kind": "brand"},
+                "a_name": {"canonical": "Test Brand"},
+                "b_name": ["Other Brand"],
+                "evidence": {"response_id": 401, "quote": "structured evidence"},
+            }
+        ],
+    }
+    await db_session.commit()
+
+    response = await client.get(
+        f"/api/v1/projects/{project.id}/queries/301/response",
+        headers=_bearer(user),
+    )
+
+    assert response.status_code == 200, response.text
+    relations = response.json()["analyzer_facts"]["relations"]
+    assert relations[0]["type"] == "competes_with"
+    assert relations[0]["entity_kind"] is None
+    assert relations[0]["a_name"] is None
+    assert relations[0]["b_name"] is None
+    assert relations[0]["evidence"]["quote"] == "structured evidence"
 
 
 @pytest.mark.asyncio
