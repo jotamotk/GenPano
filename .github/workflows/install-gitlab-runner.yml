@@ -1,0 +1,74 @@
+name: Install GitLab Runner on Test Server
+on:
+  push:
+    branches: [setup-runner]
+    paths: ['.github/workflows/install-gitlab-runner.yml']
+  workflow_dispatch:
+concurrency:
+  group: install-gitlab-runner
+  cancel-in-progress: false
+jobs:
+  install:
+    name: Install and register gitlab-runner
+    runs-on: ubuntu-latest
+    steps:
+      - name: SSH install + register
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          GITLAB_RUNNER_TOKEN: ${{ secrets.GITLAB_RUNNER_TOKEN }}
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          envs: GITLAB_RUNNER_TOKEN
+          command_timeout: 10m
+          script: |
+            set -euo pipefail
+            export DEBIAN_FRONTEND=noninteractive
+
+            echo "=== 1. Add GitLab Runner apt repo (if missing) ==="
+            if ! [ -f /etc/apt/sources.list.d/runner_gitlab-runner.list ]; then
+              curl -fsSL https://packages.gitlab.com/install/repositories/runner/gitlab-runner/script.deb.sh | sudo bash
+            else
+              echo "apt repo already configured"
+            fi
+
+            echo "=== 2. Install gitlab-runner ==="
+            sudo apt-get update -qq
+            sudo apt-get install -y gitlab-runner
+            gitlab-runner --version
+
+            echo "=== 3. Add gitlab-runner user to docker group ==="
+            sudo usermod -aG docker gitlab-runner || true
+
+            echo "=== 4. Register (idempotent) ==="
+            DESC="test-server-runner-genpano"
+            if sudo gitlab-runner list 2>&1 | grep -F -q "$DESC"; then
+              echo "Runner '$DESC' already registered, skipping"
+            else
+              sudo gitlab-runner register \
+                --non-interactive \
+                --url "https://gitlabcode.lianwei.com.cn/" \
+                --registration-token "$GITLAB_RUNNER_TOKEN" \
+                --executor docker \
+                --docker-image "ubuntu:22.04" \
+                --description "$DESC" \
+                --tag-list "test-server,docker,linux" \
+                --run-untagged="true" \
+                --locked="false" \
+                --docker-volumes "/var/run/docker.sock:/var/run/docker.sock"
+            fi
+
+            echo "=== 5. Start and enable service ==="
+            sudo systemctl enable gitlab-runner
+            sudo systemctl restart gitlab-runner
+            sleep 3
+            sudo systemctl is-active gitlab-runner
+
+            echo "=== 6. Registered runners ==="
+            sudo gitlab-runner list 2>&1 || true
+
+            echo "=== 7. Service status (tail) ==="
+            sudo systemctl status gitlab-runner --no-pager 2>&1 | sed -n '1,12p'
+
+            echo "=== Done ==="
