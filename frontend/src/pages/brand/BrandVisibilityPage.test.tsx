@@ -10,6 +10,7 @@ const mockState = vi.hoisted(() => ({
   engineData: undefined as any,
   engineError: null as Error | null,
   engineIsLoading: false,
+  competitorTrendData: undefined as any,
 }))
 
 vi.mock('recharts', async () => {
@@ -29,7 +30,13 @@ vi.mock('recharts', async () => {
 })
 
 vi.mock('../../components/charts', () => ({
-  TrendChart: () => <div data-testid="trend-chart" />,
+  TrendChart: ({ lines = [] }: { lines?: Array<{ key: string; label: string }> }) => (
+    <div data-testid="trend-chart">
+      {lines.map((line) => (
+        <span key={line.key}>{line.label}</span>
+      ))}
+    </div>
+  ),
   DonutChart: () => <div data-testid="donut-chart" />,
   HorizontalBar: () => <div data-testid="horizontal-bar" />,
   MiniSparkline: () => <div data-testid="mini-sparkline" />,
@@ -157,7 +164,7 @@ vi.mock('../../hooks/useBrandMetrics', () => ({
     error: null,
   }),
   useCompetitorTrends: () => ({
-    data: { series: [] },
+    data: mockState.competitorTrendData ?? { series: [] },
     isLoading: false,
     error: null,
   }),
@@ -194,6 +201,7 @@ describe('BrandVisibilityPage KPI cards (issue #988)', () => {
     mockState.engineData = undefined
     mockState.engineError = null
     mockState.engineIsLoading = false
+    mockState.competitorTrendData = undefined
   })
 
   it('reads KPI values from /overview so numbers match the Overview page, not from /metrics series points', () => {
@@ -210,6 +218,43 @@ describe('BrandVisibilityPage KPI cards (issue #988)', () => {
     expect(screen.queryByText('2.8%')).not.toBeInTheDocument()
     expect(screen.queryByText('1.4%')).not.toBeInTheDocument()
     expect(screen.queryByText('47.8%')).not.toBeInTheDocument()
+  })
+
+  it('labels the live PANO trend primary line from /competitors/trends, not the stale mock fallback brand', () => {
+    mockState.competitorTrendData = {
+      project_id: '7380c0e0-8798-4a5f-998f-42010a7d9caa',
+      metric: 'geo_score',
+      period: { from: '2026-05-17', to: '2026-05-17' },
+      state: 'ok',
+      metric_definition: {
+        metric_key: 'geo_score',
+        unit: 'score',
+        value_scale: 'score_0_100',
+        formula_status: 'ok',
+      },
+      series: [
+        {
+          brand_id: 24,
+          brand_key: 'bestcoffer',
+          brand_name: 'bestCoffer',
+          is_primary: true,
+          points: [{ date: '2026-05-17', value: 80 }],
+        },
+        {
+          brand_id: 25,
+          brand_key: 'ibm_security',
+          brand_name: 'IBM Security',
+          is_primary: false,
+          points: [{ date: '2026-05-17', value: 68 }],
+        },
+      ],
+    }
+
+    renderVisibilityPage()
+
+    const chart = screen.getByTestId('trend-chart')
+    expect(within(chart).getByText('bestCoffer')).toBeInTheDocument()
+    expect(within(chart).queryByText(/Estee|Est\u00e9e|\u96c5\u8bd7\u5170\u9edb/i)).not.toBeInTheDocument()
   })
 
   it('falls back to the empty-data placeholder when by-engine items are empty', () => {

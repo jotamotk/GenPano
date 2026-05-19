@@ -407,8 +407,12 @@ export default function BrandVisibilityPage() {
   const heatmapIsMock = !isLive;
 
   // Trend chart for PANO trend
+  const liveResolvedPrimaryLabel =
+    competitorsQ.data?.primary?.brand_name?.trim()
+    || overviewQ.data?.brand_name?.trim()
+    || primary.name;
   const liveTrend = isLive
-    ? adaptCompetitorTrendsToVisibilityPanoTrend(trendsQ.data, primary.name)
+    ? adaptCompetitorTrendsToVisibilityPanoTrend(trendsQ.data, liveResolvedPrimaryLabel)
     : { rows: [], lines: [] };
   const trendData = isLive ? liveTrend.rows : TREND_DATA;
   const trendLines = isLive
