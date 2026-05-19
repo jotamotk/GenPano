@@ -131,10 +131,7 @@ async def brands_seeded(db_session: AsyncSession) -> None:
     ]
     for bid, industry, name in rows:
         await db_session.execute(
-            text(
-                "INSERT INTO brands (id, industry, name_en) "
-                "VALUES (:id, :ind, :n)"
-            ),
+            text("INSERT INTO brands (id, industry, name_en) VALUES (:id, :ind, :n)"),
             {"id": bid, "ind": industry, "n": name},
         )
     await db_session.commit()
@@ -182,9 +179,7 @@ async def _seed_co_mentions(
     await db_session.commit()
 
 
-async def _seed_topic_score_daily(
-    db_session: AsyncSession, brand_ids: list[int]
-) -> None:
+async def _seed_topic_score_daily(db_session: AsyncSession, brand_ids: list[int]) -> None:
     """Give the requested brand_ids a TopicScoreDaily row for TOPIC_ID so
     the live cell-population path emits non-null cells for them.
     """
@@ -223,9 +218,7 @@ async def test_autofill_produces_competitor_rows_when_pins_empty(
 
     competitors = [501, 502, 503, 504, 505]
     await _seed_co_mentions(db_session, competitors)
-    await _seed_topic_score_daily(
-        db_session, [BESTCOFFER_BRAND_ID, *competitors]
-    )
+    await _seed_topic_score_daily(db_session, [BESTCOFFER_BRAND_ID, *competitors])
 
     resp = await client.get(
         f"/api/v1/projects/{project.id}/topic-heatmap",
@@ -271,19 +264,13 @@ async def test_pinned_competitors_appear_before_autofilled(
     await db_session.refresh(project, ["competitors"])
     # Pin 506 and 507 — both same-industry. The mentions will offer
     # 501..505, but the heatmap must keep the two pins ahead of them.
-    db_session.add(
-        ProjectCompetitor(project_id=project.id, brand_id=506, pinned_by=user.id)
-    )
-    db_session.add(
-        ProjectCompetitor(project_id=project.id, brand_id=507, pinned_by=user.id)
-    )
+    db_session.add(ProjectCompetitor(project_id=project.id, brand_id=506, pinned_by=user.id))
+    db_session.add(ProjectCompetitor(project_id=project.id, brand_id=507, pinned_by=user.id))
     await db_session.commit()
 
     autofill = [501, 502, 503, 504, 505]
     await _seed_co_mentions(db_session, autofill)
-    await _seed_topic_score_daily(
-        db_session, [BESTCOFFER_BRAND_ID, 506, 507, *autofill]
-    )
+    await _seed_topic_score_daily(db_session, [BESTCOFFER_BRAND_ID, 506, 507, *autofill])
 
     resp = await client.get(
         f"/api/v1/projects/{project.id}/topic-heatmap",
@@ -326,9 +313,7 @@ async def test_autofill_respects_industry_filter(
 
     # Include the cross-industry brand 599 alongside same-industry ones.
     await _seed_co_mentions(db_session, [501, 502, 599])
-    await _seed_topic_score_daily(
-        db_session, [BESTCOFFER_BRAND_ID, 501, 502, 599]
-    )
+    await _seed_topic_score_daily(db_session, [BESTCOFFER_BRAND_ID, 501, 502, 599])
 
     resp = await client.get(
         f"/api/v1/projects/{project.id}/topic-heatmap",
@@ -344,8 +329,7 @@ async def test_autofill_respects_industry_filter(
     assert resp.status_code == 200, resp.text
     rows = {r["brand_id"] for r in resp.json()["rows"]}
     assert 599 not in rows, (
-        f"cross-industry mention (599, 人工智能) leaked into 数据安全 "
-        f"heatmap: {rows}"
+        f"cross-industry mention (599, 人工智能) leaked into 数据安全 heatmap: {rows}"
     )
     assert {501, 502}.issubset(rows), rows
 
@@ -369,9 +353,7 @@ async def test_explicit_compare_with_bypasses_autofill(
     await db_session.commit()
 
     await _seed_co_mentions(db_session, [501, 502, 503, 504, 505])
-    await _seed_topic_score_daily(
-        db_session, [BESTCOFFER_BRAND_ID, 501, 502, 503, 504, 505, 508]
-    )
+    await _seed_topic_score_daily(db_session, [BESTCOFFER_BRAND_ID, 501, 502, 503, 504, 505, 508])
 
     resp = await client.get(
         f"/api/v1/projects/{project.id}/topic-heatmap",
