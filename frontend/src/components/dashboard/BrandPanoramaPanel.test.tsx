@@ -38,6 +38,51 @@ vi.mock('recharts', async () => {
 })
 
 describe('BrandPanoramaPanel live KPI rendering', () => {
+  it('keeps the hero score group next to the brand identity instead of pushed to the far edge', () => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/brand/overview']}>
+          <LocaleProvider initialLocale="en-US">
+            <BrandPanoramaPanel
+              primary={{
+                id: '24',
+                name: 'bestCoffer',
+                nameZh: 'bestCoffer',
+                nameEn: 'bestCoffer',
+                panoScore: 9,
+                mentionRate: 0.41,
+                sov: 52,
+                sentiment: 0.2,
+                ranking: null,
+                industryId: '7',
+              }}
+              competitors={[]}
+              sovDataOverride={[]}
+              bubbleDataOverride={[]}
+              trendDataOverride={[]}
+              sparklineOverride={{
+                mention: [41],
+                sov: [52],
+                sentiment: [0.2],
+                citation: [],
+                rank: [],
+              }}
+              industryAvgScoreOverride={null}
+              isLive
+            />
+          </LocaleProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+
+    const heroIdentity = screen.getByRole('heading', { name: 'bestCoffer' }).parentElement
+    expect(heroIdentity).not.toHaveClass('flex-1')
+  })
+
   it('renders the overview SoV KPI even when pie rows are unavailable', () => {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
