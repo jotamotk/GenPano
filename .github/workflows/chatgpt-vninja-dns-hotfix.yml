@@ -179,73 +179,101 @@ jobs:
           echo "=== MODE: ${MODE} ==="
           echo ""
 
-          # 1) Find the config file ninja-mihomo currently has open.
+          # 1) Find the config files used by V-Ninja.
+          # Discovery 2026-05-19: V-Ninja launches ninja-mihomo with
+          #   /usr/bin/ninja-mihomo -d <data_dir> -f /tmp/<random-tag>
+          # The /tmp/<tag> is the MERGED runtime config (regenerated each
+          # time V-Ninja starts). It is NOT persistent — mutating it
+          # does nothing across restarts. The persistent overlay
+          # V-Ninja merges into that runtime file is
+          #   <data_dir>/profiles/Merge.yaml
+          # which is where we inject the dns: block.
           PID=$(pidof ninja-mihomo 2>/dev/null | awk '{print $1}')
           if [ -z "$PID" ]; then
               echo "::error::ninja-mihomo process not found"
               exit 1
           fi
           echo "ninja-mihomo PID: $PID"
-          echo "--- ALL .yaml files open by ninja-mihomo (lsof) ---"
-          lsof -p "$PID" 2>/dev/null | grep -E '\.yaml$' || true
-          echo ""
-          echo "--- ninja-mihomo cmdline (config arg if any) ---"
-          tr '\0' ' ' < "/proc/$PID/cmdline" 2>/dev/null; echo
-          echo ""
-          # Pick the largest .yaml that Mihomo has open AND that lives under
-          # the V-Ninja data dir (full merged config, NOT the tiny Merge.yaml
-          # overlay which is only ~1 line). Strategy: sort all open .yaml
-          # files by size desc, pick the biggest one in the data dir.
-          CFG=$(lsof -p "$PID" 2>/dev/null \
-                | grep -E '\.yaml$' \
-                | awk '{print $NF}' \
-                | grep -vE '/proc|/dev|/sys' \
-                | while read -r f; do
-                      [ -f "$f" ] && printf '%s %s\n' "$(stat -c %s "$f")" "$f"
-                  done \
-                | sort -rn \
-                | awk 'NR==1 {print $2}')
-          if [ -z "$CFG" ]; then
-              echo "::error::Could not locate V-Ninja's loaded config file from lsof."
+          CMDLINE=$(tr '\0' ' ' < "/proc/$PID/cmdline" 2>/dev/null)
+          echo "ninja-mihomo cmdline: $CMDLINE"
+
+          # Extract -d <data_dir> and -f <runtime_file>
+          DATA_DIR=$(echo "$CMDLINE" | awk '{
+              for (i=1;i<=NF;i++) if ($i=="-d") {print $(i+1); exit}
+          }')
+          RUNTIME_CFG=$(echo "$CMDLINE" | awk '{
+              for (i=1;i<=NF;i++) if ($i=="-f") {print $(i+1); exit}
+          }')
+          echo "Detected data dir:     ${DATA_DIR:-(missing)}"
+          echo "Detected runtime cfg:  ${RUNTIME_CFG:-(missing)}"
+
+          if [ -z "$DATA_DIR" ] || [ ! -d "$DATA_DIR" ]; then
+              echo "::error::Could not parse V-Ninja data dir from cmdline. cmdline: $CMDLINE"
               exit 1
           fi
-          echo "Detected V-Ninja loaded config path: $CFG"
-          echo "Size: $(stat -c %s "$CFG") bytes"
-          echo "--- Current config head 40 lines ---"
-          head -40 "$CFG"
+
+          MERGE_FILE="${DATA_DIR}/profiles/Merge.yaml"
+          echo "Persistent overlay path: $MERGE_FILE"
+          if [ ! -f "$MERGE_FILE" ]; then
+              echo "::warning::Merge.yaml does not exist at expected path; will create it."
+          fi
+
           echo ""
-          echo "--- Current DNS-related lines (if any) ---"
-          grep -nE "^dns:|enhanced-mode|nameserver:|fallback:|proxy-server-nameserver" "$CFG" 2>/dev/null || echo "(no dns: block present — that's the bug)"
+          echo "--- Current Merge.yaml (overlay; what we'll modify) ---"
+          if [ -f "$MERGE_FILE" ]; then
+              echo "Size: $(stat -c %s "$MERGE_FILE") bytes"
+              cat "$MERGE_FILE"
+          else
+              echo "(does not exist yet)"
+          fi
           echo ""
 
+          if [ -n "$RUNTIME_CFG" ] && [ -f "$RUNTIME_CFG" ]; then
+              echo "--- Current Mihomo RUNTIME config $RUNTIME_CFG (read-only inspection) ---"
+              echo "Size: $(stat -c %s "$RUNTIME_CFG") bytes"
+              echo "--- dns-related lines in runtime ---"
+              grep -nE "^dns:|enhanced-mode|nameserver:|fallback:|proxy-server-nameserver" "$RUNTIME_CFG" 2>/dev/null || echo "(no dns: block in merged runtime — that confirms the bug)"
+          fi
+          echo ""
+
+          # The "target" we mutate is the overlay (Merge.yaml).
+          CFG="$MERGE_FILE"
+
           # 2) Extract ports + secret + external-controller from the
-          # running config so we don't break V-Ninja's port binding.
-          MIXED_PORT=$(grep -E "^mixed-port:" "$CFG" 2>/dev/null | head -1 | awk '{print $2}')
-          EXT_CTRL=$(grep -E "^external-controller:" "$CFG" 2>/dev/null | head -1 | awk '{print $2}' | tr -d "\"'")
-          SECRET_LINE=$(grep -E "^secret:" "$CFG" 2>/dev/null | head -1 || true)
+          # RUNTIME config (Merge.yaml is just the overlay; ports come
+          # from the subscription profile, not the overlay).
+          if [ -n "$RUNTIME_CFG" ] && [ -f "$RUNTIME_CFG" ]; then
+              MIXED_PORT=$(grep -E "^mixed-port:" "$RUNTIME_CFG" 2>/dev/null | head -1 | awk '{print $2}')
+              EXT_CTRL=$(grep -E "^external-controller:" "$RUNTIME_CFG" 2>/dev/null | head -1 | awk '{print $2}' | tr -d "\"'")
+              SECRET_LINE=$(grep -E "^secret:" "$RUNTIME_CFG" 2>/dev/null | head -1 || true)
+          fi
           echo "Detected mixed-port:     ${MIXED_PORT:-(unset)}"
           echo "Detected external-ctrl:  ${EXT_CTRL:-(unset)}"
           echo "Detected secret line:    $([ -n "$SECRET_LINE" ] && echo 'present (value redacted)' || echo '(absent)')"
           echo ""
 
-          # 3) Build the proposed new config in /tmp. Strategy:
-          #    - Keep the entire current config (proxies, groups, rules)
-          #    - Prepend our DNS block before the first non-DNS top-level key
-          #    - Idempotent: if `dns:` already present, only adjust DoH
-          #      fallback (don't re-prepend)
-          NEW_CFG="/tmp/vninja-doh.yaml"
-          if grep -qE "^dns:" "$CFG"; then
-              echo "Current config already has dns: section — skipping prepend, only patching."
-              cp "$CFG" "$NEW_CFG"
-              # No-op for now; the existing dns section is the operator's
-              # to maintain. We do not silently rewrite a populated dns
-              # block — the user would lose their tuning.
-              echo "::warning::dns: section already present. This workflow refuses to overwrite an operator-configured DNS block. Manual review required."
-              exit 2
+          # 3) Build the proposed new Merge.yaml overlay.
+          #    Strategy: prepend our DNS block to whatever Merge.yaml has
+          #    today (usually just `allow-lan: true`). V-Ninja's GUI will
+          #    merge this into the runtime config on the next restart.
+          #    Idempotency check is against the RUNTIME merged config —
+          #    if dns: is already merged in, the operator has already
+          #    configured it, and we should not silently override.
+          NEW_CFG="/tmp/vninja-doh-merge.yaml"
+          if [ -n "$RUNTIME_CFG" ] && [ -f "$RUNTIME_CFG" ] && grep -qE "^dns:" "$RUNTIME_CFG"; then
+              echo "::warning::Runtime config $RUNTIME_CFG already has a dns: section. Operator may have configured it elsewhere. Will dump existing dns block; will NOT auto-overwrite."
+              echo "--- existing dns block in runtime ---"
+              awk '/^dns:/{flag=1} flag && /^[a-z]+:/ && !/^dns:/{flag=0} flag' "$RUNTIME_CFG" | head -40
+              cp "$CFG" "$NEW_CFG" 2>/dev/null || touch "$NEW_CFG"
+              # Continue to dry-run-print + exit so we still produce
+              # actionable output, but signal advisory.
+              EXIT_AT_END=2
+          else
+              EXIT_AT_END=0
           fi
 
-          # Build new config: insert the DoH block from repo (lines
-          # 11-29 of clash/config.yaml — the entire dns: block).
+          # Build new Merge.yaml: insert the DoH block from repo
+          # clash/config.yaml's dns: section, plus existing overlay content.
           DNS_BLOCK=$(awk '/^dns:/,/^proxy-providers:/' /tmp/repo_clash_config.yaml | sed '$d')
           if [ -z "$DNS_BLOCK" ]; then
               echo "::error::Failed to extract dns: block from /tmp/repo_clash_config.yaml (repo source)."
@@ -258,7 +286,9 @@ jobs:
               echo ""
               echo "$DNS_BLOCK"
               echo ""
-              cat "$CFG"
+              if [ -f "$CFG" ]; then
+                  cat "$CFG"
+              fi
           } > "$NEW_CFG"
           echo "Wrote proposed new config: $NEW_CFG ($(stat -c %s "$NEW_CFG") bytes)"
           echo ""
@@ -269,36 +299,42 @@ jobs:
           if [ "$MODE" != "apply" ]; then
               echo "=== DRY-RUN COMPLETE — no changes applied ==="
               echo "Run again with mode=apply + confirm=yes to actually patch."
-              exit 0
+              exit "${EXIT_AT_END:-0}"
           fi
 
-          # 4) APPLY mode: backup + atomic replace + reload.
+          # If runtime already has dns: in dry-run check, refuse to mutate
+          # in apply mode without operator action.
+          if [ "${EXIT_AT_END:-0}" = "2" ]; then
+              echo "::error::Runtime already has dns: section. Refusing to auto-overwrite in apply mode. Manual review of existing dns: required."
+              exit 1
+          fi
+
+          # 4) APPLY mode: backup Merge.yaml + write new + restart V-Ninja.
           TS=$(date -u +%s)
-          BAK="${CFG}.bak.${TS}"
-          cp "$CFG" "$BAK"
-          echo "Backed up to: $BAK"
-          cp "$NEW_CFG" "$CFG"
-          echo "Replaced $CFG with patched config."
-
-          # 5) Reload ninja-mihomo via Clash API (gentler than systemctl
-          #    restart; preserves V-Ninja GUI state).
-          API_PORT=$(echo "$EXT_CTRL" | awk -F: '{print $NF}')
-          API_PORT=${API_PORT:-9097}
-          SECRET_VAL=$(echo "$SECRET_LINE" | awk -F: '{print $2}' | tr -d ' \"\\047')
-          if [ -n "$SECRET_VAL" ]; then
-              AUTH_H="Authorization: Bearer $SECRET_VAL"
-          else
-              AUTH_H=""
+          if [ -f "$CFG" ]; then
+              BAK="${CFG}.bak.${TS}"
+              cp "$CFG" "$BAK"
+              echo "Backed up old Merge.yaml to: $BAK"
           fi
-          echo ""
-          echo "--- Reloading via Clash API PUT /configs?path=${CFG} ---"
-          curl -sS --max-time 10 -X PUT \
-               -H "$AUTH_H" -H "Content-Type: application/json" \
-               "http://127.0.0.1:${API_PORT}/configs?force=true" \
-               -d "{\"path\":\"$CFG\"}" \
-               -w "http_code=%{http_code}\n" 2>&1 | head -5
+          cp "$NEW_CFG" "$CFG"
+          echo "Wrote new Merge.yaml at: $CFG"
 
-          sleep 2
+          # 5) Restart V-Ninja so its GUI re-merges Merge.yaml into the
+          #    runtime tmp file Mihomo reads (we cannot reload by API
+          #    because Mihomo reads from /tmp/<random>; V-Ninja owns
+          #    that file's lifecycle).
+          echo ""
+          echo "--- systemctl restart vninja ---"
+          systemctl restart vninja
+          echo "Restart triggered. Waiting up to 45s for proxy port 6789 to come back..."
+          for i in $(seq 1 30); do
+              if ss -tlnp 2>/dev/null | grep -q ':6789\b'; then
+                  echo "Proxy port 6789 is up after ${i} attempts."
+                  break
+              fi
+              sleep 2
+          done
+          sleep 3  # additional settle for Mihomo
 
           # 6) Verify from worker container.
           echo ""
@@ -308,7 +344,7 @@ jobs:
           echo ""
           echo "--- Verification: worker curl https://ws.chatgpt.com/ via host:6789 ---"
           docker compose exec -T worker sh -lc '
-              curl -sS -o /dev/null --max-time 10 \
+              curl -sS -o /dev/null --max-time 12 \
                    -x http://host.docker.internal:6789 \
                    -w "http_code=%{http_code} time=%{time_total}s\n" \
                    "https://ws.chatgpt.com/"
@@ -325,7 +361,7 @@ jobs:
           echo "=== APPLY COMPLETE ==="
           echo "If ws.chatgpt.com no longer resolves to Facebook (2a03:2880::face:b00c) and"
           echo "curl returns non-404 (likely 200/101/403), the fix is live."
-          echo "Rollback (if needed): cp $BAK $CFG && curl -X PUT ... (same path)"
+          echo "Rollback (if needed): cp ${BAK:-<no backup>} $CFG && systemctl restart vninja"
           REMOTE
           )
 
