@@ -715,8 +715,8 @@ async def test_competitor_metrics_uses_response_extracted_brand_entities(client,
 
 
 @pytest.mark.asyncio
-async def test_diagnostics_derives_from_data(client, user, db_session):
-    """Insert sharp drop in mention_rate → expect visibility_decline diagnostic."""
+async def test_diagnostics_no_slash_uses_table_backed_contract(client, user, db_session):
+    """No-slash diagnostics now uses the real diagnostics table contract."""
     p = Project(user_id=user.id, name="Diag", primary_brand_id=77)
     db_session.add(p)
     await db_session.commit()
@@ -733,6 +733,7 @@ async def test_diagnostics_derives_from_data(client, user, db_session):
                 target_llm="chatgpt",
                 mention_rate=0.8,
                 avg_geo_score=80.0,
+                avg_sov=0.5,
                 total_queries=100,
             )
         )
@@ -746,6 +747,7 @@ async def test_diagnostics_derives_from_data(client, user, db_session):
                 target_llm="chatgpt",
                 mention_rate=0.3,
                 avg_geo_score=40.0,
+                avg_sov=0.5,
                 total_queries=100,
             )
         )
@@ -754,12 +756,10 @@ async def test_diagnostics_derives_from_data(client, user, db_session):
     resp = await client.get(f"/api/v1/projects/{p.id}/diagnostics", headers=_bearer(user))
     assert resp.status_code == 200
     body = resp.json()
-    assert body["state"] == "ok"
-    assert len(body["items"]) >= 1
-    diag = body["items"][0]
-    assert diag["category"] == "visibility_decline"
-    assert diag["severity"] == "P1"  # ≤ -30%
-    assert diag["evidence"]["change_percent"] is not None
+    assert body["state"] == "no_diagnostics"
+    assert body["state_reason"] == "no_open_p0_p1_diagnostics"
+    assert body["items"] == []
+    assert body["total"] == 0
 
 
 @pytest.mark.asyncio
@@ -772,8 +772,14 @@ async def test_diagnostics_empty_for_no_brand(client, user, db_session):
     resp = await client.get(f"/api/v1/projects/{p.id}/diagnostics", headers=_bearer(user))
     assert resp.status_code == 200
     body = resp.json()
-    assert body["state"] == "empty"
-    assert body["counts_by_severity"] == {"P0": 0, "P1": 0, "P2": 0, "P3": 0}
+    assert body["state"] == "unavailable"
+    assert body["state_reason"] in {
+        "missing_project_brand_binding",
+        "no_metric_data",
+        "no_primary_brand",
+    }
+    assert body["items"] == []
+    assert body["total"] == 0
 
 
 @pytest.mark.asyncio

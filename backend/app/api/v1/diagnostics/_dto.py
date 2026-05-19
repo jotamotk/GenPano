@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class PlaceholderResponse(BaseModel):
@@ -47,6 +47,16 @@ class DiagnosticOut(BaseModel):
 class DiagnosticListOut(BaseModel):
     items: list[DiagnosticOut]
     total: int
+    state: str = "no_diagnostics"
+    state_reason: str = "no_open_p0_p1_diagnostics"
+    state_detail: str | None = None
+    open_p0_p1_count: int = 0
+    analytics_state: str | None = None
+    analytics_state_reason: str | None = None
+    formula_status: str | None = None
+    missing_inputs: list[str] = Field(default_factory=list)
+    evidence_counts: dict[str, int] = Field(default_factory=dict)
+    analytics_signals: dict[str, Any] = Field(default_factory=dict)
 
 
 class DiagnosticPatchIn(BaseModel):
@@ -62,3 +72,13 @@ class DiagnosticCountsOut(BaseModel):
     total: int
     by_status: dict[str, int]
     by_severity_open: dict[str, int]
+    state: str = "no_diagnostics"
+    state_reason: str = "no_open_p0_p1_diagnostics"
+    state_detail: str | None = None
+    open_p0_p1_count: int = 0
+    analytics_state: str | None = None
+    analytics_state_reason: str | None = None
+    formula_status: str | None = None
+    missing_inputs: list[str] = Field(default_factory=list)
+    evidence_counts: dict[str, int] = Field(default_factory=dict)
+    analytics_signals: dict[str, Any] = Field(default_factory=dict)
