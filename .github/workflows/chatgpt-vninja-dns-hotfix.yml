@@ -80,10 +80,10 @@ jobs:
               echo "::error::mode=apply requires confirm=yes. Got confirm='$CONFIRM'. Refusing."
               exit 1
           fi
-          if [ "$MODE" != "apply" ] && [ "$MODE" != "dry-run" ]; then
-              echo "::error::Unknown mode='$MODE'. Allowed: dry-run | apply."
-              exit 1
-          fi
+          case "$MODE" in
+              dry-run|apply|rollback) ;;
+              *) echo "::error::Unknown mode='$MODE'. Allowed: dry-run | apply | rollback."; exit 1 ;;
+          esac
           # Push trigger MUST be dry-run only (no operator confirmation).
           if [ "${{ github.event_name }}" = "push" ] && [ "$MODE" != "dry-run" ]; then
               echo "::error::Push trigger may only run in dry-run mode."
