@@ -93,6 +93,41 @@ describe('BrandPanoramaPanel live KPI rendering', () => {
     expect(screen.queryByText('My brand')).not.toBeInTheDocument()
   })
 
+  it('renders empty P0/P1 diagnostics as neutral rather than healthy', () => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/brand/overview']}>
+          <LocaleProvider initialLocale="en-US">
+            <BrandPanoramaPanel
+              primary={{
+                id: '12',
+                name: 'Estee Lauder',
+                nameZh: 'Estee Lauder',
+                nameEn: 'Estee Lauder',
+                panoScore: 80,
+                mentionRate: 0.829,
+                sov: 97.3,
+                sentiment: 0.1,
+                ranking: 1,
+                industryId: '7',
+              }}
+              competitors={[]}
+              diagnosticsOverride={[]}
+              isLive
+            />
+          </LocaleProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+
+    expect(screen.getByText('No P0/P1 diagnostics yet')).toBeInTheDocument()
+    expect(screen.queryByText(/No critical issues/i)).not.toBeInTheDocument()
+  })
+
   it('renders the overview SoV KPI even when pie rows are unavailable', () => {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },

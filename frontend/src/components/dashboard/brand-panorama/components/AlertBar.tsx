@@ -9,17 +9,50 @@ export type Diagnostic = {
   engine?: string;
 };
 
+export type AlertEmptyState = 'empty' | 'incomplete' | 'unavailable' | 'loading';
+
 type AlertBarProps = {
   diagnostics: Diagnostic[] | null | undefined;
+  emptyState?: AlertEmptyState;
   onAlertClick: (d: Diagnostic) => void;
   t: TFunction;
 };
 
-export default function AlertBar({ diagnostics, onAlertClick, t }: AlertBarProps) {
+function emptyStateConfig(state: AlertEmptyState) {
+  if (state === 'incomplete') {
+    return {
+      messageKey: 'dashboard.alerts.incomplete',
+      borderColor: 'var(--color-warning)',
+      textClass: 'text-themed-warning',
+    };
+  }
+  if (state === 'unavailable') {
+    return {
+      messageKey: 'dashboard.alerts.unavailable',
+      borderColor: 'var(--color-warning)',
+      textClass: 'text-themed-warning',
+    };
+  }
+  if (state === 'loading') {
+    return {
+      messageKey: 'dashboard.alerts.loading',
+      borderColor: 'var(--color-border-strong)',
+      textClass: 'text-themed-muted',
+    };
+  }
+  return {
+    messageKey: 'dashboard.alerts.no_p0p1',
+    borderColor: 'var(--color-border-strong)',
+    textClass: 'text-themed-muted',
+  };
+}
+
+export default function AlertBar({ diagnostics, emptyState = 'empty', onAlertClick, t }: AlertBarProps) {
   if (!diagnostics || diagnostics.length === 0) {
+    const config = emptyStateConfig(emptyState);
     return (
-      <Card className="p-3 flex items-center gap-2 border-l-4" style={{ borderLeftColor: 'var(--color-success)' }}>
-        <span className="text-sm text-themed-success">{t('dashboard.alerts.empty')}</span>
+      <Card className="p-3 flex items-center gap-2 border-l-4" style={{ borderLeftColor: config.borderColor }}>
+        <span className={`text-sm ${config.textClass}`}>{t(config.messageKey)}</span>
       </Card>
     );
   }

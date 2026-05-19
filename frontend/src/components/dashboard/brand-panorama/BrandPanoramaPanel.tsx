@@ -13,7 +13,7 @@ import PanelToolbar from './components/PanelToolbar';
 import KpiCard from './components/KpiCard';
 import KpiSparklineSummary from './components/KpiSparklineSummary';
 import AlertBar from './components/AlertBar';
-import type { Diagnostic } from './components/AlertBar';
+import type { AlertEmptyState, Diagnostic } from './components/AlertBar';
 import CrossIndustryWarning from './components/CrossIndustryWarning';
 import SovPieChart from './charts/SovPieChart';
 import CompetitorQuadrant from './charts/CompetitorQuadrant';
@@ -64,6 +64,7 @@ export default function BrandPanoramaPanel({
   bubbleDataOverride,
   trendDataOverride,
   diagnosticsOverride,
+  alertEmptyState = 'empty',
   sparklineOverride,
   industryAvgScoreOverride,
   isLive,
@@ -222,10 +223,8 @@ export default function BrandPanoramaPanel({
   ];
 
   const primaryAlerts = useMemo(() => {
-    if (isLive) {
-      return (diagnosticsOverride ?? []).slice(0, 3);
-    }
-    return DIAGNOSTICS
+    const source = isLive ? (diagnosticsOverride ?? []) : DIAGNOSTICS;
+    return source
       .filter((d) => d.severity === 'P0' || d.severity === 'P1')
       .slice(0, 3);
   }, [isLive, diagnosticsOverride]);
@@ -342,7 +341,12 @@ export default function BrandPanoramaPanel({
       {/* ④ Alert bar */}
       <div>
         <h3 className="text-sm font-semibold text-themed-primary mb-2 px-1">{t('dashboard.alerts.title')}</h3>
-        <AlertBar diagnostics={primaryAlerts} onAlertClick={onAlertClick} t={t} />
+        <AlertBar
+          diagnostics={primaryAlerts}
+          emptyState={alertEmptyState as AlertEmptyState}
+          onAlertClick={onAlertClick}
+          t={t}
+        />
       </div>
     </div>
   );

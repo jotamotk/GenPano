@@ -48,6 +48,62 @@ function engineId(raw: string) {
   return value;
 }
 
+type FormulaStatusPayload = {
+  state?: unknown;
+  formula_status?: unknown;
+  kpi_cards?: Array<{ value?: unknown; formula_status?: unknown }>;
+  series?: Array<{
+    state?: unknown;
+    formula_status?: unknown;
+    points?: Array<{ value?: unknown }>;
+  }>;
+  metric_definition?: { formula_status?: unknown } | null;
+  metric_definitions?: Record<string, { formula_status?: unknown }>;
+};
+
+function nonOkStatus(value: unknown) {
+  const text = String(value ?? '').trim().toLowerCase();
+  return Boolean(text && text !== 'ok');
+}
+
+function finiteMetric(value: unknown) {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+function metricUnavailable(value: unknown) {
+  return value == null || !Number.isFinite(Number(value));
+}
+
+function hasAnalyticsGap(payload: FormulaStatusPayload | null | undefined) {
+  if (!payload) return false;
+  if (nonOkStatus(payload.state) || nonOkStatus(payload.formula_status)) return true;
+  if (payload.metric_definition && nonOkStatus(payload.metric_definition.formula_status)) return true;
+  if (
+    payload.metric_definitions &&
+    Object.values(payload.metric_definitions).some((definition) => nonOkStatus(definition?.formula_status))
+  ) {
+    return true;
+  }
+  if (Array.isArray(payload.kpi_cards)) {
+    if (payload.kpi_cards.length === 0) return true;
+    if (
+      payload.kpi_cards.some((card) => nonOkStatus(card.formula_status) || metricUnavailable(card.value))
+    ) {
+      return true;
+    }
+  }
+  if (Array.isArray(payload.series)) {
+    if (payload.series.length === 0) return true;
+    return payload.series.some((series) => (
+      nonOkStatus(series.state) ||
+      nonOkStatus(series.formula_status) ||
+      !Array.isArray(series.points) ||
+      !series.points.some((point) => finiteMetric(point.value))
+    ));
+  }
+  return false;
+}
+
 /* ─────────────────────────────────────────────────────────────
    DashboardPage ("我的品牌") — PRD §4.6.1a 市场宏观视角
    ─────────────────────────────────────────────────────────────
@@ -284,6 +340,69 @@ export default function DashboardPage() {
         ? []
         : mockCompetitors;
 
+  const alertEmptyState = useMemo(() => {
+    if (!isLive) return 'empty';
+    if (
+      overviewQ.isLoading ||
+      metricsQ.isLoading ||
+      competitorsQ.isLoading ||
+      competitorTrendsQ.isLoading ||
+      diagnosticsQ.isLoading
+    ) {
+      return 'loading';
+    }
+    if (
+      overviewQ.error ||
+      metricsQ.error ||
+      competitorsQ.error ||
+      competitorTrendsQ.error ||
+      diagnosticsQ.error
+    ) {
+      return 'unavailable';
+    }
+    const hasPayloadGap = [
+      overviewQ.data,
+      metricsQ.data,
+      competitorsQ.data,
+      competitorTrendsQ.data,
+    ].some((payload) => hasAnalyticsGap(payload));
+    const hasKpiGap = [
+      primaryForPanel.panoScore,
+      primaryForPanel.mentionRate,
+      primaryForPanel.sov,
+      primaryForPanel.sentiment,
+      primaryForPanel.ranking,
+    ].some(metricUnavailable);
+    const hasCitationGap = !adapted?.sparklines?.citation?.some(finiteMetric);
+    if (!diagnosticsQ.data || hasPayloadGap || hasKpiGap || hasCitationGap) {
+      return 'incomplete';
+    }
+    return 'empty';
+  }, [
+    isLive,
+    overviewQ.isLoading,
+    metricsQ.isLoading,
+    competitorsQ.isLoading,
+    competitorTrendsQ.isLoading,
+    diagnosticsQ.isLoading,
+    overviewQ.error,
+    metricsQ.error,
+    competitorsQ.error,
+    competitorTrendsQ.error,
+    diagnosticsQ.error,
+    overviewQ.data,
+    metricsQ.data,
+    competitorsQ.data,
+    competitorTrendsQ.data,
+    diagnosticsQ.data,
+    primaryForPanel.panoScore,
+    primaryForPanel.mentionRate,
+    primaryForPanel.sov,
+    primaryForPanel.sentiment,
+    primaryForPanel.ranking,
+    adapted?.sparklines,
+  ]);
+
   const header = (
     <div className="flex items-center justify-between flex-wrap gap-3">
       <div className="flex items-baseline gap-3">
@@ -314,6 +433,7 @@ export default function DashboardPage() {
         bubbleDataOverride={adapted?.bubble}
         trendDataOverride={adapted?.trend}
         diagnosticsOverride={adapted?.diagnostics}
+        alertEmptyState={alertEmptyState}
         sparklineOverride={adapted?.sparklines ?? undefined}
         industryAvgScoreOverride={adapted?.industryAvg ?? undefined}
         isLive={isLive}

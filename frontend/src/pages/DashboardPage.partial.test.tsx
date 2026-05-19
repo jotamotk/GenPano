@@ -236,6 +236,8 @@ describe('DashboardPage partial analytics rendering', () => {
     expect(screen.getByText(/missing formula inputs/i)).toBeInTheDocument()
     expect(screen.getByText(/eligible response denominator/i)).toBeInTheDocument()
     expect(screen.queryByText('Competitor quadrant is waiting for evidence')).not.toBeInTheDocument()
+    expect(screen.getByText('Diagnostics/data incomplete')).toBeInTheDocument()
+    expect(screen.queryByText(/No critical issues/i)).not.toBeInTheDocument()
     expect(screen.getByText('暂无声量份额数据')).toBeInTheDocument()
     expect(screen.getAllByText(/#—|#-/).length).toBeGreaterThan(0)
   })
