@@ -169,13 +169,14 @@ jobs:
 
           # Wrap so a non-zero remote exit doesn't kill the outer bash -e
           # step before we print the captured output.
+          # Pass MODE as $1 to remote bash (SendEnv requires prod sshd
+          # AcceptEnv whitelist which we don't control).
           set +e
-          output=$(MODE="$MODE" ssh -i ~/.ssh/id_rsa \
+          output=$(ssh -i ~/.ssh/id_rsa \
               -o StrictHostKeyChecking=accept-new \
-              -o SendEnv=MODE \
-              "$SERVER_USER@$SERVER_HOST" 'bash -s' <<'REMOTE'
+              "$SERVER_USER@$SERVER_HOST" "bash -s -- $MODE" <<'REMOTE'
           set -uo pipefail
-          : "${MODE:=dry-run}"
+          MODE="${1:-dry-run}"
           echo "=== MODE: ${MODE} ==="
           echo ""
 
