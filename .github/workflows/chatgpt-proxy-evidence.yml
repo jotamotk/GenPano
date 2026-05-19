@@ -101,6 +101,56 @@ jobs:
           " </dev/null 2>&1 || true
           echo ""
 
+          echo "=== /data/screenshots artifacts saved for the reported query IDs ==="
+          for qid in $(echo "$IDS" | tr ',' ' '); do
+              echo "--- query_${qid} ---"
+              ls -la "/opt/genpano/data/screenshots/" 2>/dev/null | grep -E "query_${qid}_chatgpt_" | head -10 || \
+                docker compose exec -T worker sh -lc "ls -la /data/screenshots/ 2>/dev/null | grep -E 'query_${qid}_chatgpt_' | head -10" </dev/null 2>&1 || \
+                echo "  (no screenshot dir found)"
+          done
+          echo ""
+
+          echo "=== submit_failed HTML body snippets for the reported IDs (worker container) ==="
+          for qid in $(echo "$IDS" | tr ',' ' '); do
+              echo "--- query_${qid} ---"
+              docker compose exec -T worker sh -lc "
+                f=\$(ls -t /data/screenshots/query_${qid}_chatgpt_*.html 2>/dev/null | head -1)
+                if [ -n \"\$f\" ]; then
+                    echo \"file: \$f\"
+                    echo \"size: \$(stat -c %s \"\$f\" 2>/dev/null) bytes\"
+                    echo \"--- <title> + first 2KB of <body> ---\"
+                    python3 -c \"
+import re, html
+with open('\$f', 'r', encoding='utf-8', errors='replace') as fh:
+    raw = fh.read()
+m = re.search(r'<title[^>]*>(.*?)</title>', raw, re.I|re.S)
+print('TITLE:', (m.group(1).strip() if m else '(no title)')[:200])
+# Strip scripts / styles / SVG that bloat the dump
+clean = re.sub(r'<script\b.*?</script>', '', raw, flags=re.I|re.S)
+clean = re.sub(r'<style\b.*?</style>', '', clean, flags=re.I|re.S)
+clean = re.sub(r'<svg\b.*?</svg>', '', clean, flags=re.I|re.S)
+m = re.search(r'<body\b[^>]*>(.*?)</body>', clean, re.I|re.S)
+body = (m.group(1) if m else clean)[:2200]
+# Drop attribute-heavy junk
+body = re.sub(r' (class|style|data-[a-z-]+|aria-[a-z-]+|tabindex|role|id)=\\\"[^\\\"]*\\\"', '', body)
+body = re.sub(r'\s+', ' ', body)
+print('BODY HEAD:', body)
+print()
+# Check key markers the worker would look for
+needle = html.unescape(body)
+print('HAS [data-message-author-role=\\\"user\\\"]:', 'data-message-author-role' in raw)
+print('HAS challenge marker (cloudflare/checking your browser):',
+      any(s in raw.lower() for s in ['challenge-platform','checking your browser','captcha','cf-challenge','cf_chl','rate-limit','rate limit']))
+print('HAS \\\"Just a moment\\\" (Cloudflare interstitial):', 'Just a moment' in raw)
+print('HAS chatgpt login redirect (/auth/login):', '/auth/login' in raw)
+\"
+                else
+                    echo \"  (no submit_failed html for q=${qid})\"
+                fi
+              " </dev/null 2>&1 || true
+          done
+          echo ""
+
           echo "=== llm_responses rows for the reported query IDs (would block stale_running_repair) ==="
           docker compose exec -T postgres psql -X -U genpano -d genpano -P pager=off -c "
             SELECT id, query_id, response_id IS NOT NULL AS has_response_id,
