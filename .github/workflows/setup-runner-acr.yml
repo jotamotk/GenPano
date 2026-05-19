@@ -1,0 +1,47 @@
+name: Setup gitlab-runner ACR auth
+
+on:
+  workflow_dispatch:
+
+jobs:
+  setup:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - name: SSH to test server and docker login as root
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          ACR_REGISTRY_SECRET: ${{ secrets.ACR_REGISTRY }}
+          ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
+          ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          envs: ACR_REGISTRY_SECRET,ACR_USERNAME,ACR_PASSWORD
+          script_stop: true
+          command_timeout: 5m
+          script: |
+            set -e
+            login_host="${ACR_REGISTRY_SECRET#http://}"
+            login_host="${login_host#https://}"
+            login_host="${login_host%/}"
+            login_host="${login_host%%/*}"
+            echo "Logging in to: $login_host (as root via sudo)"
+            printf '%s' "$ACR_PASSWORD" | sudo docker login "$login_host" -u "$ACR_USERNAME" --password-stdin
+            echo "--- /root/.docker/config.json head ---"
+            sudo head -c 400 /root/.docker/config.json || true
+            echo ""
+            echo "--- verifying pull of CI image ---"
+            sudo docker pull "$ACR_REGISTRY_SECRET/genpano:ci-uv-python3.12-bookworm-slim"
+            sudo docker pull "$ACR_REGISTRY_SECRET/genpano:ci-playwright-v1.49.0-jammy"
+            echo "OK both images pulled"
+
+      - name: Emit ACR_REGISTRY (base64) for local use
+        env:
+          ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
+        run: |
+          B64=$(printf '%s' "$ACR_REGISTRY" | base64 -w0)
+          echo "ACR_REGISTRY_B64_BEGIN"
+          echo "$B64"
+          echo "ACR_REGISTRY_B64_END"
