@@ -101,6 +101,67 @@ jobs:
           " </dev/null 2>&1 || true
           echo ""
 
+          echo "=== llm_responses rows for the reported query IDs (would block stale_running_repair) ==="
+          docker compose exec -T postgres psql -X -U genpano -d genpano -P pager=off -c "
+            SELECT id, query_id, response_id IS NOT NULL AS has_response_id,
+                   COALESCE(LENGTH(raw_text), 0) AS raw_text_len,
+                   created_at
+            FROM llm_responses
+            WHERE query_id = ANY(string_to_array('${IDS}', ',')::int[])
+            ORDER BY query_id, id;
+          " </dev/null 2>&1 || true
+          echo ""
+
+          echo "=== ChatGPT account pool state ==="
+          docker compose exec -T postgres psql -X -U genpano -d genpano -P pager=off -c "
+            SELECT status, COUNT(*) AS n,
+                   COUNT(*) FILTER (WHERE COALESCE(LENGTH(cookies_json), 0) > 0) AS with_cookies,
+                   COUNT(*) FILTER (WHERE cooldown_until IS NULL OR cooldown_until <= NOW()) AS not_cooling_down,
+                   MAX(updated_at) AS most_recent_update
+            FROM llm_accounts
+            WHERE llm_name = 'chatgpt'
+            GROUP BY status
+            ORDER BY n DESC;
+          " </dev/null 2>&1 || true
+          echo ""
+
+          echo "=== ChatGPT accounts: per-row detail ==="
+          docker compose exec -T postgres psql -X -U genpano -d genpano -P pager=off -c "
+            SELECT id, email, status,
+                   COALESCE(LENGTH(cookies_json), 0) AS cookies_len,
+                   query_count_today, daily_limit,
+                   cooldown_until, updated_at, execution_mode
+            FROM llm_accounts
+            WHERE llm_name = 'chatgpt'
+            ORDER BY id;
+          " </dev/null 2>&1 || true
+          echo ""
+
+          echo "=== ChatGPT 'running' status count (would be stale_running_repair candidates) ==="
+          docker compose exec -T postgres psql -X -U genpano -d genpano -P pager=off -c "
+            SELECT COUNT(*) AS total_running,
+                   COUNT(*) FILTER (WHERE NOT EXISTS
+                     (SELECT 1 FROM llm_responses r WHERE r.query_id = q.id)) AS no_response,
+                   MIN(COALESCE(q.started_at, q.queued_at)) AS oldest_activity,
+                   MAX(COALESCE(q.started_at, q.queued_at)) AS newest_activity
+            FROM queries q
+            WHERE q.target_llm = 'chatgpt' AND LOWER(q.status) = 'running';
+          " </dev/null 2>&1 || true
+          echo ""
+
+          echo "=== Celery beat schedule actually loaded by worker (proves dispatch_batch / repair not auto-running) ==="
+          docker compose exec -T worker python - <<'PY' 2>&1 || true
+          import json, os
+          from geo_tracker.tasks.celery_tasks import app
+          schedule = app.conf.get("beat_schedule") or {}
+          out = {name: {"task": entry.get("task"), "schedule": repr(entry.get("schedule"))}
+                 for name, entry in schedule.items()}
+          print("ANALYZER_AUTO_SCHEDULE=", os.getenv("ANALYZER_AUTO_SCHEDULE"))
+          print("HOTSPOT_AUTO_SCHEDULE=", os.getenv("HOTSPOT_AUTO_SCHEDULE"))
+          print(json.dumps(out, ensure_ascii=False, indent=2))
+          PY
+          echo ""
+
           echo "=== latest 20 ChatGPT failures (any reason) ==="
           docker compose exec -T postgres psql -X -U genpano -d genpano -P pager=off -c "
             SELECT
