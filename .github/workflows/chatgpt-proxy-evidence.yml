@@ -29,6 +29,7 @@ on:
   push:
     branches:
       - 'claude/fix-chatgpt-error-fjyfb'
+      - 'claude/fix-chatgpt-pipeline-Fvdwi'
     paths:
       - '.github/workflows/chatgpt-proxy-evidence.yml'
 
@@ -430,6 +431,14 @@ jobs:
             echo "$output"
           } > /tmp/chatgpt-proxy-evidence.txt
 
+          # Echo the evidence to stdout so it appears in the downloadable
+          # workflow run logs (the original heredoc captures it into $output
+          # via $(...) which never reaches stdout, leaving the run logs as
+          # script source only).
+          echo "==================== BEGIN EVIDENCE DUMP ===================="
+          cat /tmp/chatgpt-proxy-evidence.txt
+          echo "==================== END EVIDENCE DUMP ===================="
+
           {
             echo "## ChatGPT proxy_api_unreachable evidence (read-only)"
             echo ""
@@ -437,6 +446,15 @@ jobs:
             head -2000 /tmp/chatgpt-proxy-evidence.txt
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload evidence dump as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chatgpt-proxy-evidence
+          path: /tmp/chatgpt-proxy-evidence.txt
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Post evidence as PR comment when PR context exists
         if: always()
