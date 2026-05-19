@@ -43,6 +43,16 @@ on:
         description: 'When mode=apply, type "yes" to actually mutate prod V-Ninja config.'
         required: false
         default: 'no'
+  # Self-register: GitHub only indexes workflows it has seen run at
+  # least once. The push trigger below fires whenever this YAML is
+  # pushed to the working branch, which registers the workflow and
+  # gives us an immediate dry-run as evidence. mode defaults to
+  # dry-run so this auto-fire is safe — it cannot mutate prod.
+  push:
+    branches:
+      - 'claude/fix-chatgpt-pipeline-Fvdwi'
+    paths:
+      - '.github/workflows/chatgpt-vninja-dns-hotfix.yml'
 
 permissions:
   contents: read
@@ -56,17 +66,29 @@ jobs:
 
     steps:
       - name: Guard
+        id: guard
         run: |
           set -euo pipefail
-          echo "event=${{ github.event_name }} mode=${{ inputs.mode }} confirm=${{ inputs.confirm }}"
-          if [ "${{ inputs.mode }}" = "apply" ] && [ "${{ inputs.confirm }}" != "yes" ]; then
-              echo "::error::mode=apply requires confirm=yes. Got confirm='${{ inputs.confirm }}'. Refusing."
+          # Push trigger has empty inputs; coerce to safe defaults.
+          MODE="${{ inputs.mode }}"
+          CONFIRM="${{ inputs.confirm }}"
+          if [ -z "$MODE" ]; then MODE="dry-run"; fi
+          if [ -z "$CONFIRM" ]; then CONFIRM="no"; fi
+          echo "event=${{ github.event_name }} mode=$MODE confirm=$CONFIRM"
+          if [ "$MODE" = "apply" ] && [ "$CONFIRM" != "yes" ]; then
+              echo "::error::mode=apply requires confirm=yes. Got confirm='$CONFIRM'. Refusing."
               exit 1
           fi
-          if [ "${{ inputs.mode }}" != "apply" ] && [ "${{ inputs.mode }}" != "dry-run" ]; then
-              echo "::error::Unknown mode='${{ inputs.mode }}'. Allowed: dry-run | apply."
+          if [ "$MODE" != "apply" ] && [ "$MODE" != "dry-run" ]; then
+              echo "::error::Unknown mode='$MODE'. Allowed: dry-run | apply."
               exit 1
           fi
+          # Push trigger MUST be dry-run only (no operator confirmation).
+          if [ "${{ github.event_name }}" = "push" ] && [ "$MODE" != "dry-run" ]; then
+              echo "::error::Push trigger may only run in dry-run mode."
+              exit 1
+          fi
+          echo "effective_mode=$MODE" >> "$GITHUB_OUTPUT"
 
       - name: Checkout
         uses: actions/checkout@v4
@@ -133,7 +155,7 @@ jobs:
           SERVER_HOST: ${{ secrets.SERVER_HOST }}
           SERVER_USER: ${{ secrets.SERVER_USER }}
           SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
-          MODE: ${{ inputs.mode }}
+          MODE: ${{ steps.guard.outputs.effective_mode }}
         run: |
           set -euo pipefail
           # Ship the repo's reference DNS block (clash/config.yaml) to
