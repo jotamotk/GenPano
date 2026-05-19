@@ -318,8 +318,6 @@ jobs:
               echo "# Refs PR #1279 ws.chatgpt.com GFW DNS poisoning hotfix"
               echo ""
               echo "$DNS_BLOCK"
-              echo ""
-              echo "# 代理节点文件（由 clash-sub-updater 服务定期从订阅链接下载并转换格式）"
               echo "$EXISTING_TAIL"
           } > "$NEW_CFG"
           echo "Wrote proposed new config: $NEW_CFG ($(stat -c %s "$NEW_CFG") bytes)"
