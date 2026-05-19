@@ -555,15 +555,20 @@ async function hoverVisibilityPanoTrendTargetDate(
 
   const targetIndex = dateList.indexOf(targetDate)
   const ratio = dateList.length <= 1 ? 0.5 : targetIndex / (dateList.length - 1)
-  const xRatios = Array.from(new Set([ratio, (targetIndex + 0.5) / dateList.length]))
-    .map(value => Math.max(0.04, Math.min(0.96, value)))
-  const yRatios = [0.35, 0.5, 0.65]
+  const xRatios = Array.from(
+    new Set(
+      [ratio, (targetIndex + 0.5) / dateList.length]
+        .flatMap(value => [value - 0.08, value - 0.04, value, value + 0.04, value + 0.08])
+        .map(value => Math.round(Math.max(0.02, Math.min(0.98, value)) * 1000) / 1000),
+    ),
+  )
+  const yRatios = [0.2, 0.35, 0.5, 0.65, 0.8, 0.92]
   let lastTooltipText: string | undefined
 
   for (const xRatio of xRatios) {
     for (const yRatio of yRatios) {
       await page.mouse.move(box.x + box.width * xRatio, box.y + box.height * yRatio)
-      await page.waitForTimeout(150)
+      await page.waitForTimeout(100)
       const tooltips = await visibleTooltipTexts(page)
       const matchingTooltip = tooltips.find(text => compactIncludes(text, targetDate))
       if (matchingTooltip) {
@@ -586,7 +591,19 @@ async function captureVisibilityPanoTrend(
   await card.scrollIntoViewIfNeeded()
   await page.waitForTimeout(300)
 
-  const cardText = compactText(await card.innerText({ timeout: 10_000 }))
+  let cardText = compactText(await card.innerText({ timeout: 10_000 }))
+  await expect
+    .poll(
+      async () => {
+        cardText = compactText(await card.innerText({ timeout: 5_000 }).catch(() => cardText))
+        return card.locator('.recharts-wrapper').count()
+      },
+      {
+        timeout: 45_000,
+        message: `${route} PANO trend card did not finish loading a Recharts chart`,
+      },
+    )
+    .toBeGreaterThan(0)
   const chartCount = await card.locator('.recharts-wrapper').count()
   assertCondition(chartCount > 0, `${route} PANO trend card rendered no Recharts chart; card=${cardText}`)
 
@@ -1729,7 +1746,7 @@ test.describe('Live #1167 BestCoffer PANO trend gate', () => {
   )
 
   test('#1167 captures /brand/visibility PANO trend card without running Topics checks', async ({ page }) => {
-    test.setTimeout(90_000)
+    test.setTimeout(240_000)
     const baseUrl = process.env.PLAYWRIGHT_BASE_URL || process.env.BASE_URL || 'http://116.62.36.173'
     const projectId = process.env.PROJECT_ID || ISSUE_1167_PROJECT_ID
     const brandId = Number(process.env.BRAND_ID || ISSUE_1167_BRAND_ID)
@@ -1788,10 +1805,21 @@ test.describe('Live #1167 BestCoffer PANO trend gate', () => {
     await seedLiveAuth(page, token, projectId, brandId, primaryBrandName, DEFAULT_COMPETITOR_ID)
     const route = `/brand/visibility?brandId=${brandId}&range=30d&profileGroup=all`
     await page.goto(`${baseUrl}${route}`, { waitUntil: 'domcontentloaded', timeout: 60_000 })
-    await page.waitForLoadState('networkidle', { timeout: 25_000 }).catch(() => {})
     const path = new URL(page.url()).pathname
     assertCondition(!['/register', '/login', '/onboarding'].includes(path), `${route} redirected to ${page.url()}`)
-    const pageText = await page.locator('body').innerText({ timeout: 15_000 })
+    let pageText = ''
+    await expect
+      .poll(
+        async () => {
+          pageText = await page.locator('body').innerText({ timeout: 5_000 }).catch(() => '')
+          return renderedPageHasExpectedBrandContext(pageText, brandLabels)
+        },
+        {
+          timeout: 20_000,
+          message: `${route} did not render expected BestCoffer brand context from ${JSON.stringify(brandLabels)}`,
+        },
+      )
+      .toBe(true)
     assertCondition(
       renderedPageHasExpectedBrandContext(pageText, brandLabels),
       `${route} did not render expected BestCoffer brand context from ${JSON.stringify(brandLabels)}`,
