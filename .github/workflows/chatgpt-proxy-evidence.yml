@@ -574,6 +574,63 @@ jobs:
           done
           echo ""
 
+          echo "=== EXPERIMENT B: flip Clash to GLOBAL mode + probe (per user) ==="
+          # Per user 2026-05-19: "用全局，不要用规则". The 16-byte prod
+          # /root/.config/mihomo/config.yaml has no 'mode:' line so the running
+          # ninja-mihomo defaults to rule mode with effectively no rules =>
+          # falls through to DIRECT, leaving DNS to the worker's
+          # GFW-poisoned local resolver. Flip mode to global at runtime via
+          # the Clash API, then re-probe.
+          SECRET_B="$(docker compose exec -T worker sh -c 'printf %s "${CLASH_API_SECRET:-}"' </dev/null 2>/dev/null | tr -d '\r\n')"
+          AUTH_B=""
+          [ -n "$SECRET_B" ] && AUTH_B="Authorization: Bearer $SECRET_B"
+
+          echo "--- Current mode (before) ---"
+          curl -sS --max-time 5 -H "$AUTH_B" "http://127.0.0.1:9098/configs" 2>&1 \
+            | python3 -c "import json,sys;d=json.load(sys.stdin);print('mode=',d.get('mode'),' allow-lan=',d.get('allow-lan'))" 2>&1 | head -2
+
+          echo "--- PATCH /configs to mode=global ---"
+          curl -sS --max-time 5 -X PATCH -H "$AUTH_B" -H "Content-Type: application/json" \
+               "http://127.0.0.1:9098/configs" \
+               -d '{"mode":"global"}' \
+               -w "http_code=%{http_code}\n" 2>&1 | head -2
+
+          echo "--- Confirm mode (after) ---"
+          curl -sS --max-time 5 -H "$AUTH_B" "http://127.0.0.1:9098/configs" 2>&1 \
+            | python3 -c "import json,sys;d=json.load(sys.stdin);print('mode=',d.get('mode'))" 2>&1 | head -2
+
+          for node in "美国 04（专线；电信）" "日本 04（专线；电信）" "🟦 专线节点"; do
+              echo ""
+              echo "  --- GLOBAL → ${node} ---"
+              encoded_n="$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1],safe=''))" "${node}")"
+              curl -sS --max-time 5 -X PUT -H "$AUTH_B" -H "Content-Type: application/json" \
+                   "http://127.0.0.1:9098/proxies/GLOBAL" \
+                   -d "{\"name\":\"${node}\"}" \
+                   -w "    PUT http_code=%{http_code}\n" 2>&1 | head -2
+              sleep 1
+              docker compose exec -T worker sh -lc 'set -u
+                  echo "    DNS of ws.chatgpt.com:"
+                  getent hosts ws.chatgpt.com 2>/dev/null | head -2 || echo "    (no)"
+                  echo "    GET https://ws.chatgpt.com/ via proxy:"
+                  curl -sS -o /dev/null --max-time 10 \
+                       -x http://host.docker.internal:6789 \
+                       -w "      http_code=%{http_code} time=%{time_total}s\n" \
+                       "https://ws.chatgpt.com/" 2>&1 || echo "      (curl_err)"
+                  echo "    Test: GET https://www.cloudflare.com/cdn-cgi/trace via proxy (sanity \"我们到底从哪儿出去的\"):"
+                  curl -sS --max-time 10 \
+                       -x http://host.docker.internal:6789 \
+                       "https://www.cloudflare.com/cdn-cgi/trace" 2>&1 | head -15 | sed "s/^/      /"
+              ' </dev/null 2>&1 || true
+          done
+
+          echo ""
+          echo "--- Restore: mode=rule (revert experiment) ---"
+          curl -sS --max-time 5 -X PATCH -H "$AUTH_B" -H "Content-Type: application/json" \
+               "http://127.0.0.1:9098/configs" \
+               -d '{"mode":"rule"}' \
+               -w "http_code=%{http_code}\n" 2>&1 | head -2
+
+          echo ""
           echo "=== EXPERIMENT: switch 💬 Ai平台 to a non-HK node and re-probe ws.chatgpt.com ==="
           # User asked us to try a different proxy node. The hypothesis we
           # are testing: does ws.chatgpt.com resolution improve if we route
