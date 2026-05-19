@@ -6,7 +6,7 @@
 
 | 关注点 | 入口 | 何时读 | 规则数 |
 |---|---|---|---|
-| 全局/工作流 | [global/README.md](global/README.md) | 所有任务起点 | 7 |
+| 全局/工作流 | [global/README.md](global/README.md) | 所有任务起点 | 8 |
 | 前端 | [frontend/README.md](frontend/README.md) | 改 frontend/ 或 Admin UI | 3 |
 | 后端 | [backend/README.md](backend/README.md) | 改 backend/ 或 /admin/api/* | 1 |
 | 测试与证据 | [testing/README.md](testing/README.md) | 改 bug / 写 PR 之前 | 5 |
