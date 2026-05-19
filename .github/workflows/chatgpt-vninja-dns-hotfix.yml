@@ -344,7 +344,9 @@ jobs:
           done
           sleep 3  # additional settle for Mihomo
 
-          # 6) Verify from worker container.
+          # 6) Verify from worker container. Must cd to /opt/genpano so
+          # docker compose finds docker-compose.yml.
+          cd /opt/genpano
           echo ""
           echo "--- Verification: worker getent ws.chatgpt.com ---"
           docker compose exec -T worker getent ahosts ws.chatgpt.com 2>&1 | head -6 </dev/null || true
