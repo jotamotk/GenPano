@@ -24,7 +24,7 @@ on:
         required: false
         default: "2026-05-07"
       scraper_mode:
-        description: "diagnostics, query_status, bestcoffer_batch, account_quota_reset, doubao_auth_false_success_repair, doubao_sms_forensics, chatgpt_sms_env_check, vninja_proxy_check, vninja_subscription_update, or app_analytics_business_completeness"
+        description: "diagnostics, query_status, bestcoffer_batch, account_quota_reset, doubao_auth_false_success_repair, doubao_sms_forensics, chatgpt_sms_env_check, vninja_proxy_check, vninja_subscription_update, app_analytics_business_completeness, or app_analytics_pano_live_e2e"
         required: false
         default: "diagnostics"
       target_llm:
@@ -83,7 +83,7 @@ on:
 jobs:
   diagnostics:
     name: Inspect live test-environment server
-    if: ${{ inputs.scraper_mode != 'app_analytics_business_completeness' }}
+    if: ${{ inputs.scraper_mode != 'app_analytics_business_completeness' && inputs.scraper_mode != 'app_analytics_pano_live_e2e' }}
     runs-on: ubuntu-latest
 
     steps:
@@ -2344,21 +2344,23 @@ jobs:
 
   live-app-analytics-business-completeness-e2e:
     name: Live App analytics business completeness Playwright E2E
-    if: ${{ inputs.scraper_mode == 'app_analytics_business_completeness' }}
+    if: ${{ inputs.scraper_mode == 'app_analytics_business_completeness' || inputs.scraper_mode == 'app_analytics_pano_live_e2e' }}
     runs-on: ubuntu-22.04
     timeout-minutes: 24
     permissions:
       contents: read
 
     env:
-      APP_ANALYTICS_LIVE_E2E: "1"
+      APP_ANALYTICS_LIVE_E2E: ${{ inputs.scraper_mode == 'app_analytics_business_completeness' && '1' || '0' }}
+      APP_ANALYTICS_PANO_LIVE_E2E: ${{ inputs.scraper_mode == 'app_analytics_pano_live_e2e' && '1' || '0' }}
       PLAYWRIGHT_BASE_URL: http://116.62.36.173
-      PROJECT_ID: ${{ inputs.project_id }}
-      BRAND_ID: ${{ inputs.brand_id }}
-      BRAND_NAME: ${{ inputs.brand_query }}
+      PROJECT_ID: ${{ inputs.scraper_mode == 'app_analytics_pano_live_e2e' && '7380c0e0-8798-4a5f-998f-42010a7d9caa' || inputs.project_id }}
+      BRAND_ID: ${{ inputs.scraper_mode == 'app_analytics_pano_live_e2e' && '24' || inputs.brand_id }}
+      BRAND_NAME: ${{ inputs.scraper_mode == 'app_analytics_pano_live_e2e' && 'BestCoffer' || inputs.brand_query }}
       COMPETITOR_ID: "2"
-      FROM_DATE: ${{ inputs.from_date }}
-      TO_DATE: ${{ inputs.to_date }}
+      FROM_DATE: ${{ inputs.scraper_mode == 'app_analytics_pano_live_e2e' && '2026-05-01' || inputs.from_date }}
+      TO_DATE: ${{ inputs.scraper_mode == 'app_analytics_pano_live_e2e' && '2026-05-19' || inputs.to_date }}
+      TARGET_DATE: ${{ inputs.scraper_mode == 'app_analytics_pano_live_e2e' && '2026-05-17' || '' }}
       OWNER_USER_ID: fe25eff1-8462-43eb-a027-bc8eb2c3db81
       USER_JWT_SECRET: ${{ secrets.USER_JWT_SECRET || secrets.JWT_SECRET }}
 

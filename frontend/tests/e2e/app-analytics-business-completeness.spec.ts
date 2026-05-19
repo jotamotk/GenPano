@@ -96,6 +96,11 @@ const ISSUE_1167_TO_DATE = '2026-05-19'
 const ISSUE_1167_TARGET_DATE = '2026-05-17'
 const ISSUE_1167_FORBIDDEN_BRAND_LABELS = ['\u96c5\u8bd7\u5170\u9edb', 'Estee', 'Est\u00e9e']
 const SCREENSHOT_DIR = 'test-results/live-app-analytics-business-completeness'
+
+if (process.env.APP_ANALYTICS_PANO_LIVE_E2E === '1') {
+  test.use({ trace: 'off', video: 'off', screenshot: 'off' })
+}
+
 const TOPICS_REASON_WALL_TEXTS = [
   'Analysis coverage missing',
   'Citation attribution unresolved',
@@ -499,19 +504,22 @@ function assertVisibilityPanoTrendRendering(
     )
   }
 
+  if (options.targetDate && rendered.hoverAttempted) {
+    assertCondition(
+      rendered.tooltipText,
+      `${rendered.route} PANO trend target date ${options.targetDate} tooltip was not captured; hoverMatchedTargetDate=${rendered.hoverMatchedTargetDate}`,
+    )
+    assertCondition(
+      rendered.hoverMatchedTargetDate && compactIncludes(rendered.tooltipText, options.targetDate),
+      `${rendered.route} PANO trend tooltip did not stay on target date ${options.targetDate}; tooltip=${rendered.tooltipText}`,
+    )
+  }
+
   if (rendered.tooltipText) {
     assertCondition(
       options.brandLabels.some(label => compactIncludes(rendered.tooltipText || '', label)),
       `${rendered.route} PANO trend tooltip does not contain BestCoffer/bestCoffer labels ${JSON.stringify(options.brandLabels)}; tooltip=${rendered.tooltipText}`,
     )
-    if (options.targetDate && rendered.hoverMatchedTargetDate) {
-      assertCondition(
-        compactIncludes(rendered.tooltipText, options.targetDate),
-        `${rendered.route} PANO trend tooltip did not stay on target date ${options.targetDate}; tooltip=${rendered.tooltipText}`,
-      )
-    }
-  } else if (rendered.hoverAttempted) {
-    console.log(`ISSUE_1167_PANO_TOOLTIP_NOT_CAPTURED ${rendered.route}`)
   }
 }
 
@@ -1462,6 +1470,47 @@ test.describe('App analytics business completeness assertion', () => {
     ).not.toThrow()
   })
 
+  test('flags Visibility PANO trend when target-date tooltip is missing', () => {
+    expect(() =>
+      assertVisibilityPanoTrendRendering(
+        {
+          route: '/brand/visibility?brandId=24&range=30d&profileGroup=all',
+          url: 'http://example.test/brand/visibility?brandId=24&range=30d&profileGroup=all',
+          cardText: 'PANO \u7efc\u5408\u8d8b\u52bf BestCoffer 2026-05-17',
+          legendTexts: ['BestCoffer'],
+          hoverAttempted: true,
+          hoverMatchedTargetDate: false,
+        },
+        {
+          brandLabels: ['BestCoffer', 'bestCoffer'],
+          forbiddenLabels: ['\u96c5\u8bd7\u5170\u9edb', 'Estee', 'Est\u00e9e'],
+          targetDate: '2026-05-17',
+        },
+      ),
+    ).toThrow(/target date 2026-05-17 tooltip was not captured/)
+  })
+
+  test('flags Visibility PANO trend when tooltip stays on wrong date', () => {
+    expect(() =>
+      assertVisibilityPanoTrendRendering(
+        {
+          route: '/brand/visibility?brandId=24&range=30d&profileGroup=all',
+          url: 'http://example.test/brand/visibility?brandId=24&range=30d&profileGroup=all',
+          cardText: 'PANO \u7efc\u5408\u8d8b\u52bf BestCoffer 2026-05-17',
+          legendTexts: ['BestCoffer'],
+          tooltipText: '2026-05-16 BestCoffer 72',
+          hoverAttempted: true,
+          hoverMatchedTargetDate: false,
+        },
+        {
+          brandLabels: ['BestCoffer', 'bestCoffer'],
+          forbiddenLabels: ['\u96c5\u8bd7\u5170\u9edb', 'Estee', 'Est\u00e9e'],
+          targetDate: '2026-05-17',
+        },
+      ),
+    ).toThrow(/PANO trend tooltip did not stay on target date 2026-05-17/)
+  })
+
   test('flags Topics primary table reason-wall rendering when API has concrete topic values', () => {
     const topicMonitoring = {
       topics: [
@@ -1672,8 +1721,10 @@ test.describe('App analytics business completeness assertion', () => {
 })
 
 test.describe('Live #1167 BestCoffer PANO trend gate', () => {
+  test.describe.configure({ retries: 0 })
+
   test.skip(
-    process.env.APP_ANALYTICS_PANO_LIVE_E2E !== '1' && process.env.APP_ANALYTICS_LIVE_E2E !== '1',
+    process.env.APP_ANALYTICS_PANO_LIVE_E2E !== '1',
     'Set APP_ANALYTICS_PANO_LIVE_E2E=1 to run the isolated #1167 production PANO trend check.',
   )
 
@@ -1694,7 +1745,6 @@ test.describe('Live #1167 BestCoffer PANO trend gate', () => {
     assertCondition(brandId === ISSUE_1167_BRAND_ID, `#1167 PANO trend check must run against brandId=24, got ${brandId}`)
     assertCondition(brandLabels.length > 0, '#1167 PANO trend check has no configured brand labels to assert')
     const token = signJwt(userId, secret)
-    console.log('::add-mask::' + token)
 
     const dateParams = `from=${encodeURIComponent(fromDate)}&to=${encodeURIComponent(toDate)}`
     const brandDateParams = `${dateParams}&brand_id=${brandId}`
