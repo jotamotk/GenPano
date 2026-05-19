@@ -95,6 +95,7 @@ const ISSUE_1167_FROM_DATE = '2026-05-01'
 const ISSUE_1167_TO_DATE = '2026-05-19'
 const ISSUE_1167_TARGET_DATE = '2026-05-17'
 const ISSUE_1167_FORBIDDEN_BRAND_LABELS = ['\u96c5\u8bd7\u5170\u9edb', 'Estee', 'Est\u00e9e']
+const ISSUE_1167_LIVE_TEST_TIMEOUT_MS = 240_000
 const SCREENSHOT_DIR = 'test-results/live-app-analytics-business-completeness'
 
 if (process.env.APP_ANALYTICS_PANO_LIVE_E2E === '1') {
@@ -1997,7 +1998,9 @@ test.describe('Live #1167 BestCoffer PANO trend gate', () => {
   )
 
   test('#1167 captures /brand/visibility PANO trend card without running Topics checks', async ({ page }) => {
-    test.setTimeout(180_000)
+    test.setTimeout(ISSUE_1167_LIVE_TEST_TIMEOUT_MS)
+    const gateStartedAt = Date.now()
+    const elapsedMs = () => Date.now() - gateStartedAt
     const baseUrl = process.env.PLAYWRIGHT_BASE_URL || process.env.BASE_URL || 'http://116.62.36.173'
     const projectId = process.env.PROJECT_ID || ISSUE_1167_PROJECT_ID
     const brandId = Number(process.env.BRAND_ID || ISSUE_1167_BRAND_ID)
@@ -2018,6 +2021,7 @@ test.describe('Live #1167 BestCoffer PANO trend gate', () => {
     const brandDateParams = `${dateParams}&brand_id=${brandId}`
     const me = await api(baseUrl, token, 'auth_me', '/api/auth/me')
     assertCondition(me.id === userId, `auth/me returned unexpected user ${me.id}`)
+    const authMeElapsedMs = elapsedMs()
 
     const projects = await api(baseUrl, token, 'projects', '/api/v1/projects/')
     const projectItems = Array.isArray(projects?.items) ? projects.items : []
@@ -2025,6 +2029,7 @@ test.describe('Live #1167 BestCoffer PANO trend gate', () => {
       projectItems.some((project: ContractPayload) => project.id === projectId && Number(project.primary_brand_id) === brandId),
       '#1167 approved BestCoffer analytics project is not visible to owner user',
     )
+    const projectsElapsedMs = elapsedMs()
 
     const competitorTrends = await api(
       baseUrl,
@@ -2037,6 +2042,7 @@ test.describe('Live #1167 BestCoffer PANO trend gate', () => {
       trendDates.includes(targetDate),
       `#1167 competitors/trends did not expose target date ${targetDate}; dates=${JSON.stringify(trendDates)}`,
     )
+    const trendsElapsedMs = elapsedMs()
 
     await fs.mkdir(SCREENSHOT_DIR, { recursive: true })
     const failedResponses: string[] = []
@@ -2056,6 +2062,7 @@ test.describe('Live #1167 BestCoffer PANO trend gate', () => {
     await seedLiveAuth(page, token, projectId, brandId, primaryBrandName, DEFAULT_COMPETITOR_ID)
     const route = `/brand/visibility?brandId=${brandId}&range=30d&profileGroup=all`
     await page.goto(`${baseUrl}${route}`, { waitUntil: 'domcontentloaded', timeout: 60_000 })
+    const gotoElapsedMs = elapsedMs()
     const path = new URL(page.url()).pathname
     assertCondition(!['/register', '/login', '/onboarding'].includes(path), `${route} redirected to ${page.url()}`)
     let pageText = ''
@@ -2075,6 +2082,7 @@ test.describe('Live #1167 BestCoffer PANO trend gate', () => {
       renderedPageHasExpectedBrandContext(pageText, brandLabels),
       `${route} did not render expected BestCoffer brand context from ${JSON.stringify(brandLabels)}`,
     )
+    const brandContextElapsedMs = elapsedMs()
 
     const cardScreenshotPath = `${SCREENSHOT_DIR}/issue_1167_visibility_pano_trend_brand_${brandId}.png`
     const renderedPanoTrend = await captureVisibilityPanoTrend(page, route, {
@@ -2087,6 +2095,7 @@ test.describe('Live #1167 BestCoffer PANO trend gate', () => {
       forbiddenLabels: ISSUE_1167_FORBIDDEN_BRAND_LABELS,
       targetDate,
     })
+    const panoCaptureElapsedMs = elapsedMs()
 
     const deployedSha = await page
       .locator('meta[name="genpano-deploy-sha"]')
@@ -2109,6 +2118,15 @@ test.describe('Live #1167 BestCoffer PANO trend gate', () => {
           hoverAttempted: renderedPanoTrend.hoverAttempted,
           hoverMatchedTargetDate: renderedPanoTrend.hoverMatchedTargetDate,
           forbiddenLabels: ISSUE_1167_FORBIDDEN_BRAND_LABELS,
+          timingsMs: {
+            authMe: authMeElapsedMs,
+            projects: projectsElapsedMs,
+            trends: trendsElapsedMs,
+            goto: gotoElapsedMs,
+            brandContext: brandContextElapsedMs,
+            panoCapture: panoCaptureElapsedMs,
+            totalBeforeSummary: elapsedMs(),
+          },
         },
         null,
         2,
@@ -2139,6 +2157,15 @@ test.describe('Live #1167 BestCoffer PANO trend gate', () => {
       tooltipText: renderedPanoTrend.tooltipText,
       hoverMatchedTargetDate: renderedPanoTrend.hoverMatchedTargetDate,
       deployedSha,
+      timingsMs: {
+        authMe: authMeElapsedMs,
+        projects: projectsElapsedMs,
+        trends: trendsElapsedMs,
+        goto: gotoElapsedMs,
+        brandContext: brandContextElapsedMs,
+        panoCapture: panoCaptureElapsedMs,
+        totalBeforeSummary: elapsedMs(),
+      },
     }))
   })
 })
