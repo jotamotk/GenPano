@@ -73,6 +73,9 @@ select = ["E", "F", "W", "I", "B", "UP", "ASYNC", "RUF"]
 # output). The fullwidth punctuation must be preserved for evidence
 # fidelity, so transliteration is not acceptable here.
 "tests/test_competitor_industry_filter.py" = ["RUF001", "RUF002", "RUF003"]
+# Same evidence-fidelity exception: quotes the AI leader's verbatim
+# Chinese feedback about the heatmap surface.
+"tests/test_topic_heatmap_competitor_autofill.py" = ["RUF001", "RUF002", "RUF003"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["app"]
