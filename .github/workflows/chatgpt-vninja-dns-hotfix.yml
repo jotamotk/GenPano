@@ -1,0 +1,342 @@
+name: ChatGPT V-Ninja DNS hotfix (manual)
+
+# Refs PR #1279 / branch claude/fix-chatgpt-pipeline-Fvdwi.
+# Refs prior chatgpt-proxy-hotfix.yml (PR #1209) for the SSH +
+# route-policy-preflight pattern.
+#
+# Root cause (evidence ledger in PR #1279 body):
+#   Prod V-Ninja's running config has no `dns:` section, so ninja-mihomo
+#   falls back to the host's CN-resident OS resolver. The CN resolver
+#   returns GFW-poisoned Facebook IPv6 (2a03:2880::face:b00c:...) for
+#   ws.chatgpt.com. V-Ninja then routes the *connection* (to the wrong
+#   IP) through the selected proxy node — even US/JP/HK nodes with
+#   verified-correct egress (Cloudflare cdn-cgi/trace confirms colo=LAX
+#   / NRT / HKG) all end up CONNECTing to Facebook because the IP was
+#   resolved BEFORE the node was chosen.
+#
+# Fix: ship a V-Ninja config with `dns: enhanced-mode: fake-ip` +
+# `fallback: tls://1.0.0.1:853 / tls://dns.google:853` +
+# `proxy-server-nameserver: https://1.1.1.1/dns-query`. Mihomo's DoH
+# fallback then bypasses GFW for ws.chatgpt.com and the rest of
+# *.chatgpt.com / *.openai.com.
+#
+# Per AGENTS.md Hard Rule 5 this is the third iteration of "fix the
+# ChatGPT pipeline" symptom. The first two (PR #1209 UFW + PR #1279
+# zombie sweep) targeted different technical layers; this one targets
+# the DNS layer for the first time. User authorized (chat 2026-05-19
+# "按你推荐 + 用 app 本身翻墙"). The dry-run-first design + automatic
+# backup + verification gate is the safety wrapper around the rule
+# override.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'dry-run = inspect prod config path + show diff only. apply = backup + replace + restart + verify.'
+        required: true
+        default: 'dry-run'
+        type: choice
+        options:
+          - dry-run
+          - apply
+      confirm:
+        description: 'When mode=apply, type "yes" to actually mutate prod V-Ninja config.'
+        required: false
+        default: 'no'
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  hotfix:
+    name: Apply V-Ninja DoH DNS hotfix (chatgpt WSS path)
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+
+    steps:
+      - name: Guard
+        run: |
+          set -euo pipefail
+          echo "event=${{ github.event_name }} mode=${{ inputs.mode }} confirm=${{ inputs.confirm }}"
+          if [ "${{ inputs.mode }}" = "apply" ] && [ "${{ inputs.confirm }}" != "yes" ]; then
+              echo "::error::mode=apply requires confirm=yes. Got confirm='${{ inputs.confirm }}'. Refusing."
+              exit 1
+          fi
+          if [ "${{ inputs.mode }}" != "apply" ] && [ "${{ inputs.mode }}" != "dry-run" ]; then
+              echo "::error::Unknown mode='${{ inputs.mode }}'. Allowed: dry-run | apply."
+              exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Route policy preflight (same gate as PR #1209)
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s' "$SERVER_SSH_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H "$SERVER_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+          # Verify the same engine routing invariants PR #1209 already
+          # asserted: 豆包/deepseek direct, chatgpt via proxy. The DNS
+          # change must not affect these.
+          policy=$(ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=accept-new \
+            "$SERVER_USER@$SERVER_HOST" 'bash -s' <<'REMOTE'
+          set -uo pipefail
+          cd /opt/genpano
+          docker compose exec -T worker python3 - <<'PY' 2>&1
+          import os
+          from geo_tracker.agent.guest_executor import (
+              _should_use_proxy_for_llm,
+              _requires_global_proxy_route,
+              DOMESTIC_LLMS,
+          )
+          proxy_url = os.getenv("QG_PROXY_HTTP") or "http://host.docker.internal:6789"
+          for llm in ["chatgpt", "doubao", "deepseek"]:
+              print(f"PLAN: {{'llm': '{llm}', "
+                    f"'use_proxy': {_should_use_proxy_for_llm(llm, proxy_url)}, "
+                    f"'requires_global_route': {_requires_global_proxy_route(llm)}}}")
+          PY
+          REMOTE
+          )
+          echo "$policy"
+          fail=0
+          for line in \
+              "'llm': 'doubao'.*'use_proxy': False.*'requires_global_route': False" \
+              "'llm': 'deepseek'.*'use_proxy': False.*'requires_global_route': False" \
+              "'llm': 'chatgpt'.*'use_proxy': True.*'requires_global_route': True"; do
+              if ! echo "$policy" | grep -qE "$line"; then
+                  echo "::error::Route policy preflight failed on: $line"
+                  fail=1
+              fi
+          done
+          if [ "$fail" -ne 0 ]; then
+              echo "::error::Route policy preflight FAILED. Refusing to touch V-Ninja config."
+              exit 1
+          fi
+          {
+            echo "## Route policy preflight"
+            echo '```'
+            echo "$policy"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Discover V-Ninja running config + (dry-run|apply) DoH patch
+        id: hotfix
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+          MODE: ${{ inputs.mode }}
+        run: |
+          set -euo pipefail
+          # Ship the repo's reference DNS block (clash/config.yaml) to
+          # the host so the remote heredoc can splice it into V-Ninja's
+          # actual loaded config. Doing it this way keeps the YAML
+          # snippet auditable in-repo.
+          cat clash/config.yaml > /tmp/repo_clash_config.yaml
+          scp -i ~/.ssh/id_rsa -o StrictHostKeyChecking=accept-new \
+              /tmp/repo_clash_config.yaml \
+              "$SERVER_USER@$SERVER_HOST:/tmp/repo_clash_config.yaml"
+
+          output=$(MODE="$MODE" ssh -i ~/.ssh/id_rsa \
+              -o StrictHostKeyChecking=accept-new \
+              -o SendEnv=MODE \
+              "$SERVER_USER@$SERVER_HOST" 'bash -s' <<'REMOTE'
+          set -uo pipefail
+          : "${MODE:=dry-run}"
+          echo "=== MODE: ${MODE} ==="
+          echo ""
+
+          # 1) Find the config file ninja-mihomo currently has open.
+          PID=$(pidof ninja-mihomo 2>/dev/null | awk '{print $1}')
+          if [ -z "$PID" ]; then
+              echo "::error::ninja-mihomo process not found"
+              exit 1
+          fi
+          echo "ninja-mihomo PID: $PID"
+          CFG=$(lsof -p "$PID" 2>/dev/null | grep -E '\.yaml$' | grep -vE '/proc|/dev|/sys' \
+                | awk '{print $NF}' | grep -v providers | grep -v profiles | head -1)
+          if [ -z "$CFG" ]; then
+              # Fallback: try the V-Ninja data dir pattern documented in
+              # clash/setup-vninja-host.sh.
+              CFG=$(ls -t /root/.local/share/io.github.clash-verge-ninja.clash-verge-ninja/profiles/*.yaml 2>/dev/null | head -1)
+          fi
+          if [ -z "$CFG" ] || [ ! -f "$CFG" ]; then
+              echo "::error::Could not locate V-Ninja's loaded config file."
+              echo "Searched: lsof on ninja-mihomo + V-Ninja profiles dir"
+              echo "--- lsof on ninja-mihomo (filtered to .yaml) ---"
+              lsof -p "$PID" 2>/dev/null | grep -E '\.yaml$' || true
+              exit 1
+          fi
+          echo "Detected V-Ninja config path: $CFG"
+          echo "Size: $(stat -c %s "$CFG") bytes"
+          echo "--- Current config head 30 lines ---"
+          head -30 "$CFG"
+          echo ""
+          echo "--- Current DNS-related lines (if any) ---"
+          grep -nE "^dns:|enhanced-mode|nameserver:|fallback:|proxy-server-nameserver" "$CFG" 2>/dev/null || echo "(no dns: block present — that's the bug)"
+          echo ""
+
+          # 2) Extract ports + secret + external-controller from the
+          # running config so we don't break V-Ninja's port binding.
+          MIXED_PORT=$(grep -E "^mixed-port:" "$CFG" 2>/dev/null | head -1 | awk '{print $2}')
+          EXT_CTRL=$(grep -E "^external-controller:" "$CFG" 2>/dev/null | head -1 | awk '{print $2}' | tr -d "\"'")
+          SECRET_LINE=$(grep -E "^secret:" "$CFG" 2>/dev/null | head -1 || true)
+          echo "Detected mixed-port:     ${MIXED_PORT:-(unset)}"
+          echo "Detected external-ctrl:  ${EXT_CTRL:-(unset)}"
+          echo "Detected secret line:    $([ -n "$SECRET_LINE" ] && echo 'present (value redacted)' || echo '(absent)')"
+          echo ""
+
+          # 3) Build the proposed new config in /tmp. Strategy:
+          #    - Keep the entire current config (proxies, groups, rules)
+          #    - Prepend our DNS block before the first non-DNS top-level key
+          #    - Idempotent: if `dns:` already present, only adjust DoH
+          #      fallback (don't re-prepend)
+          NEW_CFG="/tmp/vninja-doh.yaml"
+          if grep -qE "^dns:" "$CFG"; then
+              echo "Current config already has dns: section — skipping prepend, only patching."
+              cp "$CFG" "$NEW_CFG"
+              # No-op for now; the existing dns section is the operator's
+              # to maintain. We do not silently rewrite a populated dns
+              # block — the user would lose their tuning.
+              echo "::warning::dns: section already present. This workflow refuses to overwrite an operator-configured DNS block. Manual review required."
+              exit 2
+          fi
+
+          # Build new config: insert the DoH block from repo (lines
+          # 11-29 of clash/config.yaml — the entire dns: block).
+          DNS_BLOCK=$(awk '/^dns:/,/^proxy-providers:/' /tmp/repo_clash_config.yaml | sed '$d')
+          if [ -z "$DNS_BLOCK" ]; then
+              echo "::error::Failed to extract dns: block from /tmp/repo_clash_config.yaml (repo source)."
+              exit 1
+          fi
+          {
+              echo "# vninja DoH DNS patch applied $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+              echo "# Source: repo clash/config.yaml dns: block"
+              echo "# Refs PR #1279 ws.chatgpt.com GFW DNS poisoning hotfix"
+              echo ""
+              echo "$DNS_BLOCK"
+              echo ""
+              cat "$CFG"
+          } > "$NEW_CFG"
+          echo "Wrote proposed new config: $NEW_CFG ($(stat -c %s "$NEW_CFG") bytes)"
+          echo ""
+          echo "--- diff (current → proposed) ---"
+          diff -u "$CFG" "$NEW_CFG" | head -80 || true
+          echo ""
+
+          if [ "$MODE" != "apply" ]; then
+              echo "=== DRY-RUN COMPLETE — no changes applied ==="
+              echo "Run again with mode=apply + confirm=yes to actually patch."
+              exit 0
+          fi
+
+          # 4) APPLY mode: backup + atomic replace + reload.
+          TS=$(date -u +%s)
+          BAK="${CFG}.bak.${TS}"
+          cp "$CFG" "$BAK"
+          echo "Backed up to: $BAK"
+          cp "$NEW_CFG" "$CFG"
+          echo "Replaced $CFG with patched config."
+
+          # 5) Reload ninja-mihomo via Clash API (gentler than systemctl
+          #    restart; preserves V-Ninja GUI state).
+          API_PORT=$(echo "$EXT_CTRL" | awk -F: '{print $NF}')
+          API_PORT=${API_PORT:-9097}
+          SECRET_VAL=$(echo "$SECRET_LINE" | awk -F: '{print $2}' | tr -d ' \"\\047')
+          if [ -n "$SECRET_VAL" ]; then
+              AUTH_H="Authorization: Bearer $SECRET_VAL"
+          else
+              AUTH_H=""
+          fi
+          echo ""
+          echo "--- Reloading via Clash API PUT /configs?path=${CFG} ---"
+          curl -sS --max-time 10 -X PUT \
+               -H "$AUTH_H" -H "Content-Type: application/json" \
+               "http://127.0.0.1:${API_PORT}/configs?force=true" \
+               -d "{\"path\":\"$CFG\"}" \
+               -w "http_code=%{http_code}\n" 2>&1 | head -5
+
+          sleep 2
+
+          # 6) Verify from worker container.
+          echo ""
+          echo "--- Verification: worker getent ws.chatgpt.com ---"
+          docker compose exec -T worker getent ahosts ws.chatgpt.com 2>&1 | head -6 </dev/null || true
+
+          echo ""
+          echo "--- Verification: worker curl https://ws.chatgpt.com/ via host:6789 ---"
+          docker compose exec -T worker sh -lc '
+              curl -sS -o /dev/null --max-time 10 \
+                   -x http://host.docker.internal:6789 \
+                   -w "http_code=%{http_code} time=%{time_total}s\n" \
+                   "https://ws.chatgpt.com/"
+          ' </dev/null 2>&1 || true
+
+          echo ""
+          echo "--- Verification: cdn-cgi/trace via proxy (egress sanity) ---"
+          docker compose exec -T worker sh -lc '
+              curl -sS --max-time 10 -x http://host.docker.internal:6789 \
+                   "https://www.cloudflare.com/cdn-cgi/trace" | head -12
+          ' </dev/null 2>&1 || true
+
+          echo ""
+          echo "=== APPLY COMPLETE ==="
+          echo "If ws.chatgpt.com no longer resolves to Facebook (2a03:2880::face:b00c) and"
+          echo "curl returns non-404 (likely 200/101/403), the fix is live."
+          echo "Rollback (if needed): cp $BAK $CFG && curl -X PUT ... (same path)"
+          REMOTE
+          )
+
+          rc=$?
+          echo "$output"
+          {
+            echo "## V-Ninja DoH DNS hotfix (${MODE})"
+            echo
+            echo '```'
+            echo "$output"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$rc" -ne 0 ]; then
+              echo "::error::Hotfix step exited with code $rc"
+              exit "$rc"
+          fi
+
+      - name: Post hotfix summary as PR comment when in PR context
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const mode = '${{ inputs.mode }}';
+            let body = `## V-Ninja DoH DNS hotfix (${mode})\n\n`;
+            body += 'See workflow run step summary for full output.\n\n';
+            body += `Triggered by: @${context.actor}\n`;
+            body += `Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}\n`;
+            let issueNumber = null;
+            if (context.payload.pull_request) {
+              issueNumber = context.payload.pull_request.number;
+            } else {
+              const prs = await github.rest.search.issuesAndPullRequests({
+                q: `repo:${context.repo.owner}/${context.repo.repo} is:pr is:open head:${context.ref.replace('refs/heads/','')}`,
+              });
+              if (prs.data.items.length > 0) {
+                issueNumber = prs.data.items[0].number;
+              }
+            }
+            if (issueNumber) {
+              await github.rest.issues.createComment({
+                issue_number: issueNumber,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body,
+              });
+            }
