@@ -51,7 +51,7 @@ docker-compose up
 - [`PRD.md`](PRD.md) — root product requirements
 - [`AGENTS.md`](AGENTS.md) — AI Lead / Codex agent collaboration rules — **read before opening a PR**
 - [`DEPLOY_GUIDE.md`](DEPLOY_GUIDE.md) — deployment notes
-- [`docs/PRD.md`](docs/PRD.md) — long-form product spec
+- [`docs/PRD.md`](docs/PRD.md) — **stub**：旧 long-form PRD 已 archive，指向 `frontend/src/data/mock.js` + 代码作事实来源
 
 ## Contributing
 
