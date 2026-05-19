@@ -505,7 +505,7 @@ export default function BrandVisibilityPage() {
         <div className="flex items-baseline justify-between mb-1.5 px-1">
           <h3 className="text-[13px] font-semibold text-themed-primary flex items-center gap-2">
             品牌 × Topic 提及率热力图
-            <InfoTooltip text="主品牌 + Top 4 竞品 × Top 8 Topic · 点击进入 Topic 详情" />
+            <InfoTooltip text="主品牌 + Top 7 竞品 × Top 8 Topic · 点击进入 Topic 详情" />
             {heatmapIsMock && <MockDataBadge />}
           </h3>
         </div>

@@ -85,6 +85,7 @@ from app.api.v1.projects._mention_rollups import (
     _industry_brand_ids,
     brand_mention_match_condition,
     brand_mention_names,
+    discover_related_brand_ids,
 )
 from app.api.v1.projects._topic_analysis_service import (
     AnalysisFilters,
@@ -975,18 +976,54 @@ async def get_topic_heatmap(
             state_reason="no_primary_brand",
         )
 
-    # If no explicit comparison list supplied, use pinned competitors (top 4).
+    # If no explicit comparison list supplied, build competitor rows from
+    # pinned brands first, then auto-fill from `brand_mentions` for brands
+    # co-mentioned in this project's responses (so the heatmap is not
+    # primary-only when ProjectCompetitor is empty). Cap = 7 competitors.
     if compare_with is None:
         comp_stmt = select(ProjectCompetitor.brand_id).where(
             ProjectCompetitor.project_id == project.id
         )
-        compare_with = [r[0] for r in (await session.execute(comp_stmt)).all()]
+        pinned = [r[0] for r in (await session.execute(comp_stmt)).all()]
         # Issue #975: scope pins to same industry as primary brand.
         primary_industry = await resolve_brand_industry(session, primary)
         industry_brand_ids = await _industry_brand_ids(session, primary_industry)
-        if industry_brand_ids and compare_with:
-            compare_with = [bid for bid in compare_with if bid in industry_brand_ids]
-        compare_with = compare_with[:4]
+        if industry_brand_ids and pinned:
+            pinned = [bid for bid in pinned if bid in industry_brand_ids]
+        # Exclude both the requested primary AND the project's underlying
+        # primary_brand_id from competitor candidates. The latter matters
+        # when callers pass a `brand_id` override that differs from the
+        # project's bound primary — the project's real primary should not
+        # leak into the overridden view as a "competitor of itself"
+        # (issue #687 scope guard).
+        excluded_ids: set[int] = {primary}
+        if project.primary_brand_id is not None:
+            excluded_ids.add(project.primary_brand_id)
+        seen: set[int] = set(excluded_ids)
+        compare_with = []
+        for bid in pinned:
+            if bid in seen:
+                continue
+            seen.add(bid)
+            compare_with.append(bid)
+            if len(compare_with) >= 7:
+                break
+        if len(compare_with) < 7:
+            auto = await discover_related_brand_ids(
+                session,
+                primary,
+                from_d,
+                to_d,
+                limit=7 - len(compare_with) + len(excluded_ids) + 3,
+                industry_name=primary_industry,
+            )
+            for bid in auto:
+                if bid in seen:
+                    continue
+                seen.add(bid)
+                compare_with.append(bid)
+                if len(compare_with) >= 7:
+                    break
 
     brand_ids = list(dict.fromkeys([primary, *compare_with]))
     f, t = _dt_range(from_d, to_d)
