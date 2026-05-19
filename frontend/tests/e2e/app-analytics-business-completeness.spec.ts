@@ -95,6 +95,7 @@ const ISSUE_1167_FROM_DATE = '2026-05-01'
 const ISSUE_1167_TO_DATE = '2026-05-19'
 const ISSUE_1167_TARGET_DATE = '2026-05-17'
 const ISSUE_1167_FORBIDDEN_BRAND_LABELS = ['\u96c5\u8bd7\u5170\u9edb', 'Estee', 'Est\u00e9e']
+const ISSUE_1167_LIVE_TEST_TIMEOUT_MS = 240_000
 const SCREENSHOT_DIR = 'test-results/live-app-analytics-business-completeness'
 
 if (process.env.APP_ANALYTICS_PANO_LIVE_E2E === '1') {
@@ -543,6 +544,14 @@ type HoverPoint = {
   source: string
 }
 
+const PANO_HOVER_POINT_LIMIT = 12
+const PANO_HOVER_SETTLE_MS = 20
+const PANO_HOVER_OFFSETS = [
+  [0, 0],
+  [-5, 0],
+  [5, 0],
+] as const
+
 function pushUniqueHoverPoint(points: HoverPoint[], point: HoverPoint) {
   if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) return
   const key = `${Math.round(point.x)}:${Math.round(point.y)}`
@@ -687,38 +696,41 @@ async function hoverVisibilityPanoTrendTargetDate(
 
   const targetIndex = dateList.indexOf(targetDate)
   const ratio = dateList.length <= 1 ? 0.5 : targetIndex / (dateList.length - 1)
+  const centeredBucketRatio = dateList.length <= 1 ? ratio : (targetIndex + 0.5) / dateList.length
   const xRatios = Array.from(
     new Set(
-      [ratio, (targetIndex + 0.5) / dateList.length]
-        .flatMap(value => [value - 0.08, value - 0.04, value, value + 0.04, value + 0.08])
+      [ratio, centeredBucketRatio]
+        .flatMap(value => [value - 0.03, value, value + 0.03])
         .map(value => Math.round(Math.max(0.02, Math.min(0.98, value)) * 1000) / 1000),
     ),
   )
-  const yRatios = [0.2, 0.35, 0.5, 0.65, 0.8, 0.92]
+  const yRatios = [0.2, 0.5, 0.8, 0.92]
   const hoverPoints = await rechartsTargetHoverPoints(chart, targetDate, dateList).catch((): HoverPoint[] => [])
-  for (const xRatio of xRatios) {
-    for (const yRatio of yRatios) {
-      pushUniqueHoverPoint(hoverPoints, {
-        x: box.x + box.width * xRatio,
-        y: box.y + box.height * yRatio,
-        source: 'wrapper-ratio-fallback',
-      })
+  if (hoverPoints.length < PANO_HOVER_POINT_LIMIT) {
+    for (const xRatio of xRatios) {
+      for (const yRatio of yRatios) {
+        pushUniqueHoverPoint(hoverPoints, {
+          x: box.x + box.width * xRatio,
+          y: box.y + box.height * yRatio,
+          source: 'wrapper-ratio-fallback',
+        })
+        if (hoverPoints.length >= PANO_HOVER_POINT_LIMIT) break
+      }
+      if (hoverPoints.length >= PANO_HOVER_POINT_LIMIT) break
     }
   }
   let lastTooltipText: string | undefined
 
-  for (const point of hoverPoints) {
-    for (const xOffset of [0, -6, 6]) {
-      for (const yOffset of [0, -6, 6]) {
-        await page.mouse.move(point.x + xOffset, point.y + yOffset)
-        await page.waitForTimeout(100)
-        const tooltips = await visibleTooltipTexts(page)
-        const matchingTooltip = tooltips.find(text => compactIncludes(text, targetDate))
-        if (matchingTooltip) {
-          return { tooltipText: matchingTooltip, hoverAttempted: true, hoverMatchedTargetDate: true }
-        }
-        lastTooltipText = tooltips.find(Boolean) || lastTooltipText
+  for (const point of hoverPoints.slice(0, PANO_HOVER_POINT_LIMIT)) {
+    for (const [xOffset, yOffset] of PANO_HOVER_OFFSETS) {
+      await page.mouse.move(point.x + xOffset, point.y + yOffset)
+      await page.waitForTimeout(PANO_HOVER_SETTLE_MS)
+      const tooltips = await visibleTooltipTexts(page)
+      const matchingTooltip = tooltips.find(text => compactIncludes(text, targetDate))
+      if (matchingTooltip) {
+        return { tooltipText: matchingTooltip, hoverAttempted: true, hoverMatchedTargetDate: true }
       }
+      lastTooltipText = tooltips.find(Boolean) || lastTooltipText
     }
   }
 
@@ -1722,6 +1734,52 @@ test.describe('App analytics business completeness assertion', () => {
     })
   })
 
+  test('bounds target-date PANO tooltip probing when no tooltip appears', async ({ page }) => {
+    test.setTimeout(5_000)
+    await page.setContent(`
+      <div class="t-card" style="width: 1000px; height: 260px; padding: 0;">
+        <div class="recharts-wrapper" style="position: relative; width: 960px; height: 220px;">
+          <svg class="recharts-surface" width="960" height="220">
+            <g class="recharts-cartesian-grid">
+              <line x1="24" y1="20" x2="940" y2="20"></line>
+              <line x1="24" y1="60" x2="940" y2="60"></line>
+              <line x1="24" y1="100" x2="940" y2="100"></line>
+              <line x1="24" y1="140" x2="940" y2="140"></line>
+            </g>
+            <g class="recharts-line">
+              <path class="recharts-curve recharts-line-curve" d="M24 140 L940 140"></path>
+            </g>
+            <g class="recharts-xAxis">
+              <g class="recharts-cartesian-axis-tick">
+                <text x="940" y="178">2026-05-17</text>
+              </g>
+            </g>
+          </svg>
+        </div>
+        <div class="recharts-tooltip-wrapper" style="position: absolute; visibility: hidden; opacity: 0;"></div>
+      </div>
+      <script>
+        window.__hoverCount = 0
+        document.querySelector('.recharts-wrapper').addEventListener('mousemove', () => {
+          window.__hoverCount += 1
+        })
+      </script>
+    `)
+
+    const startedAt = Date.now()
+    const hover = await hoverVisibilityPanoTrendTargetDate(
+      page,
+      page.locator('.t-card'),
+      '2026-05-17',
+      ['2026-05-17'],
+    )
+    const hoverCount = await page.evaluate(() => (window as any).__hoverCount)
+
+    expect(hover.hoverMatchedTargetDate).toBe(false)
+    expect(Date.now() - startedAt).toBeLessThan(4_000)
+    expect(hoverCount).toBeLessThanOrEqual(90)
+  })
+
   test('flags Topics primary table reason-wall rendering when API has concrete topic values', () => {
     const topicMonitoring = {
       topics: [
@@ -1940,7 +1998,9 @@ test.describe('Live #1167 BestCoffer PANO trend gate', () => {
   )
 
   test('#1167 captures /brand/visibility PANO trend card without running Topics checks', async ({ page }) => {
-    test.setTimeout(180_000)
+    test.setTimeout(ISSUE_1167_LIVE_TEST_TIMEOUT_MS)
+    const gateStartedAt = Date.now()
+    const elapsedMs = () => Date.now() - gateStartedAt
     const baseUrl = process.env.PLAYWRIGHT_BASE_URL || process.env.BASE_URL || 'http://116.62.36.173'
     const projectId = process.env.PROJECT_ID || ISSUE_1167_PROJECT_ID
     const brandId = Number(process.env.BRAND_ID || ISSUE_1167_BRAND_ID)
@@ -1961,6 +2021,7 @@ test.describe('Live #1167 BestCoffer PANO trend gate', () => {
     const brandDateParams = `${dateParams}&brand_id=${brandId}`
     const me = await api(baseUrl, token, 'auth_me', '/api/auth/me')
     assertCondition(me.id === userId, `auth/me returned unexpected user ${me.id}`)
+    const authMeElapsedMs = elapsedMs()
 
     const projects = await api(baseUrl, token, 'projects', '/api/v1/projects/')
     const projectItems = Array.isArray(projects?.items) ? projects.items : []
@@ -1968,6 +2029,7 @@ test.describe('Live #1167 BestCoffer PANO trend gate', () => {
       projectItems.some((project: ContractPayload) => project.id === projectId && Number(project.primary_brand_id) === brandId),
       '#1167 approved BestCoffer analytics project is not visible to owner user',
     )
+    const projectsElapsedMs = elapsedMs()
 
     const competitorTrends = await api(
       baseUrl,
@@ -1980,6 +2042,7 @@ test.describe('Live #1167 BestCoffer PANO trend gate', () => {
       trendDates.includes(targetDate),
       `#1167 competitors/trends did not expose target date ${targetDate}; dates=${JSON.stringify(trendDates)}`,
     )
+    const trendsElapsedMs = elapsedMs()
 
     await fs.mkdir(SCREENSHOT_DIR, { recursive: true })
     const failedResponses: string[] = []
@@ -1999,6 +2062,7 @@ test.describe('Live #1167 BestCoffer PANO trend gate', () => {
     await seedLiveAuth(page, token, projectId, brandId, primaryBrandName, DEFAULT_COMPETITOR_ID)
     const route = `/brand/visibility?brandId=${brandId}&range=30d&profileGroup=all`
     await page.goto(`${baseUrl}${route}`, { waitUntil: 'domcontentloaded', timeout: 60_000 })
+    const gotoElapsedMs = elapsedMs()
     const path = new URL(page.url()).pathname
     assertCondition(!['/register', '/login', '/onboarding'].includes(path), `${route} redirected to ${page.url()}`)
     let pageText = ''
@@ -2018,6 +2082,7 @@ test.describe('Live #1167 BestCoffer PANO trend gate', () => {
       renderedPageHasExpectedBrandContext(pageText, brandLabels),
       `${route} did not render expected BestCoffer brand context from ${JSON.stringify(brandLabels)}`,
     )
+    const brandContextElapsedMs = elapsedMs()
 
     const cardScreenshotPath = `${SCREENSHOT_DIR}/issue_1167_visibility_pano_trend_brand_${brandId}.png`
     const renderedPanoTrend = await captureVisibilityPanoTrend(page, route, {
@@ -2030,6 +2095,7 @@ test.describe('Live #1167 BestCoffer PANO trend gate', () => {
       forbiddenLabels: ISSUE_1167_FORBIDDEN_BRAND_LABELS,
       targetDate,
     })
+    const panoCaptureElapsedMs = elapsedMs()
 
     const deployedSha = await page
       .locator('meta[name="genpano-deploy-sha"]')
@@ -2052,6 +2118,15 @@ test.describe('Live #1167 BestCoffer PANO trend gate', () => {
           hoverAttempted: renderedPanoTrend.hoverAttempted,
           hoverMatchedTargetDate: renderedPanoTrend.hoverMatchedTargetDate,
           forbiddenLabels: ISSUE_1167_FORBIDDEN_BRAND_LABELS,
+          timingsMs: {
+            authMe: authMeElapsedMs,
+            projects: projectsElapsedMs,
+            trends: trendsElapsedMs,
+            goto: gotoElapsedMs,
+            brandContext: brandContextElapsedMs,
+            panoCapture: panoCaptureElapsedMs,
+            totalBeforeSummary: elapsedMs(),
+          },
         },
         null,
         2,
@@ -2082,6 +2157,15 @@ test.describe('Live #1167 BestCoffer PANO trend gate', () => {
       tooltipText: renderedPanoTrend.tooltipText,
       hoverMatchedTargetDate: renderedPanoTrend.hoverMatchedTargetDate,
       deployedSha,
+      timingsMs: {
+        authMe: authMeElapsedMs,
+        projects: projectsElapsedMs,
+        trends: trendsElapsedMs,
+        goto: gotoElapsedMs,
+        brandContext: brandContextElapsedMs,
+        panoCapture: panoCaptureElapsedMs,
+        totalBeforeSummary: elapsedMs(),
+      },
     }))
   })
 })
