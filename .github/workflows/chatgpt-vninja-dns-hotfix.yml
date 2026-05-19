@@ -32,15 +32,16 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'dry-run = inspect prod config path + show diff only. apply = backup + replace + restart + verify.'
+        description: 'dry-run = inspect prod config path + show diff only. apply = backup + replace + restart + verify. rollback = restore the earliest Merge.yaml.bak.* and restart.'
         required: true
         default: 'dry-run'
         type: choice
         options:
           - dry-run
           - apply
+          - rollback
       confirm:
-        description: 'When mode=apply, type "yes" to actually mutate prod V-Ninja config.'
+        description: 'When mode=apply or mode=rollback, type "yes" to actually mutate prod V-Ninja config.'
         required: false
         default: 'no'
   # Self-register: GitHub only indexes workflows it has seen run at
@@ -86,6 +87,10 @@ jobs:
           # Push trigger MUST be dry-run only (no operator confirmation).
           if [ "${{ github.event_name }}" = "push" ] && [ "$MODE" != "dry-run" ]; then
               echo "::error::Push trigger may only run in dry-run mode."
+              exit 1
+          fi
+          if [ "$MODE" = "rollback" ] && [ "$CONFIRM" != "yes" ]; then
+              echo "::error::mode=rollback requires confirm=yes."
               exit 1
           fi
           echo "effective_mode=$MODE" >> "$GITHUB_OUTPUT"
@@ -239,6 +244,38 @@ jobs:
 
           # The "target" we mutate is the overlay (Merge.yaml).
           CFG="$MERGE_FILE"
+
+          # ROLLBACK mode: restore the EARLIEST .bak.* (pre-fix state)
+          # and restart V-Ninja. Used to abort a botched apply.
+          if [ "$MODE" = "rollback" ]; then
+              echo ""
+              echo "=== ROLLBACK: restoring earliest Merge.yaml.bak.* ==="
+              BAK=$(ls -1 "${MERGE_FILE}".bak.* 2>/dev/null | sort | head -1)
+              if [ -z "$BAK" ]; then
+                  echo "::error::No Merge.yaml.bak.* found — nothing to roll back to."
+                  exit 1
+              fi
+              echo "Restoring from: $BAK"
+              echo "--- content of $BAK ---"
+              cat "$BAK"
+              echo "--- ---"
+              TS=$(date -u +%s)
+              cp "$CFG" "${CFG}.preRollback.${TS}"
+              cp "$BAK" "$CFG"
+              echo "Wrote restored Merge.yaml. Pre-rollback snapshot saved at ${CFG}.preRollback.${TS}"
+              echo ""
+              echo "--- systemctl restart vninja ---"
+              systemctl restart vninja
+              for i in $(seq 1 30); do
+                  if ss -tlnp 2>/dev/null | grep -q ':6789\b'; then
+                      echo "Proxy port 6789 back after ${i} attempts."
+                      break
+                  fi
+                  sleep 2
+              done
+              echo "=== ROLLBACK COMPLETE ==="
+              exit 0
+          fi
 
           # 2) Extract ports + secret + external-controller from the
           # RUNTIME config (Merge.yaml is just the overlay; ports come
