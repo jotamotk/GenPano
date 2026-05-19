@@ -32,6 +32,8 @@ class KpiCard(BaseModel):
     numerator_label: str | None = None
     source: str | None = None
     formula_status: str | None = None
+    state: str = "ok"
+    state_reason: str = "data_available"
     delta_30d_pct: float | None = None
     direction: str | None = None  # 'up' | 'down' | 'flat'
 

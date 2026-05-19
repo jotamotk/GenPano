@@ -29,17 +29,17 @@ from genpano_models import Project, ProjectCompetitor, User
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.v1.diagnostics._dto import DiagnosticListOut
+from app.api.v1.diagnostics.router import diagnostics_response_for_project
 from app.api.v1.projects import service
 from app.api.v1.projects._brand_dto import (
     CompetitorMetricsOut,
     CompetitorTrendsOut,
-    DiagnosticsOut,
     ProductsOut,
 )
 from app.api.v1.projects._brand_service import (
     get_competitor_metrics,
     get_competitor_trends,
-    get_diagnostics,
     get_products,
 )
 from app.api.v1.projects._charts_dto import (
@@ -656,21 +656,34 @@ async def project_competitor_trends(
     )
 
 
-@router.get("/{project_id}/diagnostics", response_model=DiagnosticsOut)
+@router.get("/{project_id}/diagnostics", response_model=DiagnosticListOut)
 async def project_diagnostics(
     project_id: str,
     user: Annotated[User, Depends(current_user)],
     session: AsyncSession = _DependsDb,
+    status: str | None = Query(None),
+    severity: str | None = Query(None),
+    category: str | None = Query(None),
+    type_: str | None = Query(None, alias="type"),
+    brand_id: int | None = Query(None),
     from_: str | None = Query(None, alias="from"),
     to: str | None = Query(None),
-) -> DiagnosticsOut:
-    """Derived diagnostics list (Phase 2.3 stub; Phase D wires real engine)."""
+    limit: int = Query(50, ge=1, le=500),
+) -> DiagnosticListOut:
+    """Compatibility route for no-slash diagnostics clients."""
     project = await service.get_project_for_user(session, user, project_id)
-    return await get_diagnostics(
+    scoped_brand_id = await _project_scoped_brand_id(session, project, brand_id)
+    return await diagnostics_response_for_project(
         session,
         project,
+        status=status,
+        severity=severity,
+        category=category,
+        type_=type_,
+        brand_id=scoped_brand_id,
         from_date=_parse_date(from_, "from"),
         to_date=_parse_date(to, "to"),
+        limit=limit,
     )
 
 

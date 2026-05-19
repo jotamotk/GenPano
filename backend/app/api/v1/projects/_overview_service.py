@@ -75,6 +75,13 @@ from app.api.v1.projects._topic_analysis_service import (
 )
 
 DEFAULT_WINDOW_DAYS = 30
+LOW_KPI_THRESHOLDS = {
+    "geo_score": 1.0,
+    "avg_geo_score": 1.0,
+    "pano_score": 1.0,
+    "mention_rate": 1.0,
+    "sov": 1.0,
+}
 logger = logging.getLogger(__name__)
 AdminOverviewFacts = tuple[
     list[KpiCard],
@@ -118,6 +125,28 @@ def _fact_target_mentions(row: dict[str, Any]) -> tuple[int, int]:
     return mentions, total
 
 
+def _kpi_state(
+    metric_key: str | None,
+    value: float | int | None,
+    formula_status: str | None,
+) -> tuple[str, str]:
+    if formula_status and formula_status != FORMULA_OK_STATUS:
+        if formula_status == FORMULA_NO_EVIDENCE_STATUS:
+            return "empty", "no_evidence"
+        if formula_status == FORMULA_MISSING_INPUTS_STATUS:
+            return "partial", "missing_formula_inputs"
+        return "partial", "partial_analyzer_data"
+    if metric_key in LOW_KPI_THRESHOLDS and value is not None:
+        if float(value) <= LOW_KPI_THRESHOLDS[metric_key]:
+            return "attention", "low_kpi_value"
+    return "ok", "data_available"
+
+
+def _apply_kpi_state(card: KpiCard) -> KpiCard:
+    state, state_reason = _kpi_state(card.metric_key, card.value, card.formula_status)
+    return card.model_copy(update={"state": state, "state_reason": state_reason})
+
+
 def _decorate_kpi_cards(cards: list[KpiCard]) -> list[KpiCard]:
     key_by_label = {
         "GeoScore": "geo_score",
@@ -148,18 +177,20 @@ def _decorate_kpi_cards(cards: list[KpiCard]) -> list[KpiCard]:
                 FORMULA_OK_STATUS if value is not None else FORMULA_MISSING_INPUTS_STATUS
             )
         decorated.append(
-            card.model_copy(
-                update={
-                    "metric_key": metric_key,
-                    "value": value,
-                    "unit": spec.unit,
-                    "value_scale": spec.value_scale,
-                    "value_range": spec.value_range,
-                    "denominator_label": spec.denominator_label,
-                    "numerator_label": spec.numerator_label,
-                    "source": spec.source,
-                    "formula_status": formula_status,
-                }
+            _apply_kpi_state(
+                card.model_copy(
+                    update={
+                        "metric_key": metric_key,
+                        "value": value,
+                        "unit": spec.unit,
+                        "value_scale": spec.value_scale,
+                        "value_range": spec.value_range,
+                        "denominator_label": spec.denominator_label,
+                        "numerator_label": spec.numerator_label,
+                        "source": spec.source,
+                        "formula_status": formula_status,
+                    }
+                )
             )
         )
     return decorated
@@ -279,7 +310,7 @@ def _apply_kpi_contract(
                 and card.formula_status == FORMULA_OK_STATUS
             ):
                 formula_status = FORMULA_OK_STATUS
-            out.append(card.model_copy(update={"formula_status": formula_status}))
+            out.append(_apply_kpi_state(card.model_copy(update={"formula_status": formula_status})))
             continue
         # Peripheral analyzer inputs are missing, but the KPI card already
         # carries a value that was computed from real aggregate evidence
@@ -299,10 +330,12 @@ def _apply_kpi_contract(
                 else FORMULA_PARTIAL_STATUS
             )
             out.append(
-                card.model_copy(
-                    update={
-                        "formula_status": formula_status,
-                    }
+                _apply_kpi_state(
+                    card.model_copy(
+                        update={
+                            "formula_status": formula_status,
+                        }
+                    )
                 )
             )
             continue
@@ -318,6 +351,8 @@ def _apply_kpi_contract(
                     "delta_30d_pct": None,
                     "direction": None,
                     "formula_status": formula_status,
+                    "state": "partial",
+                    "state_reason": "missing_formula_inputs",
                 }
             )
         )
@@ -631,6 +666,8 @@ def _empty_overview(project: Project) -> BrandOverviewOut:
                 label_en="GeoScore",
                 value=None,
                 formula_status=FORMULA_NO_EVIDENCE_STATUS,
+                state="empty",
+                state_reason="no_evidence",
                 delta_30d_pct=None,
             ),
             KpiCard(
@@ -639,6 +676,8 @@ def _empty_overview(project: Project) -> BrandOverviewOut:
                 value=None,
                 unit="%",
                 formula_status=FORMULA_NO_EVIDENCE_STATUS,
+                state="empty",
+                state_reason="no_evidence",
                 delta_30d_pct=None,
             ),
             KpiCard(
@@ -647,6 +686,8 @@ def _empty_overview(project: Project) -> BrandOverviewOut:
                 value=None,
                 unit="%",
                 formula_status=FORMULA_NO_EVIDENCE_STATUS,
+                state="empty",
+                state_reason="no_evidence",
                 delta_30d_pct=None,
             ),
             KpiCard(
@@ -655,6 +696,8 @@ def _empty_overview(project: Project) -> BrandOverviewOut:
                 metric_key="sentiment",
                 value=None,
                 formula_status=FORMULA_NO_EVIDENCE_STATUS,
+                state="empty",
+                state_reason="no_evidence",
                 delta_30d_pct=None,
             ),
         ],
