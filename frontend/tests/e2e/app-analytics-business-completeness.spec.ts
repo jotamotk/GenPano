@@ -1746,7 +1746,7 @@ test.describe('Live #1167 BestCoffer PANO trend gate', () => {
   )
 
   test('#1167 captures /brand/visibility PANO trend card without running Topics checks', async ({ page }) => {
-    test.setTimeout(240_000)
+    test.setTimeout(180_000)
     const baseUrl = process.env.PLAYWRIGHT_BASE_URL || process.env.BASE_URL || 'http://116.62.36.173'
     const projectId = process.env.PROJECT_ID || ISSUE_1167_PROJECT_ID
     const brandId = Number(process.env.BRAND_ID || ISSUE_1167_BRAND_ID)
