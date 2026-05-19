@@ -183,24 +183,33 @@ jobs:
               exit 1
           fi
           echo "ninja-mihomo PID: $PID"
-          CFG=$(lsof -p "$PID" 2>/dev/null | grep -E '\.yaml$' | grep -vE '/proc|/dev|/sys' \
-                | awk '{print $NF}' | grep -v providers | grep -v profiles | head -1)
+          echo "--- ALL .yaml files open by ninja-mihomo (lsof) ---"
+          lsof -p "$PID" 2>/dev/null | grep -E '\.yaml$' || true
+          echo ""
+          echo "--- ninja-mihomo cmdline (config arg if any) ---"
+          tr '\0' ' ' < "/proc/$PID/cmdline" 2>/dev/null; echo
+          echo ""
+          # Pick the largest .yaml that Mihomo has open AND that lives under
+          # the V-Ninja data dir (full merged config, NOT the tiny Merge.yaml
+          # overlay which is only ~1 line). Strategy: sort all open .yaml
+          # files by size desc, pick the biggest one in the data dir.
+          CFG=$(lsof -p "$PID" 2>/dev/null \
+                | grep -E '\.yaml$' \
+                | awk '{print $NF}' \
+                | grep -vE '/proc|/dev|/sys' \
+                | while read -r f; do
+                      [ -f "$f" ] && printf '%s %s\n' "$(stat -c %s "$f")" "$f"
+                  done \
+                | sort -rn \
+                | awk 'NR==1 {print $2}')
           if [ -z "$CFG" ]; then
-              # Fallback: try the V-Ninja data dir pattern documented in
-              # clash/setup-vninja-host.sh.
-              CFG=$(ls -t /root/.local/share/io.github.clash-verge-ninja.clash-verge-ninja/profiles/*.yaml 2>/dev/null | head -1)
-          fi
-          if [ -z "$CFG" ] || [ ! -f "$CFG" ]; then
-              echo "::error::Could not locate V-Ninja's loaded config file."
-              echo "Searched: lsof on ninja-mihomo + V-Ninja profiles dir"
-              echo "--- lsof on ninja-mihomo (filtered to .yaml) ---"
-              lsof -p "$PID" 2>/dev/null | grep -E '\.yaml$' || true
+              echo "::error::Could not locate V-Ninja's loaded config file from lsof."
               exit 1
           fi
-          echo "Detected V-Ninja config path: $CFG"
+          echo "Detected V-Ninja loaded config path: $CFG"
           echo "Size: $(stat -c %s "$CFG") bytes"
-          echo "--- Current config head 30 lines ---"
-          head -30 "$CFG"
+          echo "--- Current config head 40 lines ---"
+          head -40 "$CFG"
           echo ""
           echo "--- Current DNS-related lines (if any) ---"
           grep -nE "^dns:|enhanced-mode|nameserver:|fallback:|proxy-server-nameserver" "$CFG" 2>/dev/null || echo "(no dns: block present — that's the bug)"
