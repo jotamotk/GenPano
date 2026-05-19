@@ -574,6 +574,60 @@ jobs:
           done
           echo ""
 
+          echo "=== ws.chatgpt.com reachability from worker (smoking-gun: post-submit WSS fails) ==="
+          # Captured 2026-05-19: query_185664 runtime snapshot showed
+          #   error: "Camoufox can't establish a connection to the server at
+          #          wss://ws.chatgpt.com/p16/ws/user/..."
+          # at the exact moment _submit_confirmed() returned false. The page
+          # was on chatgpt.com, logged in, prompt filled — but the WSS that
+          # actually delivers the user message never connected. This block
+          # distinguishes "proxy can't tunnel WSS" from "WS handshake dropped
+          # at the ChatGPT edge on bot signal".
+          docker compose exec -T worker sh -lc '
+              set -u
+              echo "--- DNS resolution: ws.chatgpt.com ---"
+              getent hosts ws.chatgpt.com || nslookup ws.chatgpt.com 2>&1 | head -10 || echo "(no resolver)"
+              echo ""
+              echo "--- TCP CONNECT via Clash HTTP proxy to ws.chatgpt.com:443 (curl -p) ---"
+              # -x is the proxy; using CONNECT method to set up the tunnel.
+              # If the proxy refuses CONNECT or the upstream rejects it, we
+              # see that here.
+              curl -sS -o /dev/null --max-time 12 \
+                   -x http://host.docker.internal:6789 \
+                   -w "http_code=%{http_code} time=%{time_total}s connect_time=%{time_connect}s\n" \
+                   "https://ws.chatgpt.com/" || echo "curl_exit=$?"
+              echo ""
+              echo "--- WSS handshake attempt to ws.chatgpt.com:443 (via Clash) ---"
+              # curl --include + --http1.1 --header Upgrade: triggers the WS
+              # upgrade handshake. A 101 means the proxy passed the WSS frames
+              # through and the upstream accepted. 403/4xx means upstream is
+              # dropping the handshake. 000/timeout means the proxy itself
+              # blocks WSS upgrade.
+              curl -sS -o /tmp/_ws_resp.txt --max-time 12 \
+                   -x http://host.docker.internal:6789 \
+                   --http1.1 \
+                   -H "Connection: Upgrade" \
+                   -H "Upgrade: websocket" \
+                   -H "Sec-WebSocket-Version: 13" \
+                   -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" \
+                   -H "Origin: https://chatgpt.com" \
+                   -w "http_code=%{http_code} time=%{time_total}s\n" \
+                   "https://ws.chatgpt.com/" || echo "curl_exit=$?"
+              echo "-- first 30 lines of WS handshake response --"
+              head -30 /tmp/_ws_resp.txt 2>/dev/null || true
+              echo ""
+              echo "--- Compare: plain HTTPS GET via Clash to chatgpt.com (control) ---"
+              curl -sS -o /dev/null --max-time 12 \
+                   -x http://host.docker.internal:6789 \
+                   -w "http_code=%{http_code} time=%{time_total}s\n" \
+                   "https://chatgpt.com/" || echo "curl_exit=$?"
+              echo ""
+              echo "--- Check whether websockets module is available in worker python ---"
+              python3 -c "import websockets, sys; print(\"websockets\", websockets.__version__)" 2>&1 || true
+              python3 -c "import websocket, sys; print(\"websocket-client\", websocket.__version__)" 2>&1 || true
+          ' </dev/null 2>&1 || true
+          echo ""
+
           echo "=== End of evidence dump ==="
           REMOTE
           )
