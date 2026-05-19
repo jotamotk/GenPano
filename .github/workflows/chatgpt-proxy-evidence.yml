@@ -522,6 +522,58 @@ jobs:
             tail -40 || true
           echo ""
 
+          echo "=== Latest failure JSON runtime snapshot + extracted page strings per query ID ==="
+          for qid in $(echo "$IDS" | tr ',' ' '); do
+              echo ""
+              echo "================ query_${qid} ================"
+              # 1) JSON runtime snapshot: structured DOM state at failure point.
+              docker compose exec -T worker sh -lc 'set -u
+                  qid='"${qid}"'
+                  latest_json=$(ls -t /data/screenshots/query_${qid}_chatgpt_no_response_*.json \
+                                       /data/screenshots/query_${qid}_chatgpt_session_reopen_error_*.json \
+                                       /data/screenshots/query_${qid}_chatgpt_load_error_*.json \
+                                  2>/dev/null | head -1)
+                  if [ -n "$latest_json" ]; then
+                      echo "--- $latest_json ---"
+                      cat "$latest_json"
+                  else
+                      echo "(no runtime snapshot json for q=$qid)"
+                  fi
+              ' </dev/null 2>&1 || true
+              echo ""
+              # 2) Targeted grep into the latest HTML — extract page identity (title,
+              # description, cf-ray, base URL) and any user-visible blocking strings.
+              docker compose exec -T worker sh -lc 'set -u
+                  qid='"${qid}"'
+                  latest_html=$(ls -t /data/screenshots/query_${qid}_chatgpt_submit_failed_*.html \
+                                       /data/screenshots/query_${qid}_chatgpt_after_inject_*.html \
+                                       /data/screenshots/query_${qid}_chatgpt_response_page_*.html \
+                                  2>/dev/null | head -1)
+                  if [ -z "$latest_html" ]; then
+                      echo "(no html for q=$qid)"
+                      exit 0
+                  fi
+                  echo "--- $latest_html ---"
+                  echo "TITLE:"
+                  grep -oE "<title[^>]*>[^<]*</title>" "$latest_html" 2>/dev/null | head -1 || true
+                  echo "META_DESCRIPTION:"
+                  grep -oE "<meta[^>]*name=.description.[^>]*>" "$latest_html" 2>/dev/null | head -1 || true
+                  echo "BASE_URL (canonical):"
+                  grep -oE "<link[^>]*rel=.canonical.[^>]*>" "$latest_html" 2>/dev/null | head -1 || true
+                  echo "OG_URL:"
+                  grep -oE "<meta[^>]*property=.og:url.[^>]*>" "$latest_html" 2>/dev/null | head -1 || true
+                  echo "CF_RAY presence:"
+                  grep -ciE "cf-ray|__cf_chl_|cf-mitigated" "$latest_html" 2>/dev/null | head -1 || echo 0
+                  echo "Visible blocking strings (any case):"
+                  grep -oiE "(unusual activity|please.{0,15}sign.{0,5}in|log.{0,5}in to continue|rate.{0,5}limit(ed)?|too many requests|verify you are human|access denied|forbidden|blocked|temporarily unavailable|please try again later|country.{0,15}not.{0,15}supported|unsupported.{0,15}country|account.{0,15}suspended|need to enable cookies|something went wrong|conversation not found|service.{0,15}unavailable|maintenance)" "$latest_html" 2>/dev/null | sort -u | head -30 || echo "(none)"
+                  echo "data-message-author-role values (proves whether user-msg bubble in DOM):"
+                  grep -oE "data-message-author-role=\"[a-z]+\"" "$latest_html" 2>/dev/null | sort | uniq -c | head -10 || echo "(none)"
+                  echo "Send-button aria-label values:"
+                  grep -oE "aria-label=\"[^\"]*(end|Send|Stop|Send prompt)[^\"]*\"" "$latest_html" 2>/dev/null | sort -u | head -10 || echo "(none)"
+              ' </dev/null 2>&1 || true
+          done
+          echo ""
+
           echo "=== End of evidence dump ==="
           REMOTE
           )
