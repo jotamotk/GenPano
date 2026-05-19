@@ -38,7 +38,7 @@ vi.mock('recharts', async () => {
 })
 
 describe('BrandPanoramaPanel live KPI rendering', () => {
-  it('keeps the hero score group next to the brand identity instead of pushed to the far edge', () => {
+  it('renders a compact two-line hero with the brand and PANO score on the first line', () => {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     })
@@ -79,8 +79,18 @@ describe('BrandPanoramaPanel live KPI rendering', () => {
       </QueryClientProvider>,
     )
 
-    const heroIdentity = screen.getByRole('heading', { name: 'bestCoffer' }).parentElement
-    expect(heroIdentity).not.toHaveClass('flex-1')
+    const heading = screen.getByRole('heading', { name: 'bestCoffer' })
+    const primaryLine = heading.closest('[data-testid="brand-hero-primary-line"]')
+    expect(primaryLine).toBeInTheDocument()
+    expect(primaryLine).toHaveTextContent('bestCoffer')
+    expect(primaryLine).toHaveTextContent('PANO')
+    expect(primaryLine).toHaveTextContent('9')
+    expect(primaryLine).toHaveTextContent('Needs attention')
+
+    const metaLine = screen.getByTestId('brand-hero-meta-line')
+    expect(metaLine).toHaveTextContent('Industry:')
+    expect(metaLine).toHaveTextContent('Industry avg')
+    expect(screen.queryByText('My brand')).not.toBeInTheDocument()
   })
 
   it('renders the overview SoV KPI even when pie rows are unavailable', () => {
