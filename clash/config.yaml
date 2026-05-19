@@ -20,6 +20,15 @@ dns:
     - 8.8.4.4
     - tls://1.0.0.1:853
     - tls://dns.google:853
+  # GFW DNS 污染防御：对 ChatGPT/OpenAI 域名强制走海外 DoH，
+  # 绕开 Aliyun/Tencent 给 ws.chatgpt.com 返回的 Facebook IPv6
+  # (2a03:2880::face:b00c) 投毒答案。
+  # PR #1279 ws.chatgpt.com WSS 修复
+  nameserver-policy:
+    "+.chatgpt.com": https://1.1.1.1/dns-query
+    "+.openai.com": https://1.1.1.1/dns-query
+    "+.oaistatic.com": https://1.1.1.1/dns-query
+    "+.oaiusercontent.com": https://1.1.1.1/dns-query
   # 代理节点域名专用解析（cnameip.xyz 等）
   # cnameip.xyz 通过 CNAME 跳转到 home7788.xyz (Cloudflare)，中国 DNS 无法解析
   # 必须用海外 DOH（HTTPS 加密，不会被 DNS 污染）
