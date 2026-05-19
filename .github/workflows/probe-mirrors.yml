@@ -1,0 +1,46 @@
+name: Probe Docker Mirrors
+on:
+  push:
+    branches: [setup-runner]
+    paths: ['.github/workflows/probe-mirrors.yml']
+  workflow_dispatch:
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          command_timeout: 10m
+          script: |
+            set -uo pipefail
+            echo "=== Existing /etc/docker/daemon.json ==="
+            sudo cat /etc/docker/daemon.json 2>&1 || echo "(no daemon.json)"
+
+            echo
+            echo "=== docker info: registry mirrors ==="
+            sudo docker info 2>&1 | grep -A2 -i "registry mirrors\|insecure registries" || true
+
+            echo
+            echo "=== Test pull (with 90s timeout each, time them) ==="
+            for ref in \
+              docker.io/library/python:3.12-slim \
+              registry.cn-hangzhou.aliyuncs.com/library/python:3.12-slim \
+              mcr.microsoft.com/playwright:v1.49.0-jammy \
+              ghcr.io/astral-sh/uv:python3.12-bookworm-slim ; do
+                echo "--- pulling: $ref ---"
+                START=$(date +%s)
+                if sudo timeout 90 docker pull "$ref" 2>&1 | tail -3 ; then
+                  END=$(date +%s)
+                  echo "RESULT: ok in $((END-START))s"
+                else
+                  END=$(date +%s)
+                  echo "RESULT: FAILED in $((END-START))s"
+                fi
+                echo
+            done
+
+            echo "=== docker images after probes ==="
+            sudo docker images --format "table {{.Repository}}:{{.Tag}}\t{{.Size}}" 2>&1 | head -20
