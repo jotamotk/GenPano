@@ -605,6 +605,14 @@ function rowHasValue(row: TrendRowAdapted, key: string): boolean {
   return typeof row[key] === 'number' && Number.isFinite(row[key] as number)
 }
 
+function trendSeriesBrandLabel(series: CompetitorTrendsOut['series'][number] | undefined): string | null {
+  const brandName = typeof series?.brand_name === 'string' ? series.brand_name.trim() : ''
+  if (brandName) return brandName
+  const brandKey = typeof series?.brand_key === 'string' ? series.brand_key.trim() : ''
+  if (brandKey) return brandKey
+  return series?.brand_id != null ? `Brand #${series.brand_id}` : null
+}
+
 export function adaptCompetitorTrendsToVisibilityPanoTrend(
   trends: CompetitorTrendsOut | null | undefined,
   primaryLabel: string,
@@ -617,6 +625,10 @@ export function adaptCompetitorTrendsToVisibilityPanoTrend(
   }))
   if (!rows.length) return { rows: [], lines: [] }
 
+  const primarySeries = Array.isArray(trends.series)
+    ? trends.series.find((series) => series.is_primary)
+    : undefined
+  const resolvedPrimaryLabel = trendSeriesBrandLabel(primarySeries) || primaryLabel || 'PANO Score'
   const hasPrimary = rows.some((row) => rowHasValue(row, 'panoScore'))
   const competitorKeys = Array.from(new Set(
     rows.flatMap((row) =>
@@ -630,7 +642,7 @@ export function adaptCompetitorTrendsToVisibilityPanoTrend(
     ...(hasPrimary
       ? [{
           key: 'panoScore',
-          label: primaryLabel || 'PANO Score',
+          label: resolvedPrimaryLabel,
           color: 'var(--color-accent)',
           area: true,
         }]

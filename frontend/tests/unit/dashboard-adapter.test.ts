@@ -878,6 +878,42 @@ describe('dashboard adapter', () => {
     expect(trend.lines.map((line) => line.key)).toEqual(['panoScore', 'Lancome'])
   })
 
+  it('labels live visibility PANO primary from /competitors/trends instead of stale page fallback', () => {
+    const trends = {
+      project_id: '7380c0e0-8798-4a5f-998f-42010a7d9caa',
+      metric: 'geo_score',
+      period: { from: '2026-05-17', to: '2026-05-17' },
+      state: 'ok',
+      metric_definition: {
+        metric_key: 'geo_score',
+        unit: 'score',
+        value_scale: 'score_0_100',
+        formula_status: 'ok',
+      },
+      series: [
+        {
+          brand_id: 24,
+          brand_key: 'bestcoffer',
+          brand_name: 'bestCoffer',
+          is_primary: true,
+          points: [{ date: '2026-05-17', value: 80 }],
+        },
+        {
+          brand_id: 25,
+          brand_key: 'ibm_security',
+          brand_name: 'IBM Security',
+          is_primary: false,
+          points: [{ date: '2026-05-17', value: 68 }],
+        },
+      ],
+    } as CompetitorTrendsOut
+
+    const trend = adaptCompetitorTrendsToVisibilityPanoTrend(trends, '雅诗兰黛')
+
+    expect(trend.lines.find((line) => line.key === 'panoScore')?.label).toBe('bestCoffer')
+    expect(trend.lines.map((line) => line.label).join('|')).not.toMatch(/雅诗兰黛|Estee|Estée/i)
+  })
+
   it('does not append frontend Others slices to backend competitor SoV rows', () => {
     const metrics = {
       project_id: '95d43022-a5c8-5944-b6d6-34b29faa18b5',
