@@ -32,7 +32,7 @@ export default function HeroBlock({
   return (
     <Card className="p-5">
       <div className="flex flex-col md:flex-row items-start md:items-center gap-5">
-        <div className="flex-1 min-w-0">
+        <div className="min-w-0">
           <h2
             className="text-2xl font-brand font-bold text-themed-primary truncate cursor-pointer"
             onClick={onScoreClick}
