@@ -110,44 +110,32 @@ jobs:
           done
           echo ""
 
-          echo "=== submit_failed HTML body snippets for the reported IDs (worker container) ==="
+          echo "=== submit_failed HTML body markers for the reported IDs (worker container) ==="
           for qid in $(echo "$IDS" | tr ',' ' '); do
               echo "--- query_${qid} ---"
-              docker compose exec -T worker sh -lc "
-                f=\$(ls -t /data/screenshots/query_${qid}_chatgpt_*.html 2>/dev/null | head -1)
-                if [ -n \"\$f\" ]; then
-                    echo \"file: \$f\"
-                    echo \"size: \$(stat -c %s \"\$f\" 2>/dev/null) bytes\"
-                    echo \"--- <title> + first 2KB of <body> ---\"
-                    python3 -c \"
-import re, html
-with open('\$f', 'r', encoding='utf-8', errors='replace') as fh:
-    raw = fh.read()
-m = re.search(r'<title[^>]*>(.*?)</title>', raw, re.I|re.S)
-print('TITLE:', (m.group(1).strip() if m else '(no title)')[:200])
-# Strip scripts / styles / SVG that bloat the dump
-clean = re.sub(r'<script\b.*?</script>', '', raw, flags=re.I|re.S)
-clean = re.sub(r'<style\b.*?</style>', '', clean, flags=re.I|re.S)
-clean = re.sub(r'<svg\b.*?</svg>', '', clean, flags=re.I|re.S)
-m = re.search(r'<body\b[^>]*>(.*?)</body>', clean, re.I|re.S)
-body = (m.group(1) if m else clean)[:2200]
-# Drop attribute-heavy junk
-body = re.sub(r' (class|style|data-[a-z-]+|aria-[a-z-]+|tabindex|role|id)=\\\"[^\\\"]*\\\"', '', body)
-body = re.sub(r'\s+', ' ', body)
-print('BODY HEAD:', body)
-print()
-# Check key markers the worker would look for
-needle = html.unescape(body)
-print('HAS [data-message-author-role=\\\"user\\\"]:', 'data-message-author-role' in raw)
-print('HAS challenge marker (cloudflare/checking your browser):',
-      any(s in raw.lower() for s in ['challenge-platform','checking your browser','captcha','cf-challenge','cf_chl','rate-limit','rate limit']))
-print('HAS \\\"Just a moment\\\" (Cloudflare interstitial):', 'Just a moment' in raw)
-print('HAS chatgpt login redirect (/auth/login):', '/auth/login' in raw)
-\"
-                else
-                    echo \"  (no submit_failed html for q=${qid})\"
+              docker compose exec -T worker sh -lc 'set -u
+                latest=$(ls -t /data/screenshots/query_'"${qid}"'_chatgpt_*.html 2>/dev/null | head -1)
+                if [ -z "$latest" ]; then
+                    echo "  (no html for q='"${qid}"')"
+                    exit 0
                 fi
-              " </dev/null 2>&1 || true
+                echo "file: $latest"
+                echo "size: $(stat -c %s "$latest" 2>/dev/null) bytes"
+                echo "-- <title> --"
+                grep -oE "<title[^>]*>[^<]*</title>" "$latest" 2>/dev/null | head -1 || true
+                echo "-- marker presence --"
+                printf "has_user_msg_role:        "; grep -ciE "data-message-author-role" "$latest" 2>/dev/null || echo 0
+                printf "has_challenge_platform:   "; grep -ciE "challenge-platform" "$latest" 2>/dev/null || echo 0
+                printf "has_checking_your_browser:"; grep -ciE "checking your browser" "$latest" 2>/dev/null || echo 0
+                printf "has_just_a_moment:        "; grep -ciE "just a moment" "$latest" 2>/dev/null || echo 0
+                printf "has_captcha:              "; grep -ciE "captcha|cf-challenge|cf_chl" "$latest" 2>/dev/null || echo 0
+                printf "has_rate_limit:           "; grep -ciE "rate.limit|too many requests|429" "$latest" 2>/dev/null || echo 0
+                printf "has_auth_login_redirect:  "; grep -ciE "/auth/login|auth0|please.{1,15}sign.{1,5}in|please.{1,15}log.{1,5}in" "$latest" 2>/dev/null || echo 0
+                printf "has_prompt_textarea:      "; grep -ciE "prompt-textarea|contenteditable" "$latest" 2>/dev/null || echo 0
+                printf "has_send_button:          "; grep -ciE "Send prompt|aria-label=\"Send" "$latest" 2>/dev/null || echo 0
+                printf "has_unsupported_country:  "; grep -ciE "unsupported_country|not available in your country" "$latest" 2>/dev/null || echo 0
+                printf "has_account_disabled:     "; grep -ciE "account.{1,10}suspended|account.{1,10}disabled|access.{1,10}denied" "$latest" 2>/dev/null || echo 0
+              ' </dev/null 2>&1 || true
           done
           echo ""
 
