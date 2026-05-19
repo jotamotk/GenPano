@@ -538,6 +538,73 @@ jobs:
           cat /tmp/chatgpt-proxy-evidence.txt
           echo "==================== END EVIDENCE DUMP ===================="
 
+          # Pull the latest captured browser-failure artifacts (HTML + PNG +
+          # JSON runtime snapshot) for the reported query IDs off the
+          # worker container so they can be uploaded as workflow artifacts
+          # and inspected. Grep markers gave us "rate-limit / challenge /
+          # auth-redirect" signals but those could be JS source noise;
+          # only the rendered page / screenshot can prove what ChatGPT
+          # actually showed when submit silently failed.
+          mkdir -p /tmp/page-snapshots
+          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=accept-new \
+              -o SendEnv="QUERY_IDS" \
+              "$SERVER_USER@$SERVER_HOST" 'bash -s' <<'REMOTE2' > /tmp/page-snapshots/manifest.txt
+          set -uo pipefail
+          cd /opt/genpano
+          IDS="${QUERY_IDS:-185664,185661,185658}"
+          for qid in $(echo "$IDS" | tr ',' ' '); do
+              # The two most informative file kinds, latest first:
+              #   *_chatgpt_no_response_*.json   (DOM runtime snapshot at failure)
+              #   *_chatgpt_no_response_*.png    (screenshot at failure)
+              #   *_chatgpt_submit_failed_*.html (full HTML at failure)
+              #   *_chatgpt_after_inject_*.html  (HTML right after JS-inject)
+              #   *_chatgpt_response_page_*.html (HTML on response page)
+              #   *_chatgpt_load_error_*.png|json (page-load failure)
+              for pattern in 'no_response_.*\.json' 'no_response_.*\.png' \
+                             'submit_failed_.*\.html' 'after_inject_.*\.html' \
+                             'response_page_.*\.html' \
+                             'load_error_.*\.json' 'load_error_.*\.png' \
+                             'session_exception_.*\.png' \
+                             'session_reopen_error_.*\.json'; do
+                  fname=$(docker compose exec -T worker sh -lc "
+                      ls -t /data/screenshots/ 2>/dev/null \
+                      | grep -E 'query_${qid}_chatgpt_${pattern}$' \
+                      | head -1
+                  " </dev/null 2>/dev/null | tr -d '\r')
+                  [ -z "$fname" ] && continue
+                  out_base="query_${qid}_${fname##query_${qid}_chatgpt_}"
+                  # Copy through docker cp -> host -> stdout, then back through ssh.
+                  # We base64 to be binary-safe since PNG/JSON may have NULs.
+                  echo "FETCH: ${qid}: ${fname} -> ${out_base}"
+                  docker compose exec -T worker cat "/data/screenshots/${fname}" </dev/null 2>/dev/null \
+                    | base64 -w0 > "/tmp/_xfer_${qid}_${out_base}.b64"
+                  size=$(stat -c %s "/tmp/_xfer_${qid}_${out_base}.b64" 2>/dev/null || echo 0)
+                  echo "  size_b64=${size}"
+              done
+          done
+          # Now tar the b64 files for transfer.
+          tar -cf /tmp/page-snapshots.tar -C /tmp _xfer_*.b64 2>/dev/null || true
+          rm -f /tmp/_xfer_*.b64
+          ls -la /tmp/page-snapshots.tar 2>&1 || true
+          REMOTE2
+
+          # Pull the tar back to the runner.
+          scp -i ~/.ssh/id_rsa -o StrictHostKeyChecking=accept-new \
+              "$SERVER_USER@$SERVER_HOST:/tmp/page-snapshots.tar" \
+              /tmp/page-snapshots.tar 2>&1 || echo "(no tar to fetch)"
+          # Decode each base64 file back to its real extension.
+          mkdir -p /tmp/page-snapshots/decoded
+          if [ -f /tmp/page-snapshots.tar ]; then
+              tar -xf /tmp/page-snapshots.tar -C /tmp/page-snapshots/ 2>&1 || true
+              for b64 in /tmp/page-snapshots/_xfer_*.b64; do
+                  [ -f "$b64" ] || continue
+                  real_name=$(basename "$b64" .b64 | sed 's/^_xfer_//')
+                  base64 -d "$b64" > "/tmp/page-snapshots/decoded/${real_name}" 2>/dev/null || true
+              done
+              rm -f /tmp/page-snapshots/_xfer_*.b64
+              ls -la /tmp/page-snapshots/decoded/ || true
+          fi
+
           {
             echo "## ChatGPT proxy_api_unreachable evidence (read-only)"
             echo ""
@@ -552,6 +619,15 @@ jobs:
         with:
           name: chatgpt-proxy-evidence
           path: /tmp/chatgpt-proxy-evidence.txt
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload captured page snapshots (HTML/PNG/JSON) as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chatgpt-page-snapshots
+          path: /tmp/page-snapshots/decoded/
           if-no-files-found: warn
           retention-days: 7
 
