@@ -661,6 +661,22 @@ _beat_schedule = {
         "task":     "geo_tracker.tasks.celery_tasks.cookie_keep_alive",
         "schedule": crontab(hour="*/6", minute=30),
     },
+    # Every 5 minutes, sweep queries stuck in status='running' past
+    # QUERY_STALE_RUNNING_SECONDS (default 3600s) with no saved
+    # llm_responses row, transitioning them to status='failed' +
+    # retry_reason='stale_running_timeout'. The repair helper has been in
+    # the codebase since the bestcoffer batch work but was only reachable
+    # via dispatch_batch, which is not itself on this beat schedule —
+    # captured 2026-05-19 with 9 ChatGPT 'running' rows accumulated (8
+    # without a response row), the oldest stuck for 3 days. Safe to keep
+    # always-on: the LLMResponse-exists guardrail in
+    # repair_stale_running_queries prevents overwriting successful
+    # queries, and the helper neither spends external credits nor
+    # touches accounts/cookies.
+    "repair-stale-running": {
+        "task":     "geo_tracker.tasks.celery_tasks.repair_stale_running_periodic",
+        "schedule": crontab(minute="*/5"),
+    },
     # Refs #963 audit pain point #1 (proactive pool pre-warming).
     #
     # The ``prewarm_account_pool`` task is INTENTIONALLY NOT auto-scheduled
@@ -1495,6 +1511,43 @@ def dispatch_batch(limit: int = 50) -> dict:
 
     try:
         return loop.run_until_complete(_run())
+    finally:
+        safe_dispose_engine(loop, task_engine, logger)
+        loop.close()
+
+
+@app.task(queue="celery")
+def repair_stale_running_periodic() -> dict:
+    # Standalone beat target for the stale-running sweep. The repair helper
+    # was previously only reachable via dispatch_batch (above), which is
+    # itself not on _beat_schedule — so in production the sweep never ran
+    # and 'running' rows accumulated forever when a worker hit Celery's
+    # task_time_limit=600s hard kill before its cleanup branch could mark
+    # the row failed. The LLMResponse-exists guardrail inside
+    # repair_stale_running_queries still protects successful queries.
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    task_engine = create_task_engine()
+
+    async def _run():
+        async with get_task_async_session(task_engine) as db:
+            return await repair_stale_running_queries(
+                db,
+                max_age_seconds=_env_int(
+                    "QUERY_STALE_RUNNING_SECONDS",
+                    DEFAULT_STALE_RUNNING_SECONDS,
+                ),
+            )
+
+    try:
+        report = loop.run_until_complete(_run())
+        if report.repaired:
+            logger.warning(
+                "repair_stale_running_periodic repaired %s queries: %s",
+                report.repaired,
+                report.to_dict(),
+            )
+        return report.to_dict()
     finally:
         safe_dispose_engine(loop, task_engine, logger)
         loop.close()
