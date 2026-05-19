@@ -7,21 +7,29 @@
 # request, ensuring the AGENTS.md hard rules are in context for every
 # session even after resume/clear/compact.
 #
+# Anti-context-poisoning design:
+#   * The "Hard rules" block is NOT hand-written here. It is extracted at
+#     runtime from AGENTS.md's `<!-- DIGEST-BEGIN -->...<!-- DIGEST-END -->`
+#     section via awk. Editing the digest in this script is forbidden — see
+#     rules/MAINTENANCE.md §4.1. The single source of truth is AGENTS.md.
+#   * If extraction fails (block missing / malformed), we fail loudly with a
+#     visible marker so the gap is obvious instead of silently injecting
+#     stale text from a previous version.
+#
 # This is Layer 3 of the enforcement model documented in
-# AGENTS.md `## Enforcement` — best-effort, agent-specific. If this layer
-# fails for any reason, Layer 1 (`.github/workflows/pr-body-lint.yml`) still
-# blocks non-conforming PRs at merge time.
+# rules/security/enforcement.md and rules/MAINTENANCE.md §5
+# (Cross-agent Consistency Contract) — best-effort, agent-specific. If this
+# layer fails, Layer 1 (`.github/workflows/pr-body-lint.yml`) still blocks
+# non-conforming PRs at merge time.
 #
 # Design constraints:
-# - Synchronous (no `{"async": true}` wrapper). Output is plain stdout, not
-#   JSON.
-# - Must not fail session start if any inner command fails. We tolerate
-#   errors with `|| echo unknown` / `|| true` patterns and intentionally
-#   omit `set -e`.
+# - Synchronous (no `{"async": true}` wrapper). Output is plain stdout, not JSON.
+# - Must not fail session start if any inner command fails. Tolerate errors
+#   with `|| echo unknown` / `|| true` patterns; intentionally omit `set -e`.
 # - Must work both inside the repo and from a clean clone where `.git` may
 #   be absent or the working directory may differ.
-# - Output is intentionally narrow (~40-50 lines) — the goal is high-signal
-#   rule reminders, not re-pasting all ~400 lines of AGENTS.md.
+# - Output is intentionally narrow (~40-60 lines) — the goal is high-signal
+#   rule reminders, not re-pasting all of rules/.
 
 set -uo pipefail  # NB: no -e; we tolerate inner command failures
 
@@ -32,61 +40,45 @@ BRANCH="$(cd "$PROJECT" 2>/dev/null && git branch --show-current 2>/dev/null || 
 CHANGED_COUNT="$(cd "$PROJECT" 2>/dev/null && git status --short 2>/dev/null | wc -l | tr -d ' ' || echo 0)"
 RECENT_COMMIT="$(cd "$PROJECT" 2>/dev/null && git log -1 --oneline 2>/dev/null || echo none)"
 
+# Machine-extract the Hard Rule Digest block from AGENTS.md.
+# The block is delimited by `<!-- DIGEST-BEGIN -->` and `<!-- DIGEST-END -->`.
+# awk prints inclusive of the markers; `sed '1d;$d'` strips the marker lines.
+DIGEST_BLOCK=""
+if [ -f "$PROJECT/AGENTS.md" ]; then
+  DIGEST_BLOCK="$(awk '/<!-- DIGEST-BEGIN -->/,/<!-- DIGEST-END -->/' "$PROJECT/AGENTS.md" 2>/dev/null \
+    | sed '1d;$d' 2>/dev/null || echo '')"
+fi
+
+if [ -z "$DIGEST_BLOCK" ]; then
+  DIGEST_BLOCK="!! DIGEST MISSING from AGENTS.md — agents should open a rules-change issue immediately. See rules/MAINTENANCE.md §4.1."
+fi
+
 cat <<EOF
-=== Repository agent rules (digest from AGENTS.md) ===
+=== Repository agent rules (auto-extracted from AGENTS.md DIGEST block) ===
 
 This repo has hard rules that have been violated in the past. ALL agents
 (Claude main session, subagents dispatched via the Agent tool, Codex,
 Cursor, Aider, Devin, human contributors) MUST follow these.
 
-Full ruleset: ${PROJECT}/AGENTS.md
-Key sections: "Evidence-First Debugging", "Business Goal And Root Cause
-Gates", "Evidence-First Shipping", "Orchestrator And Subagent
-Discipline", "## Enforcement"
+Index:        ${PROJECT}/AGENTS.md
+Detail rules: ${PROJECT}/rules/ — load on demand by concern:
+  - rules/global/        (orchestrator / fast-full path / topology / peer review)
+  - rules/testing/       (evidence-first / acceptance / tiered E2E)
+  - rules/security/      (enforcement / CI gates)
+  - rules/frontend/      (admin surface / workflow / terms)
+  - rules/backend/       (admin boundary)
+  - rules/documentation/ (issue / PR / PRD)
 
 == Hard rules ==
+${DIGEST_BLOCK}
 
-1. EVIDENCE BEFORE CODE. For any bug-fix task: capture the broken surface's
-   actual output (API JSON, DB row, log line, screenshot) FIRST. \`file:line\`
-   references describe what code *might* do, not what *happened*. They are
-   NOT evidence.
-
-2. DB ACCESS IS AVAILABLE VIA CI/CD. Existing workflows (e.g.,
-   \`app-analytics-readonly-evidence.yml\`) can run one-off SQL against
-   production. Do not say "I cannot access the DB" — set up a
-   workflow_dispatch or use an existing readonly workflow. There is no
-   infrastructure excuse for inferring DB state from code.
-
-3. DO NOT SHIP ON HYPOTHESIS. If the 4-step Evidence-First checklist
-   (AGENTS.md "Evidence-First Debugging") cannot be completed, STOP and
-   report \`BLOCKED: need <X>\`. Never close an issue on a hypothesis.
-
-4. TEST PASSING != BUG FIXED. A test that seeds its own sample matching the
-   fix's hypothesis only proves the fix handles its own assumption — not
-   that the assumption matches production. Tie at least one test fixture to
-   a real captured value.
-
-5. SECOND FAILED ITERATION -> FULL REVERT + RESTART. If the same issue has
-   been "fixed" twice and the user still reports the symptom, REVERT all
-   prior fixes before attempting a third attempt. Do not patch forward.
-
-6. ORCHESTRATOR DISCIPLINE. When dispatching a subagent via the Agent tool,
-   follow AGENTS.md \`### Orchestrator And Subagent Discipline\` (canonical).
-   Headline rules:
-   - First dispatch for a bug-fix task is INVESTIGATE ONLY (no Edit/Write).
-   - Subagent prompts MUST contain the literal string "AGENTS.md" plus the
-     relevant section name (e.g. "Read AGENTS.md Evidence-First Debugging").
-   - Do NOT pre-bake hypotheses ("fix at file:line" is an anti-pattern).
-   - Prefer invoking a skill from \`.claude/skills/\` (e.g.
-     \`/dispatch-subagent\`, \`/evidence-first-debug\`) so the rule travels
-     with the call instead of relying on this digest.
-
-== CI enforcement (merged as #1067) ==
+== CI enforcement ==
 
 GitHub CI rejects any PR whose body omits Root Cause Gate / Business Goal /
 Verification Evidence Ledger. \`.github/workflows/pr-body-lint.yml\` is the
 gate. No agent (including this one) can bypass at merge time. See
-AGENTS.md \`## Enforcement\` for the three-layer model.
+rules/security/enforcement.md and rules/MAINTENANCE.md §5 (Cross-agent
+Consistency Contract).
 
 == Session-specific context ==
 

@@ -1,0 +1,41 @@
+name: Rules Lint
+
+# Meta-lint for the rules/ directory. Enforces:
+#   1. Frontmatter keys present on every rule file
+#   2. Single-file 200-line cap
+#   3. War story isolation (no #<PR-number> in rule body)
+# See rules/MAINTENANCE.md §4.
+
+on:
+  pull_request:
+    paths:
+      - "rules/**"
+      - "scripts/lint_rules.py"
+      - ".github/workflows/rules-lint.yml"
+  push:
+    branches: [main]
+    paths:
+      - "rules/**"
+      - "scripts/lint_rules.py"
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  lint-rules:
+    name: Lint rules/
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run rules lint
+        run: |
+          python3 scripts/lint_rules.py rules/
