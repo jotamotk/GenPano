@@ -1,7 +1,7 @@
 import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
 
-import { expect, test, type Page } from '@playwright/test'
+import { expect, test, type Locator, type Page } from '@playwright/test'
 
 type ContractPayload = Record<string, any>
 
@@ -29,6 +29,17 @@ type RenderedOverviewSummary = {
   kpiCardTexts: string[]
   chartTexts: string[]
   genericEmptyTexts: string[]
+}
+
+type VisibilityPanoTrendSummary = {
+  route: string
+  url: string
+  cardText: string
+  legendTexts: string[]
+  tooltipText?: string
+  hoverAttempted: boolean
+  hoverMatchedTargetDate: boolean
+  screenshotPath?: string
 }
 
 type TopicReadabilityExpectation = {
@@ -78,6 +89,12 @@ const DEFAULT_COMPETITOR_ID = 2
 const DEFAULT_FROM_DATE = '2026-04-24'
 const DEFAULT_TO_DATE = '2026-05-07'
 const DEFAULT_OWNER_USER_ID = 'fe25eff1-8462-43eb-a027-bc8eb2c3db81'
+const ISSUE_1167_PROJECT_ID = '7380c0e0-8798-4a5f-998f-42010a7d9caa'
+const ISSUE_1167_BRAND_ID = 24
+const ISSUE_1167_FROM_DATE = '2026-05-01'
+const ISSUE_1167_TO_DATE = '2026-05-19'
+const ISSUE_1167_TARGET_DATE = '2026-05-17'
+const ISSUE_1167_FORBIDDEN_BRAND_LABELS = ['\u96c5\u8bd7\u5170\u9edb', 'Estee', 'Est\u00e9e']
 const SCREENSHOT_DIR = 'test-results/live-app-analytics-business-completeness'
 const TOPICS_REASON_WALL_TEXTS = [
   'Analysis coverage missing',
@@ -442,6 +459,149 @@ function readableBrandLabel(labels: string[]) {
 
 function compactIncludes(text: string, needle: string) {
   return compactText(text).toLowerCase().includes(compactText(needle).toLowerCase())
+}
+
+function joinedCompactText(parts: unknown[]) {
+  return compactText(parts.filter(Boolean).join(' '))
+}
+
+function visibilityPanoTrendDateList(trends: ContractPayload | null | undefined) {
+  const series = Array.isArray(trends?.series) ? trends.series : []
+  const primary = series.find((item: ContractPayload) => item?.is_primary)
+  const candidate =
+    primary ||
+    [...series].sort(
+      (a: ContractPayload, b: ContractPayload) =>
+        (Array.isArray(b?.points) ? b.points.length : 0) - (Array.isArray(a?.points) ? a.points.length : 0),
+    )[0]
+  return Array.isArray(candidate?.points)
+    ? candidate.points.map((point: ContractPayload) => compactText(point?.date)).filter(Boolean)
+    : []
+}
+
+function assertVisibilityPanoTrendRendering(
+  rendered: VisibilityPanoTrendSummary,
+  options: { brandLabels: string[]; forbiddenLabels: string[]; targetDate?: string },
+) {
+  const context = joinedCompactText([rendered.cardText, rendered.tooltipText, ...rendered.legendTexts])
+  assertCondition(compactIncludes(rendered.cardText, 'PANO'), `${rendered.route} did not expose the PANO trend card; card=${rendered.cardText}`)
+
+  const legendSource = joinedCompactText(rendered.legendTexts.length > 0 ? rendered.legendTexts : [rendered.cardText])
+  assertCondition(
+    options.brandLabels.some(label => compactIncludes(legendSource, label)),
+    `${rendered.route} PANO trend legend does not contain BestCoffer/bestCoffer labels ${JSON.stringify(options.brandLabels)}; legend=${JSON.stringify(rendered.legendTexts)} card=${rendered.cardText}`,
+  )
+
+  for (const forbidden of options.forbiddenLabels) {
+    assertCondition(
+      !compactIncludes(context, forbidden),
+      `${rendered.route} PANO trend chart context contains cross-brand label ${forbidden}; context=${context}`,
+    )
+  }
+
+  if (rendered.tooltipText) {
+    assertCondition(
+      options.brandLabels.some(label => compactIncludes(rendered.tooltipText || '', label)),
+      `${rendered.route} PANO trend tooltip does not contain BestCoffer/bestCoffer labels ${JSON.stringify(options.brandLabels)}; tooltip=${rendered.tooltipText}`,
+    )
+    if (options.targetDate && rendered.hoverMatchedTargetDate) {
+      assertCondition(
+        compactIncludes(rendered.tooltipText, options.targetDate),
+        `${rendered.route} PANO trend tooltip did not stay on target date ${options.targetDate}; tooltip=${rendered.tooltipText}`,
+      )
+    }
+  } else if (rendered.hoverAttempted) {
+    console.log(`ISSUE_1167_PANO_TOOLTIP_NOT_CAPTURED ${rendered.route}`)
+  }
+}
+
+async function visibleTooltipTexts(page: Page) {
+  return page.locator('.recharts-tooltip-wrapper').evaluateAll(elements => {
+    const clean = (value: unknown) => String(value ?? '').replace(/\s+/g, ' ').trim()
+    return elements
+      .map(element => {
+        const htmlElement = element as HTMLElement
+        const style = window.getComputedStyle(htmlElement)
+        if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return ''
+        return clean(htmlElement.innerText || htmlElement.textContent)
+      })
+      .filter(Boolean)
+  })
+}
+
+async function hoverVisibilityPanoTrendTargetDate(
+  page: Page,
+  card: Locator,
+  targetDate: string | undefined,
+  dateList: string[],
+) {
+  if (!targetDate || !dateList.includes(targetDate)) {
+    return { tooltipText: undefined, hoverAttempted: false, hoverMatchedTargetDate: false }
+  }
+
+  const chart = card.locator('.recharts-wrapper').first()
+  const box = await chart.boundingBox()
+  if (!box || dateList.length === 0) {
+    return { tooltipText: undefined, hoverAttempted: true, hoverMatchedTargetDate: false }
+  }
+
+  const targetIndex = dateList.indexOf(targetDate)
+  const ratio = dateList.length <= 1 ? 0.5 : targetIndex / (dateList.length - 1)
+  const xRatios = Array.from(new Set([ratio, (targetIndex + 0.5) / dateList.length]))
+    .map(value => Math.max(0.04, Math.min(0.96, value)))
+  const yRatios = [0.35, 0.5, 0.65]
+  let lastTooltipText: string | undefined
+
+  for (const xRatio of xRatios) {
+    for (const yRatio of yRatios) {
+      await page.mouse.move(box.x + box.width * xRatio, box.y + box.height * yRatio)
+      await page.waitForTimeout(150)
+      const tooltips = await visibleTooltipTexts(page)
+      const matchingTooltip = tooltips.find(text => compactIncludes(text, targetDate))
+      if (matchingTooltip) {
+        return { tooltipText: matchingTooltip, hoverAttempted: true, hoverMatchedTargetDate: true }
+      }
+      lastTooltipText = tooltips.find(Boolean) || lastTooltipText
+    }
+  }
+
+  return { tooltipText: lastTooltipText, hoverAttempted: true, hoverMatchedTargetDate: false }
+}
+
+async function captureVisibilityPanoTrend(
+  page: Page,
+  route: string,
+  options: { targetDate?: string; dateList?: string[]; screenshotPath?: string } = {},
+): Promise<VisibilityPanoTrendSummary> {
+  const card = page.locator('.t-card').filter({ hasText: /PANO/i }).last()
+  await expect(card).toBeVisible({ timeout: 20_000 })
+  await card.scrollIntoViewIfNeeded()
+  await page.waitForTimeout(300)
+
+  const cardText = compactText(await card.innerText({ timeout: 10_000 }))
+  const chartCount = await card.locator('.recharts-wrapper').count()
+  assertCondition(chartCount > 0, `${route} PANO trend card rendered no Recharts chart; card=${cardText}`)
+
+  const legendTexts = await card.locator('.recharts-legend-item-text').evaluateAll(elements => {
+    const clean = (value: unknown) => String(value ?? '').replace(/\s+/g, ' ').trim()
+    return Array.from(new Set(elements.map(element => clean((element as HTMLElement).innerText || element.textContent)).filter(Boolean)))
+  })
+
+  const hover = await hoverVisibilityPanoTrendTargetDate(page, card, options.targetDate, options.dateList || [])
+  if (options.screenshotPath) {
+    await card.screenshot({ path: options.screenshotPath })
+  }
+
+  return {
+    route,
+    url: page.url(),
+    cardText,
+    legendTexts,
+    tooltipText: hover.tooltipText,
+    hoverAttempted: hover.hoverAttempted,
+    hoverMatchedTargetDate: hover.hoverMatchedTargetDate,
+    screenshotPath: options.screenshotPath,
+  }
 }
 
 function fixedPercentText(value: unknown, fields: ContractPayload = {}) {
@@ -1260,6 +1420,48 @@ test.describe('App analytics business completeness assertion', () => {
     ).toBe(false)
   })
 
+  test('flags Visibility PANO trend when brandId=24 renders Estee labels', () => {
+    expect(() =>
+      assertVisibilityPanoTrendRendering(
+        {
+          route: '/brand/visibility?brandId=24&range=30d&profileGroup=all',
+          url: 'http://example.test/brand/visibility?brandId=24&range=30d&profileGroup=all',
+          cardText: 'PANO 综合趋势 雅诗兰黛 2026-05-17',
+          legendTexts: ['雅诗兰黛'],
+          tooltipText: '2026-05-17 雅诗兰黛 72',
+          hoverAttempted: true,
+          hoverMatchedTargetDate: true,
+        },
+        {
+          brandLabels: ['BestCoffer', 'bestCoffer'],
+          forbiddenLabels: ['雅诗兰黛', 'Estee', 'Estée'],
+          targetDate: '2026-05-17',
+        },
+      ),
+    ).toThrow(/BestCoffer|cross-brand label/)
+  })
+
+  test('accepts Visibility PANO trend when legend and tooltip stay on BestCoffer', () => {
+    expect(() =>
+      assertVisibilityPanoTrendRendering(
+        {
+          route: '/brand/visibility?brandId=24&range=30d&profileGroup=all',
+          url: 'http://example.test/brand/visibility?brandId=24&range=30d&profileGroup=all',
+          cardText: 'PANO 综合趋势 BestCoffer 2026-05-17',
+          legendTexts: ['BestCoffer'],
+          tooltipText: '2026-05-17 BestCoffer 72',
+          hoverAttempted: true,
+          hoverMatchedTargetDate: true,
+        },
+        {
+          brandLabels: ['BestCoffer', 'bestCoffer'],
+          forbiddenLabels: ['雅诗兰黛', 'Estee', 'Estée'],
+          targetDate: '2026-05-17',
+        },
+      ),
+    ).not.toThrow()
+  })
+
   test('flags Topics primary table reason-wall rendering when API has concrete topic values', () => {
     const topicMonitoring = {
       topics: [
@@ -1466,6 +1668,149 @@ test.describe('App analytics business completeness assertion', () => {
         { brandId: 24, brandLabels: ['bestCoffer'] },
       ),
     ).not.toThrow()
+  })
+})
+
+test.describe('Live #1167 BestCoffer PANO trend gate', () => {
+  test.skip(
+    process.env.APP_ANALYTICS_PANO_LIVE_E2E !== '1' && process.env.APP_ANALYTICS_LIVE_E2E !== '1',
+    'Set APP_ANALYTICS_PANO_LIVE_E2E=1 to run the isolated #1167 production PANO trend check.',
+  )
+
+  test('#1167 captures /brand/visibility PANO trend card without running Topics checks', async ({ page }) => {
+    test.setTimeout(90_000)
+    const baseUrl = process.env.PLAYWRIGHT_BASE_URL || process.env.BASE_URL || 'http://116.62.36.173'
+    const projectId = process.env.PROJECT_ID || ISSUE_1167_PROJECT_ID
+    const brandId = Number(process.env.BRAND_ID || ISSUE_1167_BRAND_ID)
+    const fromDate = process.env.FROM_DATE || ISSUE_1167_FROM_DATE
+    const toDate = process.env.TO_DATE || ISSUE_1167_TO_DATE
+    const targetDate = process.env.TARGET_DATE || ISSUE_1167_TARGET_DATE
+    const userId = process.env.OWNER_USER_ID || DEFAULT_OWNER_USER_ID
+    const secret = process.env.USER_JWT_SECRET || process.env.JWT_SECRET || ''
+    const brandLabels = expectedBrandLabels(brandId, process.env.BRAND_NAME || process.env.BRAND_QUERY || 'BestCoffer')
+    const primaryBrandName = brandLabels[0] || `Brand ${brandId}`
+
+    assertCondition(Buffer.byteLength(secret, 'utf8') >= 32, 'USER_JWT_SECRET/JWT_SECRET is missing or too short')
+    assertCondition(brandId === ISSUE_1167_BRAND_ID, `#1167 PANO trend check must run against brandId=24, got ${brandId}`)
+    assertCondition(brandLabels.length > 0, '#1167 PANO trend check has no configured brand labels to assert')
+    const token = signJwt(userId, secret)
+    console.log('::add-mask::' + token)
+
+    const dateParams = `from=${encodeURIComponent(fromDate)}&to=${encodeURIComponent(toDate)}`
+    const brandDateParams = `${dateParams}&brand_id=${brandId}`
+    const me = await api(baseUrl, token, 'auth_me', '/api/auth/me')
+    assertCondition(me.id === userId, `auth/me returned unexpected user ${me.id}`)
+
+    const projects = await api(baseUrl, token, 'projects', '/api/v1/projects/')
+    const projectItems = Array.isArray(projects?.items) ? projects.items : []
+    assertCondition(
+      projectItems.some((project: ContractPayload) => project.id === projectId && Number(project.primary_brand_id) === brandId),
+      '#1167 approved BestCoffer analytics project is not visible to owner user',
+    )
+
+    const competitorTrends = await api(
+      baseUrl,
+      token,
+      'competitors_trends_geo',
+      `/api/v1/projects/${projectId}/competitors/trends?metric=geo_score&${brandDateParams}`,
+    )
+    const trendDates = visibilityPanoTrendDateList(competitorTrends)
+    assertCondition(
+      trendDates.includes(targetDate),
+      `#1167 competitors/trends did not expose target date ${targetDate}; dates=${JSON.stringify(trendDates)}`,
+    )
+
+    await fs.mkdir(SCREENSHOT_DIR, { recursive: true })
+    const failedResponses: string[] = []
+    const runtimeErrors: string[] = []
+    page.on('response', response => {
+      const url = response.url()
+      const status = response.status()
+      if (url.includes('/api/') && (status === 401 || status >= 500)) {
+        failedResponses.push(`${status} ${url}`)
+      }
+    })
+    page.on('pageerror', error => runtimeErrors.push(`pageerror: ${error.message}`))
+    page.on('console', message => {
+      if (message.type() === 'error') runtimeErrors.push(`console: ${message.text()}`)
+    })
+
+    await seedLiveAuth(page, token, projectId, brandId, primaryBrandName, DEFAULT_COMPETITOR_ID)
+    const route = `/brand/visibility?brandId=${brandId}&range=30d&profileGroup=all`
+    await page.goto(`${baseUrl}${route}`, { waitUntil: 'domcontentloaded', timeout: 60_000 })
+    await page.waitForLoadState('networkidle', { timeout: 25_000 }).catch(() => {})
+    const path = new URL(page.url()).pathname
+    assertCondition(!['/register', '/login', '/onboarding'].includes(path), `${route} redirected to ${page.url()}`)
+    const pageText = await page.locator('body').innerText({ timeout: 15_000 })
+    assertCondition(
+      renderedPageHasExpectedBrandContext(pageText, brandLabels),
+      `${route} did not render expected BestCoffer brand context from ${JSON.stringify(brandLabels)}`,
+    )
+
+    const cardScreenshotPath = `${SCREENSHOT_DIR}/issue_1167_visibility_pano_trend_brand_${brandId}.png`
+    const renderedPanoTrend = await captureVisibilityPanoTrend(page, route, {
+      targetDate,
+      dateList: trendDates,
+      screenshotPath: cardScreenshotPath,
+    })
+    assertVisibilityPanoTrendRendering(renderedPanoTrend, {
+      brandLabels,
+      forbiddenLabels: ISSUE_1167_FORBIDDEN_BRAND_LABELS,
+      targetDate,
+    })
+
+    const deployedSha = await page
+      .locator('meta[name="genpano-deploy-sha"]')
+      .evaluate(element => element.getAttribute('content'))
+      .catch(() => null)
+    await fs.writeFile(
+      `${SCREENSHOT_DIR}/issue-1167-visibility-pano-trend-summary.json`,
+      JSON.stringify(
+        {
+          projectId,
+          brandId,
+          window: { from: fromDate, to: toDate },
+          targetDate,
+          route,
+          url: renderedPanoTrend.url,
+          deployedSha,
+          screenshotPath: cardScreenshotPath,
+          legendTexts: renderedPanoTrend.legendTexts,
+          tooltipText: renderedPanoTrend.tooltipText,
+          hoverAttempted: renderedPanoTrend.hoverAttempted,
+          hoverMatchedTargetDate: renderedPanoTrend.hoverMatchedTargetDate,
+          forbiddenLabels: ISSUE_1167_FORBIDDEN_BRAND_LABELS,
+        },
+        null,
+        2,
+      ),
+    )
+
+    const fatalRuntimeErrors = runtimeErrors.filter(
+      item =>
+        !item.includes('favicon') &&
+        !item.includes('ResizeObserver loop') &&
+        !item.includes('A request was aborted') &&
+        !item.includes('Failed to load resource'),
+    )
+    if (failedResponses.length) {
+      throw new Error(`#1167 live PANO trend check had failing API responses:\n${failedResponses.join('\n')}`)
+    }
+    if (fatalRuntimeErrors.length) {
+      throw new Error(`#1167 live PANO trend check had runtime errors:\n${fatalRuntimeErrors.join('\n')}`)
+    }
+
+    console.log('ISSUE_1167_PANO_TREND_E2E_SUMMARY ' + JSON.stringify({
+      projectId,
+      brandId,
+      targetDate,
+      route,
+      screenshotPath: cardScreenshotPath,
+      legendTexts: renderedPanoTrend.legendTexts,
+      tooltipText: renderedPanoTrend.tooltipText,
+      hoverMatchedTargetDate: renderedPanoTrend.hoverMatchedTargetDate,
+      deployedSha,
+    }))
   })
 })
 
