@@ -537,6 +537,138 @@ async function visibleTooltipTexts(page: Page) {
   })
 }
 
+type HoverPoint = {
+  x: number
+  y: number
+  source: string
+}
+
+function pushUniqueHoverPoint(points: HoverPoint[], point: HoverPoint) {
+  if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) return
+  const key = `${Math.round(point.x)}:${Math.round(point.y)}`
+  if (points.some(existing => `${Math.round(existing.x)}:${Math.round(existing.y)}` === key)) return
+  points.push(point)
+}
+
+async function rechartsTargetHoverPoints(chart: Locator, targetDate: string, dateList: string[]) {
+  return chart.evaluate(
+    (wrapperElement, args): HoverPoint[] => {
+      const wrapper = wrapperElement as HTMLElement
+      const wrapperBox = wrapper.getBoundingClientRect()
+      const clean = (value: unknown) => String(value ?? '').replace(/\s+/g, ' ').trim()
+      const finite = (value: unknown) => {
+        const number = Number(value)
+        return Number.isFinite(number) ? number : null
+      }
+      const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value))
+      const points: HoverPoint[] = []
+      const xCoords: number[] = []
+      const gridYs: number[] = []
+      const gridXs: number[] = []
+      const pathSamples: HoverPoint[] = []
+      const addPoint = (x: number, y: number, source: string) => {
+        const next = {
+          x: clamp(x, wrapperBox.left + 2, wrapperBox.right - 2),
+          y: clamp(y, wrapperBox.top + 2, wrapperBox.bottom - 2),
+          source,
+        }
+        const key = `${Math.round(next.x)}:${Math.round(next.y)}`
+        if (!points.some(point => `${Math.round(point.x)}:${Math.round(point.y)}` === key)) points.push(next)
+      }
+      const addX = (x: number | null) => {
+        if (x === null) return
+        if (!xCoords.some(value => Math.abs(value - x) < 1)) xCoords.push(x)
+      }
+      const addGridCoord = (target: number[], value: number | null) => {
+        if (value === null) return
+        if (!target.some(item => Math.abs(item - value) < 1)) target.push(value)
+      }
+      const svgPoint = (element: SVGGraphicsElement, x: number, y: number) => {
+        const owner = element.ownerSVGElement
+        const matrix = element.getScreenCTM()
+        if (!owner || !matrix) return null
+        const point = owner.createSVGPoint()
+        point.x = x
+        point.y = y
+        const transformed = point.matrixTransform(matrix)
+        return { x: transformed.x, y: transformed.y }
+      }
+      const elementCenter = (element: Element) => {
+        const box = element.getBoundingClientRect()
+        return box.width || box.height ? { x: box.left + box.width / 2, y: box.top + box.height / 2 } : null
+      }
+      const svg = wrapper.querySelector('svg')
+      const tickTexts = Array.from(
+        wrapper.querySelectorAll<SVGTextElement>('.recharts-xAxis .recharts-cartesian-axis-tick text, .recharts-cartesian-axis-tick text'),
+      ).filter(text => clean(text.textContent).includes(args.targetDate))
+
+      for (const text of tickTexts) {
+        const firstTspan = text.querySelector<SVGTSpanElement>('tspan')
+        const localX = finite(firstTspan?.getAttribute('x') || text.getAttribute('x'))
+        const localY = finite(firstTspan?.getAttribute('y') || text.getAttribute('y'))
+        const transformed = localX !== null && localY !== null ? svgPoint(text, localX, localY) : null
+        addX(transformed?.x ?? elementCenter(text)?.x ?? null)
+      }
+
+      if (svg) {
+        for (const line of Array.from(svg.querySelectorAll<SVGLineElement>('.recharts-cartesian-grid line'))) {
+          const p1 = svgPoint(line, finite(line.getAttribute('x1')) ?? 0, finite(line.getAttribute('y1')) ?? 0)
+          const p2 = svgPoint(line, finite(line.getAttribute('x2')) ?? 0, finite(line.getAttribute('y2')) ?? 0)
+          if (!p1 || !p2) continue
+          if (Math.abs(p1.y - p2.y) < 1) addGridCoord(gridYs, (p1.y + p2.y) / 2)
+          if (Math.abs(p1.x - p2.x) < 1) addGridCoord(gridXs, (p1.x + p2.x) / 2)
+          addGridCoord(gridXs, p1.x)
+          addGridCoord(gridXs, p2.x)
+        }
+
+        for (const path of Array.from(svg.querySelectorAll<SVGPathElement>('path.recharts-line-curve, path.recharts-area-curve, path.recharts-curve'))) {
+          const length = typeof path.getTotalLength === 'function' ? path.getTotalLength() : 0
+          if (Number.isFinite(length) && length > 0) {
+            const steps = 48
+            for (let index = 0; index <= steps; index += 1) {
+              const local = path.getPointAtLength((length * index) / steps)
+              const transformed = svgPoint(path, local.x, local.y)
+              if (transformed) pathSamples.push({ ...transformed, source: 'line-path' })
+            }
+          } else {
+            const center = elementCenter(path)
+            if (center) pathSamples.push({ ...center, source: 'line-path-bounds' })
+          }
+        }
+
+        for (const dot of Array.from(svg.querySelectorAll<SVGGraphicsElement>('.recharts-dot, .recharts-line-dot, .recharts-scatter-symbol'))) {
+          const center = elementCenter(dot)
+          if (center) pathSamples.push({ ...center, source: 'data-dot' })
+        }
+      }
+
+      const plotLeft = gridXs.length ? Math.min(...gridXs) : wrapperBox.left + wrapperBox.width * 0.08
+      const plotRight = gridXs.length ? Math.max(...gridXs) : wrapperBox.right - wrapperBox.width * 0.04
+      const plotTop = gridYs.length ? Math.min(...gridYs) : wrapperBox.top + wrapperBox.height * 0.12
+      const plotBottom = gridYs.length ? Math.max(...gridYs) : wrapperBox.bottom - wrapperBox.height * 0.22
+
+      if (xCoords.length === 0) {
+        const targetIndex = args.dateList.indexOf(args.targetDate)
+        const ratio = args.dateList.length <= 1 ? 0.5 : targetIndex / Math.max(1, args.dateList.length - 1)
+        const fallbackRatios = args.dateList.length <= 1 ? [1, 0.5, 0] : [ratio]
+        for (const value of fallbackRatios) addX(plotLeft + (plotRight - plotLeft) * clamp(value, 0, 1))
+      }
+
+      for (const x of xCoords) {
+        const nearestSamples = [...pathSamples]
+          .sort((a, b) => Math.abs(a.x - x) - Math.abs(b.x - x))
+          .slice(0, 2)
+        for (const sample of nearestSamples) addPoint(x, sample.y, `target-tick-${sample.source}`)
+        addPoint(x, plotBottom, 'target-tick-plot-bottom')
+        addPoint(x, plotTop + (plotBottom - plotTop) * 0.5, 'target-tick-plot-middle')
+      }
+
+      return points
+    },
+    { targetDate, dateList },
+  )
+}
+
 async function hoverVisibilityPanoTrendTargetDate(
   page: Page,
   card: Locator,
@@ -563,18 +695,30 @@ async function hoverVisibilityPanoTrendTargetDate(
     ),
   )
   const yRatios = [0.2, 0.35, 0.5, 0.65, 0.8, 0.92]
-  let lastTooltipText: string | undefined
-
+  const hoverPoints = await rechartsTargetHoverPoints(chart, targetDate, dateList).catch((): HoverPoint[] => [])
   for (const xRatio of xRatios) {
     for (const yRatio of yRatios) {
-      await page.mouse.move(box.x + box.width * xRatio, box.y + box.height * yRatio)
-      await page.waitForTimeout(100)
-      const tooltips = await visibleTooltipTexts(page)
-      const matchingTooltip = tooltips.find(text => compactIncludes(text, targetDate))
-      if (matchingTooltip) {
-        return { tooltipText: matchingTooltip, hoverAttempted: true, hoverMatchedTargetDate: true }
+      pushUniqueHoverPoint(hoverPoints, {
+        x: box.x + box.width * xRatio,
+        y: box.y + box.height * yRatio,
+        source: 'wrapper-ratio-fallback',
+      })
+    }
+  }
+  let lastTooltipText: string | undefined
+
+  for (const point of hoverPoints) {
+    for (const xOffset of [0, -6, 6]) {
+      for (const yOffset of [0, -6, 6]) {
+        await page.mouse.move(point.x + xOffset, point.y + yOffset)
+        await page.waitForTimeout(100)
+        const tooltips = await visibleTooltipTexts(page)
+        const matchingTooltip = tooltips.find(text => compactIncludes(text, targetDate))
+        if (matchingTooltip) {
+          return { tooltipText: matchingTooltip, hoverAttempted: true, hoverMatchedTargetDate: true }
+        }
+        lastTooltipText = tooltips.find(Boolean) || lastTooltipText
       }
-      lastTooltipText = tooltips.find(Boolean) || lastTooltipText
     }
   }
 
@@ -1526,6 +1670,56 @@ test.describe('App analytics business completeness assertion', () => {
         },
       ),
     ).toThrow(/PANO trend tooltip did not stay on target date 2026-05-17/)
+  })
+
+  test('captures single-date PANO tooltip from the target x-axis tick and bottom baseline', async ({ page }) => {
+    await page.setContent(`
+      <div class="t-card" style="width: 1000px; height: 260px; padding: 0;">
+        <div class="recharts-wrapper" style="position: relative; width: 960px; height: 220px;">
+          <svg class="recharts-surface" width="960" height="220">
+            <g class="recharts-cartesian-grid">
+              <line x1="24" y1="20" x2="940" y2="20"></line>
+              <line x1="24" y1="60" x2="940" y2="60"></line>
+              <line x1="24" y1="100" x2="940" y2="100"></line>
+              <line x1="24" y1="140" x2="940" y2="140"></line>
+            </g>
+            <g class="recharts-line">
+              <path class="recharts-curve recharts-line-curve" d="M24 140 L940 140"></path>
+            </g>
+            <g class="recharts-xAxis">
+              <g class="recharts-cartesian-axis-tick">
+                <text x="940" y="178">2026-05-17</text>
+              </g>
+            </g>
+          </svg>
+        </div>
+        <div class="recharts-tooltip-wrapper" style="position: absolute; visibility: hidden; opacity: 0;"></div>
+      </div>
+      <script>
+        const wrapper = document.querySelector('.recharts-wrapper')
+        const tooltip = document.querySelector('.recharts-tooltip-wrapper')
+        wrapper.addEventListener('mousemove', event => {
+          const box = wrapper.getBoundingClientRect()
+          const nearTarget = Math.abs(event.clientX - (box.left + 940)) <= 16 && Math.abs(event.clientY - (box.top + 140)) <= 16
+          tooltip.textContent = nearTarget ? '2026-05-17 BestCoffer 0' : ''
+          tooltip.style.visibility = nearTarget ? 'visible' : 'hidden'
+          tooltip.style.opacity = nearTarget ? '1' : '0'
+        })
+      </script>
+    `)
+
+    const hover = await hoverVisibilityPanoTrendTargetDate(
+      page,
+      page.locator('.t-card'),
+      '2026-05-17',
+      ['2026-05-17'],
+    )
+
+    expect(hover).toEqual({
+      tooltipText: '2026-05-17 BestCoffer 0',
+      hoverAttempted: true,
+      hoverMatchedTargetDate: true,
+    })
   })
 
   test('flags Topics primary table reason-wall rendering when API has concrete topic values', () => {
