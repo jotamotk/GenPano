@@ -40,7 +40,7 @@ import { buildSparklines } from './lib/sparklines';
      scrollAnchorId   — competition 区块锚点 id, 避免两个挂载点同 id 冲突
 
    区块构成 (与 DashboardPage 一致):
-     ⓪ Hero              品牌名 + PANO Score 大号 + 行业均值对比条
+     ⓪ Hero              品牌名 + PANO Score 紧凑行 + 行业上下文
      ① 5 KPI 核心指标卡   提及率 / SoV / 情感 / 引用份额 / 行业排名
      ② 竞争视图           SoV 饼图 + 竞品四象限气泡图
      ③ 趋势视图           PANO 30d (我 vs Top 3 竞品) + 5 KPI sparkline
