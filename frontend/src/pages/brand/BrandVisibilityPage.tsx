@@ -37,7 +37,6 @@ import type { EngineMetricsOut } from '../../api/charts';
 import {
   buildMetricTrustState,
   contractEvidenceReasons,
-  metricReasonLabel,
   metricEvidenceFor,
   type MetricTrustState,
 } from '../../api/analyticsContract';
@@ -98,66 +97,6 @@ function engineMetricTrust(
     });
   }
   return null;
-}
-
-const INTERNAL_VISIBILITY_STATE_COPY = new Set([
-  'partial by-engine visibility evidence',
-  'partial_analyzer_data',
-  'visibility metrics incomplete',
-]);
-
-function isInternalVisibilityCopy(value: string | null | undefined): boolean {
-  const normalized = String(value || '').trim().toLowerCase();
-  if (!normalized) return true;
-  if (INTERNAL_VISIBILITY_STATE_COPY.has(normalized)) return true;
-  return normalized.includes('_') && /^[a-z0-9_]+$/.test(normalized);
-}
-
-function sourceMetricTrustSummary(
-  source: EngineMetricsOut | undefined,
-  metricKey: EngineMetricKey,
-): string | null {
-  if (!source) return null;
-  const evidence = metricEvidenceFor(source, metricKey);
-  const reasons = contractEvidenceReasons(source, metricKey);
-  if (!evidence && reasons.length === 0) return null;
-  const trust = buildMetricTrustState({
-    ...(evidence ?? {}),
-    metricKey,
-    formula_status: evidence?.formula_status || evidence?.status || source.formula_status || source.state,
-    reason_codes: uniqueReasons(evidence?.reason_codes, reasons),
-    value: null,
-  });
-  return trust.canShowValue ? null : trust.summary;
-}
-
-function sourceReasonLabels(
-  source: EngineMetricsOut | undefined,
-  metricKeys: EngineMetricKey[],
-): string[] {
-  return contractEvidenceReasons(source, metricKeys)
-    .map(metricReasonLabel)
-    .filter((reason) => reason && !isInternalVisibilityCopy(reason));
-}
-
-function byEngineStateTitle(error: unknown, state: string): string {
-  if (error || state === 'error') return 'By-engine visibility error';
-  if (state === 'empty') return 'No by-engine visibility evidence';
-  return 'By-engine visibility needs more evidence';
-}
-
-function byEngineEvidenceContext(source: EngineMetricsOut | undefined, error: unknown): string {
-  if (error) return String(error);
-  const sovSummary = sourceMetricTrustSummary(source, 'sov');
-  if (sovSummary) return sovSummary;
-  const mentionSummary = sourceMetricTrustSummary(source, 'mention_rate');
-  if (mentionSummary) return mentionSummary;
-  if (source?.state_detail && !isInternalVisibilityCopy(source.state_detail)) {
-    return source.state_detail;
-  }
-  const reasonLabels = sourceReasonLabels(source, ['mention_rate', 'sov']);
-  if (reasonLabels.length > 0) return reasonLabels.slice(0, 3).join(' / ');
-  return 'Mention Rate or SoV is unavailable for at least one engine. Citation share remains secondary context.';
 }
 
 function primaryMetricShell(value: number | null, trust: MetricTrustState | null): string {
@@ -226,34 +165,19 @@ function EnginePrimaryMetric({
 
 function EngineVisibilityBreakdown({
   rows,
-  source,
   isLive,
   isLoading,
-  error,
   isMock,
   title,
   subtitle,
 }: {
   rows: EngineBreakdownBar[];
-  source: EngineMetricsOut | undefined;
   isLive: boolean;
   isLoading?: boolean;
-  error?: unknown;
   isMock: boolean;
   title: string;
   subtitle: string;
 }) {
-  const state = String(source?.state || '').toLowerCase();
-  const missingPrimaryMetric = rows.some((row) => row.mentionRate == null || row.sov == null);
-  const shouldShowState =
-    Boolean(error) ||
-    state === 'partial' ||
-    state === 'empty' ||
-    state === 'error' ||
-    missingPrimaryMetric;
-  const stateTitle = byEngineStateTitle(error, state);
-  const evidenceContext = byEngineEvidenceContext(source, error);
-
   return (
     <div data-testid="engine-visibility-breakdown">
       <Card className="p-3">
@@ -264,13 +188,6 @@ function EngineVisibilityBreakdown({
             {isMock && <MockDataBadge />}
           </h3>
         </div>
-
-        {shouldShowState && (
-          <div className="mb-2 rounded-btn border border-amber-300/70 bg-amber-50/70 px-2.5 py-2 text-xs leading-snug text-themed-primary">
-            <div className="font-semibold">{stateTitle}</div>
-            <div className="mt-0.5 text-themed-muted">{evidenceContext}</div>
-          </div>
-        )}
 
         {isLive && isLoading ? (
           <div className="h-[200px] rounded-btn bg-themed-subtle flex items-center justify-center text-xs text-themed-muted">
@@ -558,10 +475,8 @@ export default function BrandVisibilityPage() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
         <EngineVisibilityBreakdown
           rows={engineBreakdownData}
-          source={engineQ.data}
           isLive={isLive}
           isLoading={engineQ.isLoading}
-          error={engineQ.error}
           isMock={engineIsMock}
           title={t('brand_visibility.by_engine_title')}
           subtitle={t('brand_visibility.by_engine_subtitle')}

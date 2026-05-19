@@ -212,58 +212,7 @@ describe('BrandVisibilityPage KPI cards (issue #988)', () => {
     expect(screen.queryByText('47.8%')).not.toBeInTheDocument()
   })
 
-  it('renders partial-state banner above the by-engine bar chart and does not leak internal strings', () => {
-    mockState.engineData = {
-      project_id: '11111111-2222-3333-4444-555555555555',
-      period: { from: '2026-05-08', to: '2026-05-15' },
-      state: 'partial',
-      formula_status: 'partial',
-      state_reason: 'visibility_metrics_partial',
-      state_detail: 'Mention Rate and SoV are waiting for analyzer evidence.',
-      metric_formula_evidence: {
-        mention_rate: {
-          formula_status: 'missing_required_inputs',
-          reason_codes: ['missing_analyzer_rows'],
-          missing_inputs: ['brand_mentions'],
-        },
-        sov: {
-          formula_status: 'missing_required_inputs',
-          reason_codes: ['missing_competitive_extraction', 'target_only_sov'],
-        },
-        citation: {
-          formula_status: 'ok',
-          numerator: 31,
-          denominator: 50,
-        },
-      },
-      items: [
-        {
-          engine: 'ChatGPT',
-          mention_rate: null,
-          sov: null,
-          citation_rate: 0.62,
-          sentiment: null,
-        },
-      ],
-    }
-
-    renderVisibilityPage()
-
-    const block = screen.getByTestId('engine-visibility-breakdown')
-    expect(
-      within(block).getByText('By-engine visibility needs more evidence'),
-    ).toBeInTheDocument()
-    expect(
-      within(block).getByText('SoV has target evidence but no competitive denominator yet.'),
-    ).toBeInTheDocument()
-    // The bar chart itself replaces per-engine cards, so internal/intermediate strings
-    // must not leak even though the underlying state is partial.
-    expect(within(block).queryByText('Partial by-engine visibility evidence')).not.toBeInTheDocument()
-    expect(within(block).queryByText('partial_analyzer_data')).not.toBeInTheDocument()
-    expect(within(block).queryByText('Visibility metrics incomplete')).not.toBeInTheDocument()
-  })
-
-  it('renders an explicit empty by-engine visibility state', () => {
+  it('falls back to the empty-data placeholder when by-engine items are empty', () => {
     mockState.engineData = {
       project_id: '11111111-2222-3333-4444-555555555555',
       period: { from: '2026-05-08', to: '2026-05-15' },
@@ -276,98 +225,15 @@ describe('BrandVisibilityPage KPI cards (issue #988)', () => {
     renderVisibilityPage()
 
     const block = screen.getByTestId('engine-visibility-breakdown')
-    expect(within(block).getByText('No by-engine visibility evidence')).toBeInTheDocument()
-    expect(
-      within(block).getByText('No engine-level Mention Rate or SoV rows are available yet.'),
-    ).toBeInTheDocument()
     expect(within(block).getByText('Engine visibility data unavailable')).toBeInTheDocument()
   })
 
-  it('renders an explicit by-engine visibility error state from the hook', () => {
+  it('falls back to the empty-data placeholder when the by-engine hook errors', () => {
     mockState.engineError = new Error('metrics by-engine request failed')
 
     renderVisibilityPage()
 
     const block = screen.getByTestId('engine-visibility-breakdown')
-    expect(within(block).getByText('By-engine visibility error')).toBeInTheDocument()
-    expect(within(block).getByText('Error: metrics by-engine request failed')).toBeInTheDocument()
     expect(within(block).getByText('Engine visibility data unavailable')).toBeInTheDocument()
-  })
-
-  it('renders healthy by-engine state without the partial/empty/error banner', () => {
-    mockState.engineData = {
-      project_id: '11111111-2222-3333-4444-555555555555',
-      period: { from: '2026-05-08', to: '2026-05-15' },
-      state: 'ok',
-      formula_status: 'ok',
-      metric_formula_evidence: {
-        mention_rate: { formula_status: 'ok', numerator: 37, denominator: 100 },
-        sov: { formula_status: 'ok', numerator: 24, denominator: 100 },
-        citation: { formula_status: 'ok', numerator: 11, denominator: 100 },
-      },
-      items: [
-        {
-          engine: 'ChatGPT',
-          mention_rate: 0.37,
-          sov: 0.24,
-          citation_rate: 0.11,
-          sentiment: null,
-        },
-      ],
-    }
-
-    renderVisibilityPage()
-
-    const block = screen.getByTestId('engine-visibility-breakdown')
-    // Healthy state must NOT show any of the partial/empty/error banner copy.
-    expect(within(block).queryByText('By-engine visibility needs more evidence')).not.toBeInTheDocument()
-    expect(within(block).queryByText('Partial by-engine visibility evidence')).not.toBeInTheDocument()
-    expect(within(block).queryByText('No by-engine visibility evidence')).not.toBeInTheDocument()
-    expect(within(block).queryByText('By-engine visibility error')).not.toBeInTheDocument()
-    expect(within(block).queryByText('Engine visibility data unavailable')).not.toBeInTheDocument()
-  })
-
-  it('shows the target-only SoV banner above the chart and never leaks internal/intermediate strings', () => {
-    mockState.engineData = {
-      project_id: '11111111-2222-3333-4444-555555555555',
-      period: { from: '2026-05-08', to: '2026-05-15' },
-      state: 'partial',
-      formula_status: 'partial',
-      state_reason: 'partial_analyzer_data',
-      state_detail: 'Visibility metrics incomplete',
-      missing_inputs: ['target_only_sov'],
-      source_provenance: ['admin_facts', 'brand_mentions', 'citation_sources'],
-      evidence_counts: { admin_fact_response_count: 2 },
-      metric_formula_evidence: {
-        coverage: { formula_status: 'ok' },
-        sov: {
-          formula_status: 'missing_required_inputs',
-          numerator_count: 2,
-          denominator_count: 2,
-        },
-        citation: { formula_status: 'ok' },
-      },
-      items: [
-        {
-          engine: 'chatgpt',
-          mention_rate: 1.0,
-          sov: null,
-          citation_rate: 1.0,
-          sentiment: 0.7,
-        },
-      ],
-    }
-
-    renderVisibilityPage()
-
-    const block = screen.getByTestId('engine-visibility-breakdown')
-    expect(within(block).getByText('By-engine visibility needs more evidence')).toBeInTheDocument()
-    expect(
-      within(block).getByText('SoV has target evidence but no competitive denominator yet.'),
-    ).toBeInTheDocument()
-    // Internal/intermediate strings must not leak even though state is partial.
-    expect(within(block).queryByText('Partial by-engine visibility evidence')).not.toBeInTheDocument()
-    expect(within(block).queryByText('partial_analyzer_data')).not.toBeInTheDocument()
-    expect(within(block).queryByText('Visibility metrics incomplete')).not.toBeInTheDocument()
   })
 })
