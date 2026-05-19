@@ -286,6 +286,109 @@ GROUP BY coverage_bucket, brand_id, brand_name
 ORDER BY coverage_bucket, rows DESC, responses DESC, brand_name
 LIMIT 80;
 
+\\echo '--- heatmap auto-fill candidate alignment (PR #1275 follow-up) ---'
+-- Diagnose why /topic-heatmap auto-fill returns N < 7 competitor rows for
+-- this project. `discover_related_brand_ids` (used by get_topic_heatmap)
+-- hard-filters `brand_mentions.brand_id IS NOT NULL` and, when industry is
+-- known, restricts to brands in the same `brands.industry` as the primary.
+-- This probe shows how many distinct brand_ids the auto-fill path could
+-- legitimately reach after each filter layer.
+WITH primary_industry AS (
+  SELECT industry FROM brands WHERE id = {config.brand_id}
+),
+scoped_mentions AS (
+  SELECT
+    bm.brand_id,
+    bm.brand_name,
+    bm.response_id,
+    COALESCE(bm.mention_count, 1) AS mention_count
+  FROM brand_mentions bm
+  JOIN llm_responses r ON r.id = bm.response_id
+  JOIN queries q ON q.id = r.query_id
+  WHERE {response_date_expr}
+    BETWEEN '{date_from}'::date AND '{date_to}'::date
+)
+SELECT
+  CASE
+    WHEN sm.brand_id IS NULL THEN 'name_only_unresolved'
+    WHEN sm.brand_id = {config.brand_id} THEN 'target'
+    WHEN b.industry IS NULL THEN 'unconfigured_no_industry'
+    WHEN b.industry = (SELECT industry FROM primary_industry) THEN 'unconfigured_same_industry'
+    ELSE 'unconfigured_cross_industry'
+  END AS alignment_bucket,
+  COUNT(DISTINCT sm.brand_id) AS distinct_brand_ids,
+  COUNT(DISTINCT sm.brand_name) AS distinct_brand_names,
+  COUNT(DISTINCT sm.response_id) AS responses,
+  SUM(sm.mention_count)::bigint AS mentions
+FROM scoped_mentions sm
+LEFT JOIN brands b ON b.id = sm.brand_id
+GROUP BY alignment_bucket
+ORDER BY alignment_bucket;
+
+\\echo '--- top auto-fill candidates after same-industry filter (PR #1275 follow-up) ---'
+-- The exact list of brand_ids the auto-fill path SHOULD include for the
+-- primary's industry, ordered by mention count desc. If this returns < 7
+-- rows the heatmap will visibly cap below the requested top-N because
+-- there aren't enough same-industry canonicalized rivals. Compare against
+-- the `name_only_unresolved` bucket above — if that bucket is large, the
+-- ceiling is the canonicalization gap, not the heatmap code.
+WITH primary_industry AS (
+  SELECT industry FROM brands WHERE id = {config.brand_id}
+),
+scoped_mentions AS (
+  SELECT
+    bm.brand_id,
+    bm.response_id,
+    COALESCE(bm.mention_count, 1) AS mention_count
+  FROM brand_mentions bm
+  JOIN llm_responses r ON r.id = bm.response_id
+  JOIN queries q ON q.id = r.query_id
+  WHERE {response_date_expr}
+    BETWEEN '{date_from}'::date AND '{date_to}'::date
+)
+SELECT
+  sm.brand_id,
+  b.industry,
+  b.name AS brand_name,
+  COUNT(DISTINCT sm.response_id) AS responses,
+  SUM(sm.mention_count)::bigint AS mentions
+FROM scoped_mentions sm
+JOIN brands b ON b.id = sm.brand_id
+WHERE sm.brand_id IS NOT NULL
+  AND sm.brand_id <> {config.brand_id}
+  AND b.industry = (SELECT industry FROM primary_industry)
+GROUP BY sm.brand_id, b.industry, b.name
+ORDER BY mentions DESC, responses DESC
+LIMIT 20;
+
+\\echo '--- top name_only mentions (canonicalization gap candidates) ---'
+-- The brand names appearing most often in `brand_mentions` with brand_id
+-- IS NULL — these are rivals the analyzer named but never canonicalized
+-- to a `brands.id`, so they are invisible to /topic-heatmap auto-fill.
+WITH scoped_mentions AS (
+  SELECT
+    bm.brand_id,
+    bm.brand_name,
+    bm.response_id,
+    COALESCE(bm.mention_count, 1) AS mention_count
+  FROM brand_mentions bm
+  JOIN llm_responses r ON r.id = bm.response_id
+  JOIN queries q ON q.id = r.query_id
+  WHERE {response_date_expr}
+    BETWEEN '{date_from}'::date AND '{date_to}'::date
+)
+SELECT
+  brand_name,
+  COUNT(*) AS rows,
+  COUNT(DISTINCT response_id) AS responses,
+  SUM(mention_count)::bigint AS mentions
+FROM scoped_mentions
+WHERE brand_id IS NULL
+  AND brand_name IS NOT NULL
+GROUP BY brand_name
+ORDER BY mentions DESC, responses DESC
+LIMIT 20;
+
 \\echo '--- citation_sources and official domains ---'
 WITH scoped_citations AS (
   SELECT
