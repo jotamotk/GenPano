@@ -1,0 +1,49 @@
+name: Setup GitLab Runner Probe
+on:
+  push:
+    branches: [setup-runner]
+  workflow_dispatch:
+jobs:
+  probe:
+    name: Probe test server
+    runs-on: ubuntu-latest
+    steps:
+      - name: SSH and inspect
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script: |
+            set -uo pipefail
+            echo "=== OS ==="
+            cat /etc/os-release || true
+            echo
+            echo "=== uname ==="
+            uname -a
+            echo "=== arch ==="
+            uname -m
+            echo
+            echo "=== Docker ==="
+            docker --version 2>&1 || echo "docker NOT installed"
+            (sudo systemctl is-active docker 2>&1 || echo "docker service not active") | head -1
+            docker info --format '{{.ServerVersion}} / {{.OperatingSystem}}' 2>&1 || true
+            echo
+            echo "=== gitlab-runner ==="
+            which gitlab-runner 2>&1 || echo "gitlab-runner NOT installed"
+            gitlab-runner --version 2>&1 || true
+            echo
+            echo "=== GitLab reachable from server? ==="
+            curl -sI --max-time 10 https://gitlabcode.lianwei.com.cn/ 2>&1 | head -5
+            echo
+            echo "=== Disk ==="
+            df -h / /opt 2>&1 || df -h /
+            echo
+            echo "=== Memory ==="
+            free -h
+            echo
+            echo "=== CPU ==="
+            nproc
+            echo
+            echo "=== sudo (passwordless?) ==="
+            sudo -n true 2>&1 && echo "passwordless sudo: YES" || echo "passwordless sudo: NO"
