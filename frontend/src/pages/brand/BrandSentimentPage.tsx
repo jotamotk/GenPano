@@ -29,6 +29,8 @@ import {
   adaptMentionSamples,
 } from '../../adapters/chartAdapters';
 import QueryStateView from '../../components/QueryStateView';
+import SentimentKeywordsTable from '../../components/brand/SentimentKeywordsTable';
+import SentimentSamplesTable from '../../components/brand/SentimentSamplesTable';
 import {
   BRANDS,
   SENTIMENT_DISTRIBUTION,
@@ -493,40 +495,29 @@ export default function BrandSentimentPage() {
         </div>
       </Card>
 
-      {/* ⑤ 正面/负面关键词 */}
+      {/* ⑤ 正面/负面关键词 — Issue #1285: tabular layout replaces the previous
+          badge-grid where text-[11px] labels were illegible. Two tables sit
+          side-by-side via the existing lg:grid-cols-2 wrapper; the new
+          SentimentKeywordsTable component uses .t-table styling matching
+          IndustryLeaderboardTable.tsx (text-[13px] body / text-[11px]
+          muted headers). */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
         <Card className="p-4">
-          <div className="flex items-baseline justify-between mb-3">
-            <h3 className="text-sm font-semibold text-themed-primary">
-              {t('brand_sentiment.positive_keywords')}
-            </h3>
-            <span className="text-[11px] text-themed-muted">Top 10</span>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            {positiveKeywords.slice(0, 10).map((kw, idx) => (
-              <Badge key={idx} variant="green" size="sm">
-                {kw.word}
-                <span className="ml-1 opacity-70">×{kw.weight}</span>
-              </Badge>
-            ))}
-          </div>
+          <SentimentKeywordsTable
+            title={t('brand_sentiment.positive_keywords')}
+            keywords={positiveKeywords}
+            polarity="positive"
+            limit={10}
+          />
         </Card>
 
         <Card className="p-4">
-          <div className="flex items-baseline justify-between mb-3">
-            <h3 className="text-sm font-semibold text-themed-primary">
-              {t('brand_sentiment.negative_keywords')}
-            </h3>
-            <span className="text-[11px] text-themed-muted">Top 10</span>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            {negativeKeywords.slice(0, 10).map((kw, idx) => (
-              <Badge key={idx} variant="red" size="sm">
-                {kw.word}
-                <span className="ml-1 opacity-70">×{kw.weight}</span>
-              </Badge>
-            ))}
-          </div>
+          <SentimentKeywordsTable
+            title={t('brand_sentiment.negative_keywords')}
+            keywords={negativeKeywords}
+            polarity="negative"
+            limit={10}
+          />
         </Card>
       </div>
 
@@ -580,81 +571,14 @@ export default function BrandSentimentPage() {
             </div>
           )}
 
-          {filteredResponses.map((item, idx) => {
-            const responseKey = `${item.queryId ?? 'query'}-${item.mentionId ?? item.responseId ?? idx}`;
-            return (
-            <div
-              key={responseKey}
-              className="rounded-card bg-themed-subtle p-3 border-l-4"
-              style={{
-                borderLeftColor:
-                  item.polarity === 'positive' ? 'var(--color-chart-7)'
-                  : item.polarity === 'negative' ? 'var(--color-danger)'
-                  : 'var(--color-chart-line-grid)',
-              }}
-            >
-              <div className="flex items-center justify-between mb-2">
-                <Badge
-                  variant={item.polarity === 'positive' ? 'green' : item.polarity === 'negative' ? 'red' : 'default'}
-                  size="sm"
-                >
-                  {item.label}
-                </Badge>
-                <span className="text-[10px] text-themed-muted">{item.engine} · {item.time}</span>
-              </div>
-              <p className="font-medium text-[10px] text-themed-muted mb-1">{item.topic}</p>
-              <p className="text-sm text-themed-primary leading-relaxed">{item.summary}</p>
-              <div className="mt-3 flex items-center justify-between gap-2">
-                <span className="text-[10px] text-themed-muted">
-                  query_id: {item.queryId ?? 'pending'} ·{' '}
-                  response_id: {item.responseId ?? 'pending'} · mention_id: {item.mentionId ?? 'pending'}
-                </span>
-                <button
-                  type="button"
-                  aria-expanded={expandedResponseKey === responseKey}
-                  aria-label={`Inspect full response for ${item.summary}`}
-                  onClick={() => {
-                    setExpandedResponseKey(expandedResponseKey === responseKey ? null : responseKey);
-                  }}
-                  className="px-2.5 py-1 rounded-pill text-[11px] font-medium transition-colors"
-                  style={{
-                    background:
-                      expandedResponseKey === responseKey
-                        ? 'var(--color-accent-bg-light)'
-                        : 'var(--color-bg-card)',
-                    border: '1px solid var(--color-border-subtle)',
-                    color:
-                      expandedResponseKey === responseKey
-                        ? 'var(--color-text-accent)'
-                        : 'var(--color-text-muted)',
-                  }}
-                >
-                  {expandedResponseKey === responseKey ? 'Hide details' : 'Inspect'}
-                </button>
-              </div>
-              {expandedResponseKey === responseKey && (
-                <div className="mt-3 rounded-card bg-themed-card border border-themed-subtle p-3">
-                  <p className="text-xs font-semibold text-themed-primary">Full response inspection</p>
-                  {item.responseText ? (
-                    <p className="text-sm text-themed-primary leading-relaxed mt-2 whitespace-pre-wrap">
-                      {item.responseText}
-                    </p>
-                  ) : (
-                    <div className="mt-2 space-y-2">
-                      <p className="text-sm text-themed-primary leading-relaxed">
-                        Full response text is not available from the current API payload.
-                      </p>
-                      {item.snippet && (
-                        <p className="text-xs text-themed-muted leading-relaxed">Current snippet: {item.snippet}</p>
-                      )}
-                      <p className="text-[11px] text-themed-muted">{responseApiNeed}</p>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-            );
-          })}
+          {filteredResponses.length > 0 && (
+            <SentimentSamplesTable
+              rows={filteredResponses}
+              expandedKey={expandedResponseKey}
+              onExpandedKeyChange={setExpandedResponseKey}
+              responseApiNeed={responseApiNeed}
+            />
+          )}
 
           {responseHasMore && (
             <div className="flex justify-center pt-1">

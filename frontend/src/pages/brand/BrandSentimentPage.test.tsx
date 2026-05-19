@@ -360,13 +360,14 @@ describe('BrandSentimentPage response evidence contract', () => {
     renderSentimentPage()
 
     for (const fixture of polarityFixtures) {
-      // The polarity badge sits next to a topic of `Topic <polarity>` and
-      // a summary of `Polarity row <polarity>`. Scope by summary card to
-      // avoid colliding with the polarity *filter* buttons of the same name.
+      // Issue #1285: Response samples now render as a <table>; each
+      // sample is a <tr>. Scope to the parent row so the polarity
+      // badge cell does not collide with the polarity *filter*
+      // buttons of the same name.
       const summary = screen.getByText(`Polarity row ${fixture.polarity}`)
-      const card = summary.closest('.rounded-card') as HTMLElement
-      expect(card).not.toBeNull()
-      const badge = card.querySelector('.t-badge') as HTMLElement
+      const row = summary.closest('tr') as HTMLElement
+      expect(row).not.toBeNull()
+      const badge = row.querySelector('.t-badge') as HTMLElement
       expect(badge).not.toBeNull()
       expect(badge).toHaveTextContent(fixture.label)
       expect(badge).toHaveClass(fixture.expectedClass)
