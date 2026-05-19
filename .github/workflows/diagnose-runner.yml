@@ -1,0 +1,55 @@
+name: Diagnose Runner Failures
+on:
+  push:
+    branches: [setup-runner]
+    paths: ['.github/workflows/diagnose-runner.yml']
+  workflow_dispatch:
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          command_timeout: 5m
+          script: |
+            set -uo pipefail
+
+            echo "=== gitlab-runner service status ==="
+            sudo systemctl status gitlab-runner --no-pager 2>&1 | sed -n '1,20p'
+
+            echo
+            echo "=== Last 200 journal lines for gitlab-runner ==="
+            sudo journalctl -u gitlab-runner --no-pager -n 200 2>&1
+
+            echo
+            echo "=== /etc/gitlab-runner/config.toml (tokens masked) ==="
+            sudo cat /etc/gitlab-runner/config.toml 2>&1 | sed -E 's/(token = ").*(")/\1***MASKED***\2/'
+
+            echo
+            echo "=== docker ps (running containers) ==="
+            sudo docker ps 2>&1
+
+            echo
+            echo "=== docker ps -a --filter ancestor=mcr.microsoft.com/playwright (last 10) ==="
+            sudo docker ps -a --filter "ancestor=mcr.microsoft.com/playwright:v1.49.0-jammy" --format "table {{.ID}}\t{{.Status}}\t{{.Names}}" 2>&1 | head -10
+
+            echo
+            echo "=== docker images (recent) ==="
+            sudo docker images --format "table {{.Repository}}:{{.Tag}}\t{{.Size}}\t{{.CreatedSince}}" 2>&1 | head -20
+
+            echo
+            echo "=== Disk usage ==="
+            df -h / /var/lib/docker 2>&1 || df -h /
+
+            echo
+            echo "=== Network test: can server reach ghcr.io and mcr.microsoft.com? ==="
+            curl -sI --max-time 8 https://ghcr.io/v2/ 2>&1 | head -3
+            echo "---"
+            curl -sI --max-time 8 https://mcr.microsoft.com/v2/ 2>&1 | head -3
+
+            echo
+            echo "=== gitlab-runner builds dir contents ==="
+            sudo ls -la /home/gitlab-runner/builds/ 2>&1 | head -20
