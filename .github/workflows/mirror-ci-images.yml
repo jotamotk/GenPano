@@ -1,0 +1,49 @@
+name: Mirror CI Images to ACR
+
+on:
+  workflow_dispatch:
+
+jobs:
+  mirror:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - name: Login to ACR
+        env:
+          ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
+          ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
+          ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
+        run: |
+          set -e
+          registry="${ACR_REGISTRY#http://}"
+          registry="${registry#https://}"
+          registry="${registry%/}"
+          login_host="${registry%%/*}"
+          printf '%s' "$ACR_PASSWORD" | docker login "$login_host" -u "$ACR_USERNAME" --password-stdin
+          echo "REGISTRY=$registry" >> $GITHUB_ENV
+
+      - name: Mirror uv image
+        run: |
+          set -e
+          SRC="ghcr.io/astral-sh/uv:python3.12-bookworm-slim"
+          DST="${REGISTRY}/genpano:ci-uv-python3.12-bookworm-slim"
+          docker pull "$SRC"
+          docker tag "$SRC" "$DST"
+          docker push "$DST"
+          echo "Mirrored: $DST"
+
+      - name: Mirror playwright image
+        run: |
+          set -e
+          SRC="mcr.microsoft.com/playwright:v1.49.0-jammy"
+          DST="${REGISTRY}/genpano:ci-playwright-v1.49.0-jammy"
+          docker pull "$SRC"
+          docker tag "$SRC" "$DST"
+          docker push "$DST"
+          echo "Mirrored: $DST"
+
+      - name: Summary
+        run: |
+          echo "===== Mirrored CI images ====="
+          echo "uv:         ${REGISTRY}/genpano:ci-uv-python3.12-bookworm-slim"
+          echo "playwright: ${REGISTRY}/genpano:ci-playwright-v1.49.0-jammy"
