@@ -167,6 +167,9 @@ jobs:
               /tmp/repo_clash_config.yaml \
               "$SERVER_USER@$SERVER_HOST:/tmp/repo_clash_config.yaml"
 
+          # Wrap so a non-zero remote exit doesn't kill the outer bash -e
+          # step before we print the captured output.
+          set +e
           output=$(MODE="$MODE" ssh -i ~/.ssh/id_rsa \
               -o StrictHostKeyChecking=accept-new \
               -o SendEnv=MODE \
@@ -327,6 +330,7 @@ jobs:
           )
 
           rc=$?
+          set -e
           echo "$output"
           {
             echo "## V-Ninja DoH DNS hotfix (${MODE})"
@@ -336,6 +340,13 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+          # rc=0 success
+          # rc=2 means dry-run detected dns: block already present (advisory)
+          # other non-zero = real failure
+          if [ "$rc" -eq 2 ]; then
+              echo "::warning::Remote returned rc=2 (dns: block already present in V-Ninja config). See output above for details. NOT treating as failure."
+              exit 0
+          fi
           if [ "$rc" -ne 0 ]; then
               echo "::error::Hotfix step exited with code $rc"
               exit "$rc"
