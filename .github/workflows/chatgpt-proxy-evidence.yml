@@ -574,6 +574,66 @@ jobs:
           done
           echo ""
 
+          echo "=== EXPERIMENT: switch 💬 Ai平台 to a non-HK node and re-probe ws.chatgpt.com ==="
+          # User asked us to try a different proxy node. The hypothesis we
+          # are testing: does ws.chatgpt.com resolution improve if we route
+          # through a different proxy node? If V-Ninja resolves DNS locally
+          # (before node selection), node-switching won't help — we'll still
+          # see Facebook IPv6. If V-Ninja uses remote DNS (proxy-server
+          # resolves), a US node should give us the real Cloudflare IP.
+          SECRET="$(docker compose exec -T worker sh -c 'printf %s "${CLASH_API_SECRET:-}"' </dev/null 2>/dev/null | tr -d '\r\n')"
+          AUTH=""
+          [ -n "$SECRET" ] && AUTH="Authorization: Bearer $SECRET"
+
+          echo "--- Before switch: current 💬 Ai平台 selection ---"
+          curl -sS --max-time 5 -H "$AUTH" "http://127.0.0.1:9098/proxies/%F0%9F%92%AC%20Ai%E5%B9%B3%E5%8F%B0" 2>&1 \
+            | python3 -c "import json,sys;d=json.load(sys.stdin);print('now =', d.get('now'))" 2>&1 | head -3
+
+          for candidate in "美国 02 （专线；智能）" "日本 02 （专线；智能）" "新加坡 02 （专线；智能）" "台湾 02 （专线；智能）"; do
+              echo ""
+              echo "============================================================"
+              echo "  Switching to: ${candidate}"
+              echo "============================================================"
+              # Set the node on the 💬 Ai平台 selector.
+              encoded_group="$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1],safe=''))" "💬 Ai平台")"
+              encoded_node="$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1],safe=''))" "${candidate}")"
+              curl -sS --max-time 5 -X PUT -H "$AUTH" -H "Content-Type: application/json" \
+                   "http://127.0.0.1:9098/proxies/${encoded_group}" \
+                   -d "{\"name\":\"${candidate}\"}" \
+                   -w "http_code=%{http_code}\n" 2>&1 | head -3
+              sleep 1
+
+              # Re-probe from worker.
+              docker compose exec -T worker sh -lc 'set -u
+                  echo "  DNS of ws.chatgpt.com:"
+                  getent hosts ws.chatgpt.com 2>/dev/null | head -2 || echo "  (no answer)"
+                  echo "  GET https://ws.chatgpt.com/ via proxy:"
+                  curl -sS -o /dev/null --max-time 12 \
+                       -x http://host.docker.internal:6789 \
+                       -w "    http_code=%{http_code} time=%{time_total}s\n" \
+                       "https://ws.chatgpt.com/" 2>&1 || echo "    (curl_err)"
+                  echo "  WSS handshake via proxy:"
+                  curl -sS -o /tmp/_ws_resp.txt --max-time 12 \
+                       -x http://host.docker.internal:6789 \
+                       --http1.1 -H "Connection: Upgrade" -H "Upgrade: websocket" \
+                       -H "Sec-WebSocket-Version: 13" -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" \
+                       -H "Origin: https://chatgpt.com" \
+                       -w "    http_code=%{http_code} time=%{time_total}s\n" \
+                       "https://ws.chatgpt.com/" 2>&1 || echo "    (curl_err)"
+                  echo "  response head:"
+                  head -5 /tmp/_ws_resp.txt 2>/dev/null | sed "s/^/      /" || true
+              ' </dev/null 2>&1 || true
+          done
+
+          echo ""
+          echo "--- Restore 💬 Ai平台 to original auto-selection (♻️ 自动选择) ---"
+          encoded_group="$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1],safe=''))" "💬 Ai平台")"
+          curl -sS --max-time 5 -X PUT -H "$AUTH" -H "Content-Type: application/json" \
+               "http://127.0.0.1:9098/proxies/${encoded_group}" \
+               -d "{\"name\":\"♻️ 自动选择\"}" \
+               -w "http_code=%{http_code}\n" 2>&1 | head -2
+          echo ""
+
           echo "=== prod V-Ninja config snippets (DNS + chatgpt rules + listen ports) ==="
           # The repo's clash/config.yaml uses mixed-port=7890 with a
           # DOMAIN-SUFFIX,chatgpt.com rule and DoH fallback, but prod has
