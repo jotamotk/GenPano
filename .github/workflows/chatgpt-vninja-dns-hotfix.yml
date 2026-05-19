@@ -253,23 +253,30 @@ jobs:
           echo ""
 
           # 3) Build the proposed new Merge.yaml overlay.
-          #    Strategy: prepend our DNS block to whatever Merge.yaml has
-          #    today (usually just `allow-lan: true`). V-Ninja's GUI will
-          #    merge this into the runtime config on the next restart.
-          #    Idempotency check is against the RUNTIME merged config —
-          #    if dns: is already merged in, the operator has already
-          #    configured it, and we should not silently override.
+          # Idempotency check: if Merge.yaml ITSELF already has dns:
+          # then the operator has customized DNS at the overlay layer
+          # and we should NOT silently overwrite. The runtime dns:
+          # block (inherited from the subscription) doesn't count —
+          # it's exactly what we want to override via overlay.
           NEW_CFG="/tmp/vninja-doh-merge.yaml"
-          if [ -n "$RUNTIME_CFG" ] && [ -f "$RUNTIME_CFG" ] && grep -qE "^dns:" "$RUNTIME_CFG"; then
-              echo "::warning::Runtime config $RUNTIME_CFG already has a dns: section. Operator may have configured it elsewhere. Will dump existing dns block; will NOT auto-overwrite."
-              echo "--- existing dns block in runtime ---"
-              awk '/^dns:/{flag=1} flag && /^[a-z]+:/ && !/^dns:/{flag=0} flag' "$RUNTIME_CFG" | head -40
-              cp "$CFG" "$NEW_CFG" 2>/dev/null || touch "$NEW_CFG"
-              # Continue to dry-run-print + exit so we still produce
-              # actionable output, but signal advisory.
+          EXIT_AT_END=0
+          if [ -f "$CFG" ] && grep -qE "^dns:" "$CFG"; then
+              echo "::warning::Merge.yaml already has a dns: section (operator-customized). Refusing to overwrite."
+              echo "--- existing dns block in Merge.yaml ---"
+              awk '/^dns:/{flag=1; print; next} flag && /^[a-z]+:/{flag=0} flag' "$CFG" | head -40
               EXIT_AT_END=2
-          else
-              EXIT_AT_END=0
+          fi
+          # Dump runtime's dns: block (inherited from subscription) for
+          # transparency — what's currently effective on prod.
+          if [ -n "$RUNTIME_CFG" ] && [ -f "$RUNTIME_CFG" ] && grep -qE "^dns:" "$RUNTIME_CFG"; then
+              echo "--- existing dns block in RUNTIME (subscription-supplied; will be overlaid) ---"
+              awk '/^dns:/{flag=1; print; next} flag && /^[a-z]+:/{flag=0} flag' "$RUNTIME_CFG" | head -40
+              echo ""
+              echo "Note: this dns block is MISSING 'enhanced-mode: fake-ip', which is"
+              echo "why Mihomo trusts the GFW-poisoned primary nameserver answer for"
+              echo "ws.chatgpt.com and never falls back to DoH. Adding fake-ip via"
+              echo "Merge.yaml overlay forces the correct resolution path."
+              echo ""
           fi
 
           # Build new Merge.yaml: insert the DoH block from repo
