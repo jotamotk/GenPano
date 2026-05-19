@@ -1168,7 +1168,12 @@ async def build_contract_context(
         to_date=to_date,
         target_response_ids=target_response_ids,
     )
-    if has_admin_chain and not metric_formula_evidence and admin_fact_response_count > 0:
+    if (
+        has_admin_chain
+        and not metric_formula_evidence
+        and admin_fact_response_count > 0
+        and repair_count == 0
+    ):
         package_sources = _package_source_tables()
         missing_inputs.extend(package_sources)
         missing_sources.extend(package_sources)
