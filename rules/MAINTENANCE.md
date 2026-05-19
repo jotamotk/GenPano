@@ -62,6 +62,18 @@ rules-change PR body 必填一行 `可废弃旧规则候选: <列表 or 无>`。
 
 下次触碰 SKILL.md 必须满足此约束。本次 PR 不动 SKILL.md。
 
+### 4.8 规则正文与 CI lint 常量同步
+
+`rules/security/enforcement.md` 描述了 `.github/scripts/lint_pr_body.py` 的必填 section（`Linked Work` / `Root Cause Gate` / `Verification Evidence Ledger`）。**CI lint 是 source of truth**，规则文档是它的人类可读说明。
+
+`scripts/lint_rules.py` 自动检查：
+
+- 解析 `lint_pr_body.py` 的 `SECTION_*` 常量
+- 在 `rules/security/enforcement.md` 中 grep 每个 section 名
+- 任一缺失 → fail
+
+防的就是"开发者改了 lint_pr_body.py 的 REQUIRED_SECTIONS 但忘了同步 enforcement.md"。无该机制时，规则文档静默 stale，agent 读到错误信息——正是模块化重构本应阻止的中毒模式。
+
 ## 5. Cross-agent Consistency Contract
 
 ### 5.1 三层保证

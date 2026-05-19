@@ -23,8 +23,9 @@ hardness: HARD
     `Evidence proving it:` —— **或** `Classification: not an incident - <reason>`
     （单值，不是模板的 `|`-separated stub）
   - `## Verification Evidence Ledger` 含至少一个 `- [x]` 项 + 一个 `https://` URL
-- Placeholder 文本（TODO / TBD / PLACEHOLDER / xxx / ... / bare N/A / 模板的字面中文 stub
-  如 ``` `用户在 `http://116.62.36.173/<route>` ``` ``` ）按字段为空拒绝
+- Placeholder 文本（TODO / TBD / PLACEHOLDER / xxx / ... / bare N/A / 模板的字面中文 stub）按字段为空拒绝
+  。完整 placeholder 列表见 `.github/scripts/lint_pr_body.py` 的 `PLACEHOLDER_TOKENS` 与
+  `TEMPLATE_STUB_PATTERNS` 常量（**该脚本是 placeholder 检测的 source of truth**，本规则不复刻具体值）
 - 失败：workflow 在 PR 发评论列出每个缺失/空字段，并 fail check
 - 分支保护：`main` 上的 branch protection（Settings → Branches）必须列 `Lint PR Body`
   为 required status check；否则 lint 跑但不阻 merge
@@ -49,8 +50,13 @@ hardness: HARD
 ## Verification
 
 ```bash
-verify: test -f .github/workflows/pr-body-lint.yml && test -f .github/scripts/lint_pr_body.py
+verify: test -f .github/workflows/pr-body-lint.yml && test -f .github/scripts/lint_pr_body.py \
+        && grep -q 'PLACEHOLDER_TOKENS' .github/scripts/lint_pr_body.py \
+        && grep -q 'TEMPLATE_STUB_PATTERNS' .github/scripts/lint_pr_body.py
 ```
+
+`scripts/lint_rules.py` 还会自动检查本文件描述的必填 section 名与
+`.github/scripts/lint_pr_body.py` `SECTION_*` 常量同步——drift 立即 fail。
 
 ## Cross-references
 

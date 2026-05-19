@@ -74,9 +74,17 @@ def parse_frontmatter(text: str) -> dict[str, str] | None:
     return fm
 
 
-def lint_file(path: Path) -> list[str]:
-    """Return a list of violation strings for this file (empty = pass)."""
-    rel = path.relative_to(path.parents[len(path.parents) - 1]) if path.is_absolute() else path
+def lint_file(path: Path, display_root: Path) -> list[str]:
+    """Return a list of violation strings for this file (empty = pass).
+
+    `display_root` is the directory used to render relative paths in error
+    messages. Typically it is the parent of the `root` passed to `lint_tree`,
+    so error lines look like `rules/testing/foo.md` rather than absolute paths.
+    """
+    try:
+        rel = path.relative_to(display_root)
+    except ValueError:
+        rel = path
     problems: list[str] = []
     text = path.read_text(encoding="utf-8")
     line_count = text.count("\n") + (0 if text.endswith("\n") else 1)
@@ -119,20 +127,66 @@ def lint_file(path: Path) -> list[str]:
         problems.append(
             f"{rel}: PR-number reference {match.group(0)!r} in rule body — move to rules/INCIDENTS.md (context: …{snippet}…)"
         )
-        break
+        # Continue scanning — report every offending reference in one pass so
+        # contributors don't fix one and re-trigger CI to discover the next.
 
     return problems
 
 
 def lint_tree(root: Path) -> list[str]:
-    """Lint every .md file under root recursively."""
+    """Lint every .md file under root recursively, plus the cross-source
+    consistency check between rules/security/enforcement.md and the actual
+    CI lint script `.github/scripts/lint_pr_body.py`."""
     if not root.exists():
         print(f"ERROR: {root} does not exist", file=sys.stderr)
         sys.exit(2)
+    # Display paths relative to root's parent: `rules/testing/foo.md` rather
+    # than an absolute or filesystem-root-anchored path.
+    display_root = root.parent if root.is_absolute() else Path.cwd()
     all_problems: list[str] = []
     for path in sorted(root.rglob("*.md")):
-        all_problems.extend(lint_file(path))
+        all_problems.extend(lint_file(path, display_root))
+    all_problems.extend(_check_enforcement_doc_in_sync(root, display_root))
     return all_problems
+
+
+# Drift-detection between the rule prose and the CI lint constants.
+# Without this, lint_pr_body.py can rename REQUIRED_SECTIONS and
+# rules/security/enforcement.md silently goes stale — exactly the failure
+# mode the modular refactor is meant to prevent. Peer review flagged this
+# as the highest-risk regression vector (see PR #1288 review).
+LINT_PR_BODY_REL = Path(".github/scripts/lint_pr_body.py")
+ENFORCEMENT_REL = Path("rules/security/enforcement.md")
+
+
+def _check_enforcement_doc_in_sync(rules_root: Path, display_root: Path) -> list[str]:
+    """Verify rules/security/enforcement.md mentions every required section
+    name that .github/scripts/lint_pr_body.py declares in `REQUIRED_SECTIONS`.
+    """
+    repo_root = rules_root.parent if rules_root.is_absolute() else (Path.cwd() / rules_root).resolve().parent
+    pr_body_lint = repo_root / LINT_PR_BODY_REL
+    enforcement_md = repo_root / ENFORCEMENT_REL
+    if not pr_body_lint.exists() or not enforcement_md.exists():
+        return []  # Tolerate missing files; this check is additive.
+    src = pr_body_lint.read_text(encoding="utf-8")
+    # Extract every quoted literal assigned to SECTION_* constants.
+    section_constants = re.findall(
+        r'^SECTION_[A-Z_]+\s*=\s*["\']([^"\']+)["\']', src, re.MULTILINE
+    )
+    if not section_constants:
+        return []  # Constants moved or renamed; can't check.
+    doc = enforcement_md.read_text(encoding="utf-8")
+    missing = [name for name in section_constants if name not in doc]
+    if not missing:
+        return []
+    try:
+        enf_rel = enforcement_md.relative_to(display_root)
+    except ValueError:
+        enf_rel = enforcement_md
+    return [
+        f"{enf_rel}: drift vs `.github/scripts/lint_pr_body.py` — required "
+        f"section name(s) {missing!r} declared in lint script but not mentioned in enforcement doc"
+    ]
 
 
 def main(argv: list[str] | None = None) -> int:
