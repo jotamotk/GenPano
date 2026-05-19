@@ -574,6 +574,42 @@ jobs:
           done
           echo ""
 
+          echo "=== prod V-Ninja config snippets (DNS + chatgpt rules + listen ports) ==="
+          # The repo's clash/config.yaml uses mixed-port=7890 with a
+          # DOMAIN-SUFFIX,chatgpt.com rule and DoH fallback, but prod has
+          # V-Ninja listening on 6789 — so prod must be running a separate
+          # config. Captured 2026-05-19 the worker's DNS query for
+          # ws.chatgpt.com returned a Facebook IPv6 (2a03:2880:f12d:83:face:b00c:0:25de)
+          # and curl through host.docker.internal:6789 also got 404. We need
+          # to see what the running V-Ninja config actually contains for
+          # *.chatgpt.com routing and DNS.
+          for path in /etc/vninja/config.yaml /opt/vninja/config.yaml \
+                      /etc/clash/config.yaml /etc/mihomo/config.yaml \
+                      /root/.config/clash/config.yaml /root/.config/mihomo/config.yaml; do
+              if [ -f "$path" ]; then
+                  echo "--- found: $path ---"
+                  echo "size: $(stat -c %s "$path") bytes"
+                  echo "head -20:"
+                  head -20 "$path" 2>/dev/null || true
+                  echo "...chatgpt/openai/dns rules..."
+                  grep -nE "chatgpt|openai|ws\.|dns:|enhanced-mode|nameserver|mixed-port|external-controller" "$path" 2>/dev/null | head -40 || true
+                  echo "...rules section (head 30 lines):"
+                  awk "/^rules:/{flag=1} flag" "$path" 2>/dev/null | head -30 || true
+                  break
+              fi
+          done
+
+          echo ""
+          echo "--- Resolve ws.chatgpt.com via the host's resolver (compare with worker container) ---"
+          getent ahosts ws.chatgpt.com 2>&1 || nslookup ws.chatgpt.com 2>&1 | head -10
+          echo ""
+          echo "--- Resolve ws.chatgpt.com via DoH (cloudflare 1.1.1.1) — clean answer ---"
+          curl -sS --max-time 8 -H "accept: application/dns-json" \
+               "https://1.1.1.1/dns-query?name=ws.chatgpt.com&type=A" 2>&1 | head -10 || echo "(doh A failed)"
+          curl -sS --max-time 8 -H "accept: application/dns-json" \
+               "https://1.1.1.1/dns-query?name=ws.chatgpt.com&type=AAAA" 2>&1 | head -10 || echo "(doh AAAA failed)"
+          echo ""
+
           echo "=== ws.chatgpt.com reachability from worker (smoking-gun: post-submit WSS fails) ==="
           # Captured 2026-05-19: query_185664 runtime snapshot showed
           #   error: "Camoufox can't establish a connection to the server at
