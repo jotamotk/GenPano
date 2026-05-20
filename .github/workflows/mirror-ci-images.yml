@@ -6,7 +6,7 @@ on:
 jobs:
   mirror:
     runs-on: ubuntu-22.04
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - name: Login to ACR
         env:
@@ -32,7 +32,7 @@ jobs:
           docker push "$DST"
           echo "Mirrored: $DST"
 
-      - name: Mirror playwright image
+      - name: Mirror playwright image (v1.49.0 — legacy)
         run: |
           set -e
           SRC="mcr.microsoft.com/playwright:v1.49.0-jammy"
@@ -42,8 +42,19 @@ jobs:
           docker push "$DST"
           echo "Mirrored: $DST"
 
+      - name: Mirror playwright image (v1.59.1 — current frontend pin)
+        run: |
+          set -e
+          SRC="mcr.microsoft.com/playwright:v1.59.1-jammy"
+          DST="${REGISTRY}/genpano:ci-playwright-v1.59.1-jammy"
+          docker pull "$SRC"
+          docker tag "$SRC" "$DST"
+          docker push "$DST"
+          echo "Mirrored: $DST"
+
       - name: Summary
         run: |
           echo "===== Mirrored CI images ====="
-          echo "uv:         ${REGISTRY}/genpano:ci-uv-python3.12-bookworm-slim"
-          echo "playwright: ${REGISTRY}/genpano:ci-playwright-v1.49.0-jammy"
+          echo "uv:                  ${REGISTRY}/genpano:ci-uv-python3.12-bookworm-slim"
+          echo "playwright v1.49.0:  ${REGISTRY}/genpano:ci-playwright-v1.49.0-jammy"
+          echo "playwright v1.59.1:  ${REGISTRY}/genpano:ci-playwright-v1.59.1-jammy"
