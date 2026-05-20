@@ -1,0 +1,489 @@
+name: ChatGPT V-Ninja DNS hotfix (manual)
+
+# Refs PR #1279 / branch claude/fix-chatgpt-pipeline-Fvdwi.
+# Refs prior chatgpt-proxy-hotfix.yml (PR #1209) for the SSH +
+# route-policy-preflight pattern.
+#
+# Root cause (evidence ledger in PR #1279 body):
+#   Prod V-Ninja's running config has no `dns:` section, so ninja-mihomo
+#   falls back to the host's CN-resident OS resolver. The CN resolver
+#   returns GFW-poisoned Facebook IPv6 (2a03:2880::face:b00c:...) for
+#   ws.chatgpt.com. V-Ninja then routes the *connection* (to the wrong
+#   IP) through the selected proxy node — even US/JP/HK nodes with
+#   verified-correct egress (Cloudflare cdn-cgi/trace confirms colo=LAX
+#   / NRT / HKG) all end up CONNECTing to Facebook because the IP was
+#   resolved BEFORE the node was chosen.
+#
+# Fix: ship a V-Ninja config with `dns: enhanced-mode: fake-ip` +
+# `fallback: tls://1.0.0.1:853 / tls://dns.google:853` +
+# `proxy-server-nameserver: https://1.1.1.1/dns-query`. Mihomo's DoH
+# fallback then bypasses GFW for ws.chatgpt.com and the rest of
+# *.chatgpt.com / *.openai.com.
+#
+# Per AGENTS.md Hard Rule 5 this is the third iteration of "fix the
+# ChatGPT pipeline" symptom. The first two (PR #1209 UFW + PR #1279
+# zombie sweep) targeted different technical layers; this one targets
+# the DNS layer for the first time. User authorized (chat 2026-05-19
+# "按你推荐 + 用 app 本身翻墙"). The dry-run-first design + automatic
+# backup + verification gate is the safety wrapper around the rule
+# override.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'dry-run = inspect prod config path + show diff only. apply = backup + replace + restart + verify. rollback = restore the earliest Merge.yaml.bak.* and restart.'
+        required: true
+        default: 'dry-run'
+        type: choice
+        options:
+          - dry-run
+          - apply
+          - rollback
+      confirm:
+        description: 'When mode=apply or mode=rollback, type "yes" to actually mutate prod V-Ninja config.'
+        required: false
+        default: 'no'
+  # Self-register: GitHub only indexes workflows it has seen run at
+  # least once. The push trigger below fires whenever this YAML is
+  # pushed to the working branch, which registers the workflow and
+  # gives us an immediate dry-run as evidence. mode defaults to
+  # dry-run so this auto-fire is safe — it cannot mutate prod.
+  push:
+    branches:
+      - 'claude/fix-chatgpt-pipeline-Fvdwi'
+    paths:
+      - '.github/workflows/chatgpt-vninja-dns-hotfix.yml'
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  hotfix:
+    name: Apply V-Ninja DoH DNS hotfix (chatgpt WSS path)
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+
+    steps:
+      - name: Guard
+        id: guard
+        run: |
+          set -euo pipefail
+          # Push trigger has empty inputs; coerce to safe defaults.
+          MODE="${{ inputs.mode }}"
+          CONFIRM="${{ inputs.confirm }}"
+          if [ -z "$MODE" ]; then MODE="dry-run"; fi
+          if [ -z "$CONFIRM" ]; then CONFIRM="no"; fi
+          echo "event=${{ github.event_name }} mode=$MODE confirm=$CONFIRM"
+          if [ "$MODE" = "apply" ] && [ "$CONFIRM" != "yes" ]; then
+              echo "::error::mode=apply requires confirm=yes. Got confirm='$CONFIRM'. Refusing."
+              exit 1
+          fi
+          case "$MODE" in
+              dry-run|apply|rollback) ;;
+              *) echo "::error::Unknown mode='$MODE'. Allowed: dry-run | apply | rollback."; exit 1 ;;
+          esac
+          # Push trigger MUST be dry-run only (no operator confirmation).
+          if [ "${{ github.event_name }}" = "push" ] && [ "$MODE" != "dry-run" ]; then
+              echo "::error::Push trigger may only run in dry-run mode."
+              exit 1
+          fi
+          if [ "$MODE" = "rollback" ] && [ "$CONFIRM" != "yes" ]; then
+              echo "::error::mode=rollback requires confirm=yes."
+              exit 1
+          fi
+          echo "effective_mode=$MODE" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Route policy preflight (same gate as PR #1209)
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s' "$SERVER_SSH_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H "$SERVER_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+          # Verify the same engine routing invariants PR #1209 already
+          # asserted: 豆包/deepseek direct, chatgpt via proxy. The DNS
+          # change must not affect these.
+          policy=$(ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=accept-new \
+            "$SERVER_USER@$SERVER_HOST" 'bash -s' <<'REMOTE'
+          set -uo pipefail
+          cd /opt/genpano
+          docker compose exec -T worker python3 - <<'PY' 2>&1
+          import os
+          from geo_tracker.agent.guest_executor import (
+              _should_use_proxy_for_llm,
+              _requires_global_proxy_route,
+              DOMESTIC_LLMS,
+          )
+          proxy_url = os.getenv("QG_PROXY_HTTP") or "http://host.docker.internal:6789"
+          for llm in ["chatgpt", "doubao", "deepseek"]:
+              print(f"PLAN: {{'llm': '{llm}', "
+                    f"'use_proxy': {_should_use_proxy_for_llm(llm, proxy_url)}, "
+                    f"'requires_global_route': {_requires_global_proxy_route(llm)}}}")
+          PY
+          REMOTE
+          )
+          echo "$policy"
+          fail=0
+          for line in \
+              "'llm': 'doubao'.*'use_proxy': False.*'requires_global_route': False" \
+              "'llm': 'deepseek'.*'use_proxy': False.*'requires_global_route': False" \
+              "'llm': 'chatgpt'.*'use_proxy': True.*'requires_global_route': True"; do
+              if ! echo "$policy" | grep -qE "$line"; then
+                  echo "::error::Route policy preflight failed on: $line"
+                  fail=1
+              fi
+          done
+          if [ "$fail" -ne 0 ]; then
+              echo "::error::Route policy preflight FAILED. Refusing to touch V-Ninja config."
+              exit 1
+          fi
+          {
+            echo "## Route policy preflight"
+            echo '```'
+            echo "$policy"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Discover V-Ninja running config + (dry-run|apply) DoH patch
+        id: hotfix
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+          MODE: ${{ steps.guard.outputs.effective_mode }}
+        run: |
+          set -euo pipefail
+          # Ship the repo's reference DNS block (clash/config.yaml) to
+          # the host so the remote heredoc can splice it into V-Ninja's
+          # actual loaded config. Doing it this way keeps the YAML
+          # snippet auditable in-repo.
+          cat clash/config.yaml > /tmp/repo_clash_config.yaml
+          scp -i ~/.ssh/id_rsa -o StrictHostKeyChecking=accept-new \
+              /tmp/repo_clash_config.yaml \
+              "$SERVER_USER@$SERVER_HOST:/tmp/repo_clash_config.yaml"
+
+          # Wrap so a non-zero remote exit doesn't kill the outer bash -e
+          # step before we print the captured output.
+          # Pass MODE as $1 to remote bash (SendEnv requires prod sshd
+          # AcceptEnv whitelist which we don't control).
+          set +e
+          output=$(ssh -i ~/.ssh/id_rsa \
+              -o StrictHostKeyChecking=accept-new \
+              "$SERVER_USER@$SERVER_HOST" "bash -s -- $MODE" <<'REMOTE'
+          set -uo pipefail
+          MODE="${1:-dry-run}"
+          echo "=== MODE: ${MODE} ==="
+          echo ""
+
+          # 1) Find the config files used by V-Ninja.
+          # Discovery 2026-05-19: V-Ninja launches ninja-mihomo with
+          #   /usr/bin/ninja-mihomo -d <data_dir> -f /tmp/<random-tag>
+          # The /tmp/<tag> is the MERGED runtime config (regenerated each
+          # time V-Ninja starts). It is NOT persistent — mutating it
+          # does nothing across restarts. The persistent overlay
+          # V-Ninja merges into that runtime file is
+          #   <data_dir>/profiles/Merge.yaml
+          # which is where we inject the dns: block.
+          PID=$(pidof ninja-mihomo 2>/dev/null | awk '{print $1}')
+          if [ -z "$PID" ]; then
+              echo "::error::ninja-mihomo process not found"
+              exit 1
+          fi
+          echo "ninja-mihomo PID: $PID"
+          CMDLINE=$(tr '\0' ' ' < "/proc/$PID/cmdline" 2>/dev/null)
+          echo "ninja-mihomo cmdline: $CMDLINE"
+
+          # Extract -d <data_dir> and -f <runtime_file>
+          DATA_DIR=$(echo "$CMDLINE" | awk '{
+              for (i=1;i<=NF;i++) if ($i=="-d") {print $(i+1); exit}
+          }')
+          RUNTIME_CFG=$(echo "$CMDLINE" | awk '{
+              for (i=1;i<=NF;i++) if ($i=="-f") {print $(i+1); exit}
+          }')
+          echo "Detected data dir:     ${DATA_DIR:-(missing)}"
+          echo "Detected runtime cfg:  ${RUNTIME_CFG:-(missing)}"
+
+          if [ -z "$DATA_DIR" ] || [ ! -d "$DATA_DIR" ]; then
+              echo "::error::Could not parse V-Ninja data dir from cmdline. cmdline: $CMDLINE"
+              exit 1
+          fi
+
+          MERGE_FILE="${DATA_DIR}/profiles/Merge.yaml"
+          echo "Persistent overlay path: $MERGE_FILE"
+          if [ ! -f "$MERGE_FILE" ]; then
+              echo "::warning::Merge.yaml does not exist at expected path; will create it."
+          fi
+
+          echo ""
+          echo "--- Current Merge.yaml (overlay; what we'll modify) ---"
+          if [ -f "$MERGE_FILE" ]; then
+              echo "Size: $(stat -c %s "$MERGE_FILE") bytes"
+              cat "$MERGE_FILE"
+          else
+              echo "(does not exist yet)"
+          fi
+          echo ""
+
+          if [ -n "$RUNTIME_CFG" ] && [ -f "$RUNTIME_CFG" ]; then
+              echo "--- Current Mihomo RUNTIME config $RUNTIME_CFG (read-only inspection) ---"
+              echo "Size: $(stat -c %s "$RUNTIME_CFG") bytes"
+              echo "--- dns-related lines in runtime ---"
+              grep -nE "^dns:|enhanced-mode|nameserver:|fallback:|proxy-server-nameserver" "$RUNTIME_CFG" 2>/dev/null || echo "(no dns: block in merged runtime — that confirms the bug)"
+          fi
+          echo ""
+
+          # The "target" we mutate is the overlay (Merge.yaml).
+          CFG="$MERGE_FILE"
+
+          # ROLLBACK mode: restore the EARLIEST .bak.* (pre-fix state)
+          # and restart V-Ninja. Used to abort a botched apply.
+          if [ "$MODE" = "rollback" ]; then
+              echo ""
+              echo "=== ROLLBACK: restoring earliest Merge.yaml.bak.* ==="
+              BAK=$(ls -1 "${MERGE_FILE}".bak.* 2>/dev/null | sort | head -1)
+              if [ -z "$BAK" ]; then
+                  echo "::error::No Merge.yaml.bak.* found — nothing to roll back to."
+                  exit 1
+              fi
+              echo "Restoring from: $BAK"
+              echo "--- content of $BAK ---"
+              cat "$BAK"
+              echo "--- ---"
+              TS=$(date -u +%s)
+              cp "$CFG" "${CFG}.preRollback.${TS}"
+              cp "$BAK" "$CFG"
+              echo "Wrote restored Merge.yaml. Pre-rollback snapshot saved at ${CFG}.preRollback.${TS}"
+              echo ""
+              echo "--- systemctl restart vninja ---"
+              systemctl restart vninja
+              for i in $(seq 1 30); do
+                  if ss -tlnp 2>/dev/null | grep -q ':6789\b'; then
+                      echo "Proxy port 6789 back after ${i} attempts."
+                      break
+                  fi
+                  sleep 2
+              done
+              echo "=== ROLLBACK COMPLETE ==="
+              exit 0
+          fi
+
+          # 2) Extract ports + secret + external-controller from the
+          # RUNTIME config (Merge.yaml is just the overlay; ports come
+          # from the subscription profile, not the overlay).
+          if [ -n "$RUNTIME_CFG" ] && [ -f "$RUNTIME_CFG" ]; then
+              MIXED_PORT=$(grep -E "^mixed-port:" "$RUNTIME_CFG" 2>/dev/null | head -1 | awk '{print $2}')
+              EXT_CTRL=$(grep -E "^external-controller:" "$RUNTIME_CFG" 2>/dev/null | head -1 | awk '{print $2}' | tr -d "\"'")
+              SECRET_LINE=$(grep -E "^secret:" "$RUNTIME_CFG" 2>/dev/null | head -1 || true)
+          fi
+          echo "Detected mixed-port:     ${MIXED_PORT:-(unset)}"
+          echo "Detected external-ctrl:  ${EXT_CTRL:-(unset)}"
+          echo "Detected secret line:    $([ -n "$SECRET_LINE" ] && echo 'present (value redacted)' || echo '(absent)')"
+          echo ""
+
+          # 3) Build the proposed new Merge.yaml overlay.
+          # Idempotency check: if Merge.yaml ITSELF already has dns:
+          # then the operator has customized DNS at the overlay layer
+          # and we should NOT silently overwrite. The runtime dns:
+          # block (inherited from the subscription) doesn't count —
+          # it's exactly what we want to override via overlay.
+          NEW_CFG="/tmp/vninja-doh-merge.yaml"
+          EXIT_AT_END=0
+          # Marker: re-apply is OK if Merge.yaml has OUR patch header
+          # (idempotent replace). Without the marker but with a dns:
+          # block, someone else added it — refuse to clobber.
+          OUR_MARKER='# vninja DoH DNS patch applied'
+          if [ -f "$CFG" ] && grep -qE "^dns:" "$CFG"; then
+              if grep -qF "$OUR_MARKER" "$CFG"; then
+                  echo "Merge.yaml already has OUR patch (marker present). Re-applying idempotently."
+              else
+                  echo "::warning::Merge.yaml already has a dns: section without our marker (operator-customized). Refusing to overwrite."
+                  echo "--- existing dns block in Merge.yaml ---"
+                  awk '/^dns:/{flag=1; print; next} flag && /^[a-z]+:/{flag=0} flag' "$CFG" | head -40
+                  EXIT_AT_END=2
+              fi
+          fi
+          # Dump runtime's dns: block (inherited from subscription) for
+          # transparency — what's currently effective on prod.
+          if [ -n "$RUNTIME_CFG" ] && [ -f "$RUNTIME_CFG" ] && grep -qE "^dns:" "$RUNTIME_CFG"; then
+              echo "--- existing dns block in RUNTIME (subscription-supplied; will be overlaid) ---"
+              awk '/^dns:/{flag=1; print; next} flag && /^[a-z]+:/{flag=0} flag' "$RUNTIME_CFG" | head -40
+              echo ""
+              echo "Note: this dns block is MISSING 'enhanced-mode: fake-ip', which is"
+              echo "why Mihomo trusts the GFW-poisoned primary nameserver answer for"
+              echo "ws.chatgpt.com and never falls back to DoH. Adding fake-ip via"
+              echo "Merge.yaml overlay forces the correct resolution path."
+              echo ""
+          fi
+
+          # Build new Merge.yaml: insert the DoH block from repo
+          # clash/config.yaml's dns: section, plus existing overlay content.
+          # On re-apply (our marker present): strip our previous patch
+          # block to avoid duplication; keep only operator-added lines.
+          DNS_BLOCK=$(awk '/^dns:/,/^proxy-providers:/' /tmp/repo_clash_config.yaml | sed '$d')
+          if [ -z "$DNS_BLOCK" ]; then
+              echo "::error::Failed to extract dns: block from /tmp/repo_clash_config.yaml (repo source)."
+              exit 1
+          fi
+          # Extract non-patch content from existing Merge.yaml. On first
+          # apply, that's the whole file. On re-apply, that's whatever
+          # comes after the trailing comment line of our patch block.
+          if [ -f "$CFG" ] && grep -qF "$OUR_MARKER" "$CFG"; then
+              # Re-apply: skip everything up to and including our trailing
+              # marker line. Lines after are the operator's overlay tail.
+              EXISTING_TAIL=$(awk '
+                  /^# 代理节点文件/ {found=1; next}
+                  found {print}
+              ' "$CFG")
+          elif [ -f "$CFG" ]; then
+              EXISTING_TAIL=$(cat "$CFG")
+          else
+              EXISTING_TAIL=""
+          fi
+          {
+              echo "# vninja DoH DNS patch applied $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+              echo "# Source: repo clash/config.yaml dns: block"
+              echo "# Refs PR #1279 ws.chatgpt.com GFW DNS poisoning hotfix"
+              echo ""
+              echo "$DNS_BLOCK"
+              echo "$EXISTING_TAIL"
+          } > "$NEW_CFG"
+          echo "Wrote proposed new config: $NEW_CFG ($(stat -c %s "$NEW_CFG") bytes)"
+          echo ""
+          echo "--- diff (current → proposed) ---"
+          diff -u "$CFG" "$NEW_CFG" | head -80 || true
+          echo ""
+
+          if [ "$MODE" != "apply" ]; then
+              echo "=== DRY-RUN COMPLETE — no changes applied ==="
+              echo "Run again with mode=apply + confirm=yes to actually patch."
+              exit "${EXIT_AT_END:-0}"
+          fi
+
+          # If runtime already has dns: in dry-run check, refuse to mutate
+          # in apply mode without operator action.
+          if [ "${EXIT_AT_END:-0}" = "2" ]; then
+              echo "::error::Runtime already has dns: section. Refusing to auto-overwrite in apply mode. Manual review of existing dns: required."
+              exit 1
+          fi
+
+          # 4) APPLY mode: backup Merge.yaml + write new + restart V-Ninja.
+          TS=$(date -u +%s)
+          if [ -f "$CFG" ]; then
+              BAK="${CFG}.bak.${TS}"
+              cp "$CFG" "$BAK"
+              echo "Backed up old Merge.yaml to: $BAK"
+          fi
+          cp "$NEW_CFG" "$CFG"
+          echo "Wrote new Merge.yaml at: $CFG"
+
+          # 5) Restart V-Ninja so its GUI re-merges Merge.yaml into the
+          #    runtime tmp file Mihomo reads (we cannot reload by API
+          #    because Mihomo reads from /tmp/<random>; V-Ninja owns
+          #    that file's lifecycle).
+          echo ""
+          echo "--- systemctl restart vninja ---"
+          systemctl restart vninja
+          echo "Restart triggered. Waiting up to 45s for proxy port 6789 to come back..."
+          for i in $(seq 1 30); do
+              if ss -tlnp 2>/dev/null | grep -q ':6789\b'; then
+                  echo "Proxy port 6789 is up after ${i} attempts."
+                  break
+              fi
+              sleep 2
+          done
+          sleep 3  # additional settle for Mihomo
+
+          # 6) Verify from worker container. Must cd to /opt/genpano so
+          # docker compose finds docker-compose.yml.
+          cd /opt/genpano
+          echo ""
+          echo "--- Verification: worker getent ws.chatgpt.com ---"
+          docker compose exec -T worker getent ahosts ws.chatgpt.com 2>&1 | head -6 </dev/null || true
+
+          echo ""
+          echo "--- Verification: worker curl https://ws.chatgpt.com/ via host:6789 ---"
+          docker compose exec -T worker sh -lc '
+              curl -sS -o /dev/null --max-time 12 \
+                   -x http://host.docker.internal:6789 \
+                   -w "http_code=%{http_code} time=%{time_total}s\n" \
+                   "https://ws.chatgpt.com/"
+          ' </dev/null 2>&1 || true
+
+          echo ""
+          echo "--- Verification: cdn-cgi/trace via proxy (egress sanity) ---"
+          docker compose exec -T worker sh -lc '
+              curl -sS --max-time 10 -x http://host.docker.internal:6789 \
+                   "https://www.cloudflare.com/cdn-cgi/trace" | head -12
+          ' </dev/null 2>&1 || true
+
+          echo ""
+          echo "=== APPLY COMPLETE ==="
+          echo "If ws.chatgpt.com no longer resolves to Facebook (2a03:2880::face:b00c) and"
+          echo "curl returns non-404 (likely 200/101/403), the fix is live."
+          echo "Rollback (if needed): cp ${BAK:-<no backup>} $CFG && systemctl restart vninja"
+          REMOTE
+          )
+
+          rc=$?
+          set -e
+          echo "$output"
+          {
+            echo "## V-Ninja DoH DNS hotfix (${MODE})"
+            echo
+            echo '```'
+            echo "$output"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # rc=0 success
+          # rc=2 means dry-run detected dns: block already present (advisory)
+          # other non-zero = real failure
+          if [ "$rc" -eq 2 ]; then
+              echo "::warning::Remote returned rc=2 (dns: block already present in V-Ninja config). See output above for details. NOT treating as failure."
+              exit 0
+          fi
+          if [ "$rc" -ne 0 ]; then
+              echo "::error::Hotfix step exited with code $rc"
+              exit "$rc"
+          fi
+
+      - name: Post hotfix summary as PR comment when in PR context
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const mode = '${{ inputs.mode }}';
+            let body = `## V-Ninja DoH DNS hotfix (${mode})\n\n`;
+            body += 'See workflow run step summary for full output.\n\n';
+            body += `Triggered by: @${context.actor}\n`;
+            body += `Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}\n`;
+            let issueNumber = null;
+            if (context.payload.pull_request) {
+              issueNumber = context.payload.pull_request.number;
+            } else {
+              const prs = await github.rest.search.issuesAndPullRequests({
+                q: `repo:${context.repo.owner}/${context.repo.repo} is:pr is:open head:${context.ref.replace('refs/heads/','')}`,
+              });
+              if (prs.data.items.length > 0) {
+                issueNumber = prs.data.items[0].number;
+              }
+            }
+            if (issueNumber) {
+              await github.rest.issues.createComment({
+                issue_number: issueNumber,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body,
+              });
+            }

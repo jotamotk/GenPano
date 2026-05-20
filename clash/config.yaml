@@ -27,6 +27,15 @@ dns:
     - https://1.1.1.1/dns-query
     - https://8.8.8.8/dns-query
     - https://doh.pub/dns-query
+  # NOTE (PR #1279 attempted fix, REVERTED 2026-05-19):
+  # Tried `nameserver-policy: '+.chatgpt.com': https://1.1.1.1/dns-query`
+  # to bypass GFW poisoning of ws.chatgpt.com (Aliyun/Tencent return
+  # Facebook IPv6 2a03:2880::face:b00c). On prod (China-resident host)
+  # this BROKE chatgpt.com entirely — 1.1.1.1 DoH endpoint is blocked,
+  # Mihomo hangs trying to resolve, curl returns http_code=000 timeout.
+  # Reverted via rollback workflow. Future fix needs a DoH endpoint
+  # reachable from prod's egress, or an entirely different approach
+  # (e.g. pin Cloudflare IP via docker extra_hosts, TUN mode, etc.).
 
 # 代理节点文件（由 clash-sub-updater 服务定期从订阅链接下载并转换格式）
 proxy-providers:

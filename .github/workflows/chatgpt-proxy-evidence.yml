@@ -29,6 +29,7 @@ on:
   push:
     branches:
       - 'claude/fix-chatgpt-error-fjyfb'
+      - 'claude/fix-chatgpt-pipeline-Fvdwi'
     paths:
       - '.github/workflows/chatgpt-proxy-evidence.yml'
 
@@ -98,6 +99,105 @@ jobs:
             WHERE q.id = ANY(string_to_array('${IDS}', ',')::int[])
             ORDER BY q.id DESC;
           " </dev/null 2>&1 || true
+          echo ""
+
+          echo "=== /data/screenshots artifacts saved for the reported query IDs ==="
+          for qid in $(echo "$IDS" | tr ',' ' '); do
+              echo "--- query_${qid} ---"
+              ls -la "/opt/genpano/data/screenshots/" 2>/dev/null | grep -E "query_${qid}_chatgpt_" | head -10 || \
+                docker compose exec -T worker sh -lc "ls -la /data/screenshots/ 2>/dev/null | grep -E 'query_${qid}_chatgpt_' | head -10" </dev/null 2>&1 || \
+                echo "  (no screenshot dir found)"
+          done
+          echo ""
+
+          echo "=== submit_failed HTML body markers for the reported IDs (worker container) ==="
+          for qid in $(echo "$IDS" | tr ',' ' '); do
+              echo "--- query_${qid} ---"
+              docker compose exec -T worker sh -lc 'set -u
+                latest=$(ls -t /data/screenshots/query_'"${qid}"'_chatgpt_*.html 2>/dev/null | head -1)
+                if [ -z "$latest" ]; then
+                    echo "  (no html for q='"${qid}"')"
+                    exit 0
+                fi
+                echo "file: $latest"
+                echo "size: $(stat -c %s "$latest" 2>/dev/null) bytes"
+                echo "-- <title> --"
+                grep -oE "<title[^>]*>[^<]*</title>" "$latest" 2>/dev/null | head -1 || true
+                echo "-- marker presence --"
+                printf "has_user_msg_role:        "; grep -ciE "data-message-author-role" "$latest" 2>/dev/null || echo 0
+                printf "has_challenge_platform:   "; grep -ciE "challenge-platform" "$latest" 2>/dev/null || echo 0
+                printf "has_checking_your_browser:"; grep -ciE "checking your browser" "$latest" 2>/dev/null || echo 0
+                printf "has_just_a_moment:        "; grep -ciE "just a moment" "$latest" 2>/dev/null || echo 0
+                printf "has_captcha:              "; grep -ciE "captcha|cf-challenge|cf_chl" "$latest" 2>/dev/null || echo 0
+                printf "has_rate_limit:           "; grep -ciE "rate.limit|too many requests|429" "$latest" 2>/dev/null || echo 0
+                printf "has_auth_login_redirect:  "; grep -ciE "/auth/login|auth0|please.{1,15}sign.{1,5}in|please.{1,15}log.{1,5}in" "$latest" 2>/dev/null || echo 0
+                printf "has_prompt_textarea:      "; grep -ciE "prompt-textarea|contenteditable" "$latest" 2>/dev/null || echo 0
+                printf "has_send_button:          "; grep -ciE "Send prompt|aria-label=\"Send" "$latest" 2>/dev/null || echo 0
+                printf "has_unsupported_country:  "; grep -ciE "unsupported_country|not available in your country" "$latest" 2>/dev/null || echo 0
+                printf "has_account_disabled:     "; grep -ciE "account.{1,10}suspended|account.{1,10}disabled|access.{1,10}denied" "$latest" 2>/dev/null || echo 0
+              ' </dev/null 2>&1 || true
+          done
+          echo ""
+
+          echo "=== llm_responses rows for the reported query IDs (would block stale_running_repair) ==="
+          docker compose exec -T postgres psql -X -U genpano -d genpano -P pager=off -c "
+            SELECT id, query_id, response_id IS NOT NULL AS has_response_id,
+                   COALESCE(LENGTH(raw_text), 0) AS raw_text_len,
+                   created_at
+            FROM llm_responses
+            WHERE query_id = ANY(string_to_array('${IDS}', ',')::int[])
+            ORDER BY query_id, id;
+          " </dev/null 2>&1 || true
+          echo ""
+
+          echo "=== ChatGPT account pool state ==="
+          docker compose exec -T postgres psql -X -U genpano -d genpano -P pager=off -c "
+            SELECT status, COUNT(*) AS n,
+                   COUNT(*) FILTER (WHERE COALESCE(LENGTH(cookies_json), 0) > 0) AS with_cookies,
+                   COUNT(*) FILTER (WHERE cooldown_until IS NULL OR cooldown_until <= NOW()) AS not_cooling_down,
+                   MAX(updated_at) AS most_recent_update
+            FROM llm_accounts
+            WHERE llm_name = 'chatgpt'
+            GROUP BY status
+            ORDER BY n DESC;
+          " </dev/null 2>&1 || true
+          echo ""
+
+          echo "=== ChatGPT accounts: per-row detail ==="
+          docker compose exec -T postgres psql -X -U genpano -d genpano -P pager=off -c "
+            SELECT id, email, status,
+                   COALESCE(LENGTH(cookies_json), 0) AS cookies_len,
+                   query_count_today, daily_limit,
+                   cooldown_until, updated_at, execution_mode
+            FROM llm_accounts
+            WHERE llm_name = 'chatgpt'
+            ORDER BY id;
+          " </dev/null 2>&1 || true
+          echo ""
+
+          echo "=== ChatGPT 'running' status count (would be stale_running_repair candidates) ==="
+          docker compose exec -T postgres psql -X -U genpano -d genpano -P pager=off -c "
+            SELECT COUNT(*) AS total_running,
+                   COUNT(*) FILTER (WHERE NOT EXISTS
+                     (SELECT 1 FROM llm_responses r WHERE r.query_id = q.id)) AS no_response,
+                   MIN(COALESCE(q.started_at, q.queued_at)) AS oldest_activity,
+                   MAX(COALESCE(q.started_at, q.queued_at)) AS newest_activity
+            FROM queries q
+            WHERE q.target_llm = 'chatgpt' AND LOWER(q.status) = 'running';
+          " </dev/null 2>&1 || true
+          echo ""
+
+          echo "=== Celery beat schedule actually loaded by worker (proves dispatch_batch / repair not auto-running) ==="
+          docker compose exec -T worker python - <<'PY' 2>&1 || true
+          import json, os
+          from geo_tracker.tasks.celery_tasks import app
+          schedule = app.conf.get("beat_schedule") or {}
+          out = {name: {"task": entry.get("task"), "schedule": repr(entry.get("schedule"))}
+                 for name, entry in schedule.items()}
+          print("ANALYZER_AUTO_SCHEDULE=", os.getenv("ANALYZER_AUTO_SCHEDULE"))
+          print("HOTSPOT_AUTO_SCHEDULE=", os.getenv("HOTSPOT_AUTO_SCHEDULE"))
+          print(json.dumps(out, ensure_ascii=False, indent=2))
+          PY
           echo ""
 
           echo "=== latest 20 ChatGPT failures (any reason) ==="
@@ -422,6 +522,265 @@ jobs:
             tail -40 || true
           echo ""
 
+          echo "=== Latest failure JSON runtime snapshot + extracted page strings per query ID ==="
+          for qid in $(echo "$IDS" | tr ',' ' '); do
+              echo ""
+              echo "================ query_${qid} ================"
+              # 1) JSON runtime snapshot: structured DOM state at failure point.
+              docker compose exec -T worker sh -lc 'set -u
+                  qid='"${qid}"'
+                  latest_json=$(ls -t /data/screenshots/query_${qid}_chatgpt_no_response_*.json \
+                                       /data/screenshots/query_${qid}_chatgpt_session_reopen_error_*.json \
+                                       /data/screenshots/query_${qid}_chatgpt_load_error_*.json \
+                                  2>/dev/null | head -1)
+                  if [ -n "$latest_json" ]; then
+                      echo "--- $latest_json ---"
+                      cat "$latest_json"
+                  else
+                      echo "(no runtime snapshot json for q=$qid)"
+                  fi
+              ' </dev/null 2>&1 || true
+              echo ""
+              # 2) Targeted grep into the latest HTML — extract page identity (title,
+              # description, cf-ray, base URL) and any user-visible blocking strings.
+              docker compose exec -T worker sh -lc 'set -u
+                  qid='"${qid}"'
+                  latest_html=$(ls -t /data/screenshots/query_${qid}_chatgpt_submit_failed_*.html \
+                                       /data/screenshots/query_${qid}_chatgpt_after_inject_*.html \
+                                       /data/screenshots/query_${qid}_chatgpt_response_page_*.html \
+                                  2>/dev/null | head -1)
+                  if [ -z "$latest_html" ]; then
+                      echo "(no html for q=$qid)"
+                      exit 0
+                  fi
+                  echo "--- $latest_html ---"
+                  echo "TITLE:"
+                  grep -oE "<title[^>]*>[^<]*</title>" "$latest_html" 2>/dev/null | head -1 || true
+                  echo "META_DESCRIPTION:"
+                  grep -oE "<meta[^>]*name=.description.[^>]*>" "$latest_html" 2>/dev/null | head -1 || true
+                  echo "BASE_URL (canonical):"
+                  grep -oE "<link[^>]*rel=.canonical.[^>]*>" "$latest_html" 2>/dev/null | head -1 || true
+                  echo "OG_URL:"
+                  grep -oE "<meta[^>]*property=.og:url.[^>]*>" "$latest_html" 2>/dev/null | head -1 || true
+                  echo "CF_RAY presence:"
+                  grep -ciE "cf-ray|__cf_chl_|cf-mitigated" "$latest_html" 2>/dev/null | head -1 || echo 0
+                  echo "Visible blocking strings (any case):"
+                  grep -oiE "(unusual activity|please.{0,15}sign.{0,5}in|log.{0,5}in to continue|rate.{0,5}limit(ed)?|too many requests|verify you are human|access denied|forbidden|blocked|temporarily unavailable|please try again later|country.{0,15}not.{0,15}supported|unsupported.{0,15}country|account.{0,15}suspended|need to enable cookies|something went wrong|conversation not found|service.{0,15}unavailable|maintenance)" "$latest_html" 2>/dev/null | sort -u | head -30 || echo "(none)"
+                  echo "data-message-author-role values (proves whether user-msg bubble in DOM):"
+                  grep -oE "data-message-author-role=\"[a-z]+\"" "$latest_html" 2>/dev/null | sort | uniq -c | head -10 || echo "(none)"
+                  echo "Send-button aria-label values:"
+                  grep -oE "aria-label=\"[^\"]*(end|Send|Stop|Send prompt)[^\"]*\"" "$latest_html" 2>/dev/null | sort -u | head -10 || echo "(none)"
+              ' </dev/null 2>&1 || true
+          done
+          echo ""
+
+          echo "=== EXPERIMENT B: flip Clash to GLOBAL mode + probe (per user) ==="
+          # Per user 2026-05-19: "用全局，不要用规则". The 16-byte prod
+          # /root/.config/mihomo/config.yaml has no 'mode:' line so the running
+          # ninja-mihomo defaults to rule mode with effectively no rules =>
+          # falls through to DIRECT, leaving DNS to the worker's
+          # GFW-poisoned local resolver. Flip mode to global at runtime via
+          # the Clash API, then re-probe.
+          SECRET_B="$(docker compose exec -T worker sh -c 'printf %s "${CLASH_API_SECRET:-}"' </dev/null 2>/dev/null | tr -d '\r\n')"
+          AUTH_B=""
+          [ -n "$SECRET_B" ] && AUTH_B="Authorization: Bearer $SECRET_B"
+
+          echo "--- Current mode (before) ---"
+          curl -sS --max-time 5 -H "$AUTH_B" "http://127.0.0.1:9098/configs" 2>&1 \
+            | python3 -c "import json,sys;d=json.load(sys.stdin);print('mode=',d.get('mode'),' allow-lan=',d.get('allow-lan'))" 2>&1 | head -2
+
+          echo "--- PATCH /configs to mode=global ---"
+          curl -sS --max-time 5 -X PATCH -H "$AUTH_B" -H "Content-Type: application/json" \
+               "http://127.0.0.1:9098/configs" \
+               -d '{"mode":"global"}' \
+               -w "http_code=%{http_code}\n" 2>&1 | head -2
+
+          echo "--- Confirm mode (after) ---"
+          curl -sS --max-time 5 -H "$AUTH_B" "http://127.0.0.1:9098/configs" 2>&1 \
+            | python3 -c "import json,sys;d=json.load(sys.stdin);print('mode=',d.get('mode'))" 2>&1 | head -2
+
+          for node in "美国 04（专线；电信）" "日本 04（专线；电信）" "🟦 专线节点"; do
+              echo ""
+              echo "  --- GLOBAL → ${node} ---"
+              encoded_n="$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1],safe=''))" "${node}")"
+              curl -sS --max-time 5 -X PUT -H "$AUTH_B" -H "Content-Type: application/json" \
+                   "http://127.0.0.1:9098/proxies/GLOBAL" \
+                   -d "{\"name\":\"${node}\"}" \
+                   -w "    PUT http_code=%{http_code}\n" 2>&1 | head -2
+              sleep 1
+              docker compose exec -T worker sh -lc 'set -u
+                  echo "    DNS of ws.chatgpt.com:"
+                  getent hosts ws.chatgpt.com 2>/dev/null | head -2 || echo "    (no)"
+                  echo "    GET https://ws.chatgpt.com/ via proxy:"
+                  curl -sS -o /dev/null --max-time 10 \
+                       -x http://host.docker.internal:6789 \
+                       -w "      http_code=%{http_code} time=%{time_total}s\n" \
+                       "https://ws.chatgpt.com/" 2>&1 || echo "      (curl_err)"
+                  echo "    Test: GET https://www.cloudflare.com/cdn-cgi/trace via proxy (sanity \"我们到底从哪儿出去的\"):"
+                  curl -sS --max-time 10 \
+                       -x http://host.docker.internal:6789 \
+                       "https://www.cloudflare.com/cdn-cgi/trace" 2>&1 | head -15 | sed "s/^/      /"
+              ' </dev/null 2>&1 || true
+          done
+
+          echo ""
+          echo "--- Restore: mode=rule (revert experiment) ---"
+          curl -sS --max-time 5 -X PATCH -H "$AUTH_B" -H "Content-Type: application/json" \
+               "http://127.0.0.1:9098/configs" \
+               -d '{"mode":"rule"}' \
+               -w "http_code=%{http_code}\n" 2>&1 | head -2
+
+          echo ""
+          echo "=== EXPERIMENT: switch 💬 Ai平台 to a non-HK node and re-probe ws.chatgpt.com ==="
+          # User asked us to try a different proxy node. The hypothesis we
+          # are testing: does ws.chatgpt.com resolution improve if we route
+          # through a different proxy node? If V-Ninja resolves DNS locally
+          # (before node selection), node-switching won't help — we'll still
+          # see Facebook IPv6. If V-Ninja uses remote DNS (proxy-server
+          # resolves), a US node should give us the real Cloudflare IP.
+          SECRET="$(docker compose exec -T worker sh -c 'printf %s "${CLASH_API_SECRET:-}"' </dev/null 2>/dev/null | tr -d '\r\n')"
+          AUTH=""
+          [ -n "$SECRET" ] && AUTH="Authorization: Bearer $SECRET"
+
+          echo "--- Before switch: current 💬 Ai平台 selection ---"
+          curl -sS --max-time 5 -H "$AUTH" "http://127.0.0.1:9098/proxies/%F0%9F%92%AC%20Ai%E5%B9%B3%E5%8F%B0" 2>&1 \
+            | python3 -c "import json,sys;d=json.load(sys.stdin);print('now =', d.get('now'))" 2>&1 | head -3
+
+          for candidate in "美国 02 （专线；智能）" "日本 02 （专线；智能）" "新加坡 02 （专线；智能）" "台湾 02 （专线；智能）"; do
+              echo ""
+              echo "============================================================"
+              echo "  Switching to: ${candidate}"
+              echo "============================================================"
+              # Set the node on the 💬 Ai平台 selector.
+              encoded_group="$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1],safe=''))" "💬 Ai平台")"
+              encoded_node="$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1],safe=''))" "${candidate}")"
+              curl -sS --max-time 5 -X PUT -H "$AUTH" -H "Content-Type: application/json" \
+                   "http://127.0.0.1:9098/proxies/${encoded_group}" \
+                   -d "{\"name\":\"${candidate}\"}" \
+                   -w "http_code=%{http_code}\n" 2>&1 | head -3
+              sleep 1
+
+              # Re-probe from worker.
+              docker compose exec -T worker sh -lc 'set -u
+                  echo "  DNS of ws.chatgpt.com:"
+                  getent hosts ws.chatgpt.com 2>/dev/null | head -2 || echo "  (no answer)"
+                  echo "  GET https://ws.chatgpt.com/ via proxy:"
+                  curl -sS -o /dev/null --max-time 12 \
+                       -x http://host.docker.internal:6789 \
+                       -w "    http_code=%{http_code} time=%{time_total}s\n" \
+                       "https://ws.chatgpt.com/" 2>&1 || echo "    (curl_err)"
+                  echo "  WSS handshake via proxy:"
+                  curl -sS -o /tmp/_ws_resp.txt --max-time 12 \
+                       -x http://host.docker.internal:6789 \
+                       --http1.1 -H "Connection: Upgrade" -H "Upgrade: websocket" \
+                       -H "Sec-WebSocket-Version: 13" -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" \
+                       -H "Origin: https://chatgpt.com" \
+                       -w "    http_code=%{http_code} time=%{time_total}s\n" \
+                       "https://ws.chatgpt.com/" 2>&1 || echo "    (curl_err)"
+                  echo "  response head:"
+                  head -5 /tmp/_ws_resp.txt 2>/dev/null | sed "s/^/      /" || true
+              ' </dev/null 2>&1 || true
+          done
+
+          echo ""
+          echo "--- Restore 💬 Ai平台 to original auto-selection (♻️ 自动选择) ---"
+          encoded_group="$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1],safe=''))" "💬 Ai平台")"
+          curl -sS --max-time 5 -X PUT -H "$AUTH" -H "Content-Type: application/json" \
+               "http://127.0.0.1:9098/proxies/${encoded_group}" \
+               -d "{\"name\":\"♻️ 自动选择\"}" \
+               -w "http_code=%{http_code}\n" 2>&1 | head -2
+          echo ""
+
+          echo "=== prod V-Ninja config snippets (DNS + chatgpt rules + listen ports) ==="
+          # The repo's clash/config.yaml uses mixed-port=7890 with a
+          # DOMAIN-SUFFIX,chatgpt.com rule and DoH fallback, but prod has
+          # V-Ninja listening on 6789 — so prod must be running a separate
+          # config. Captured 2026-05-19 the worker's DNS query for
+          # ws.chatgpt.com returned a Facebook IPv6 (2a03:2880:f12d:83:face:b00c:0:25de)
+          # and curl through host.docker.internal:6789 also got 404. We need
+          # to see what the running V-Ninja config actually contains for
+          # *.chatgpt.com routing and DNS.
+          for path in /etc/vninja/config.yaml /opt/vninja/config.yaml \
+                      /etc/clash/config.yaml /etc/mihomo/config.yaml \
+                      /root/.config/clash/config.yaml /root/.config/mihomo/config.yaml; do
+              if [ -f "$path" ]; then
+                  echo "--- found: $path ---"
+                  echo "size: $(stat -c %s "$path") bytes"
+                  echo "head -20:"
+                  head -20 "$path" 2>/dev/null || true
+                  echo "...chatgpt/openai/dns rules..."
+                  grep -nE "chatgpt|openai|ws\.|dns:|enhanced-mode|nameserver|mixed-port|external-controller" "$path" 2>/dev/null | head -40 || true
+                  echo "...rules section (head 30 lines):"
+                  awk "/^rules:/{flag=1} flag" "$path" 2>/dev/null | head -30 || true
+                  break
+              fi
+          done
+
+          echo ""
+          echo "--- Resolve ws.chatgpt.com via the host's resolver (compare with worker container) ---"
+          getent ahosts ws.chatgpt.com 2>&1 || nslookup ws.chatgpt.com 2>&1 | head -10
+          echo ""
+          echo "--- Resolve ws.chatgpt.com via DoH (cloudflare 1.1.1.1) — clean answer ---"
+          curl -sS --max-time 8 -H "accept: application/dns-json" \
+               "https://1.1.1.1/dns-query?name=ws.chatgpt.com&type=A" 2>&1 | head -10 || echo "(doh A failed)"
+          curl -sS --max-time 8 -H "accept: application/dns-json" \
+               "https://1.1.1.1/dns-query?name=ws.chatgpt.com&type=AAAA" 2>&1 | head -10 || echo "(doh AAAA failed)"
+          echo ""
+
+          echo "=== ws.chatgpt.com reachability from worker (smoking-gun: post-submit WSS fails) ==="
+          # Captured 2026-05-19: query_185664 runtime snapshot showed
+          #   error: "Camoufox can't establish a connection to the server at
+          #          wss://ws.chatgpt.com/p16/ws/user/..."
+          # at the exact moment _submit_confirmed() returned false. The page
+          # was on chatgpt.com, logged in, prompt filled — but the WSS that
+          # actually delivers the user message never connected. This block
+          # distinguishes "proxy can't tunnel WSS" from "WS handshake dropped
+          # at the ChatGPT edge on bot signal".
+          docker compose exec -T worker sh -lc '
+              set -u
+              echo "--- DNS resolution: ws.chatgpt.com ---"
+              getent hosts ws.chatgpt.com || nslookup ws.chatgpt.com 2>&1 | head -10 || echo "(no resolver)"
+              echo ""
+              echo "--- TCP CONNECT via Clash HTTP proxy to ws.chatgpt.com:443 (curl -p) ---"
+              # -x is the proxy; using CONNECT method to set up the tunnel.
+              # If the proxy refuses CONNECT or the upstream rejects it, we
+              # see that here.
+              curl -sS -o /dev/null --max-time 12 \
+                   -x http://host.docker.internal:6789 \
+                   -w "http_code=%{http_code} time=%{time_total}s connect_time=%{time_connect}s\n" \
+                   "https://ws.chatgpt.com/" || echo "curl_exit=$?"
+              echo ""
+              echo "--- WSS handshake attempt to ws.chatgpt.com:443 (via Clash) ---"
+              # curl --include + --http1.1 --header Upgrade: triggers the WS
+              # upgrade handshake. A 101 means the proxy passed the WSS frames
+              # through and the upstream accepted. 403/4xx means upstream is
+              # dropping the handshake. 000/timeout means the proxy itself
+              # blocks WSS upgrade.
+              curl -sS -o /tmp/_ws_resp.txt --max-time 12 \
+                   -x http://host.docker.internal:6789 \
+                   --http1.1 \
+                   -H "Connection: Upgrade" \
+                   -H "Upgrade: websocket" \
+                   -H "Sec-WebSocket-Version: 13" \
+                   -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" \
+                   -H "Origin: https://chatgpt.com" \
+                   -w "http_code=%{http_code} time=%{time_total}s\n" \
+                   "https://ws.chatgpt.com/" || echo "curl_exit=$?"
+              echo "-- first 30 lines of WS handshake response --"
+              head -30 /tmp/_ws_resp.txt 2>/dev/null || true
+              echo ""
+              echo "--- Compare: plain HTTPS GET via Clash to chatgpt.com (control) ---"
+              curl -sS -o /dev/null --max-time 12 \
+                   -x http://host.docker.internal:6789 \
+                   -w "http_code=%{http_code} time=%{time_total}s\n" \
+                   "https://chatgpt.com/" || echo "curl_exit=$?"
+              echo ""
+              echo "--- Check whether websockets module is available in worker python ---"
+              python3 -c "import websockets, sys; print(\"websockets\", websockets.__version__)" 2>&1 || true
+              python3 -c "import websocket, sys; print(\"websocket-client\", websocket.__version__)" 2>&1 || true
+          ' </dev/null 2>&1 || true
+          echo ""
+
           echo "=== End of evidence dump ==="
           REMOTE
           )
@@ -430,6 +789,81 @@ jobs:
             echo "$output"
           } > /tmp/chatgpt-proxy-evidence.txt
 
+          # Echo the evidence to stdout so it appears in the downloadable
+          # workflow run logs (the original heredoc captures it into $output
+          # via $(...) which never reaches stdout, leaving the run logs as
+          # script source only).
+          echo "==================== BEGIN EVIDENCE DUMP ===================="
+          cat /tmp/chatgpt-proxy-evidence.txt
+          echo "==================== END EVIDENCE DUMP ===================="
+
+          # Pull the latest captured browser-failure artifacts (HTML + PNG +
+          # JSON runtime snapshot) for the reported query IDs off the
+          # worker container so they can be uploaded as workflow artifacts
+          # and inspected. Grep markers gave us "rate-limit / challenge /
+          # auth-redirect" signals but those could be JS source noise;
+          # only the rendered page / screenshot can prove what ChatGPT
+          # actually showed when submit silently failed.
+          mkdir -p /tmp/page-snapshots
+          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=accept-new \
+              -o SendEnv="QUERY_IDS" \
+              "$SERVER_USER@$SERVER_HOST" 'bash -s' <<'REMOTE2' > /tmp/page-snapshots/manifest.txt
+          set -uo pipefail
+          cd /opt/genpano
+          IDS="${QUERY_IDS:-185664,185661,185658}"
+          for qid in $(echo "$IDS" | tr ',' ' '); do
+              # The two most informative file kinds, latest first:
+              #   *_chatgpt_no_response_*.json   (DOM runtime snapshot at failure)
+              #   *_chatgpt_no_response_*.png    (screenshot at failure)
+              #   *_chatgpt_submit_failed_*.html (full HTML at failure)
+              #   *_chatgpt_after_inject_*.html  (HTML right after JS-inject)
+              #   *_chatgpt_response_page_*.html (HTML on response page)
+              #   *_chatgpt_load_error_*.png|json (page-load failure)
+              for pattern in 'no_response_.*\.json' 'no_response_.*\.png' \
+                             'submit_failed_.*\.html' 'after_inject_.*\.html' \
+                             'response_page_.*\.html' \
+                             'load_error_.*\.json' 'load_error_.*\.png' \
+                             'session_exception_.*\.png' \
+                             'session_reopen_error_.*\.json'; do
+                  fname=$(docker compose exec -T worker sh -lc "
+                      ls -t /data/screenshots/ 2>/dev/null \
+                      | grep -E 'query_${qid}_chatgpt_${pattern}$' \
+                      | head -1
+                  " </dev/null 2>/dev/null | tr -d '\r')
+                  [ -z "$fname" ] && continue
+                  out_base="query_${qid}_${fname##query_${qid}_chatgpt_}"
+                  # Copy through docker cp -> host -> stdout, then back through ssh.
+                  # We base64 to be binary-safe since PNG/JSON may have NULs.
+                  echo "FETCH: ${qid}: ${fname} -> ${out_base}"
+                  docker compose exec -T worker cat "/data/screenshots/${fname}" </dev/null 2>/dev/null \
+                    | base64 -w0 > "/tmp/_xfer_${qid}_${out_base}.b64"
+                  size=$(stat -c %s "/tmp/_xfer_${qid}_${out_base}.b64" 2>/dev/null || echo 0)
+                  echo "  size_b64=${size}"
+              done
+          done
+          # Now tar the b64 files for transfer.
+          tar -cf /tmp/page-snapshots.tar -C /tmp _xfer_*.b64 2>/dev/null || true
+          rm -f /tmp/_xfer_*.b64
+          ls -la /tmp/page-snapshots.tar 2>&1 || true
+          REMOTE2
+
+          # Pull the tar back to the runner.
+          scp -i ~/.ssh/id_rsa -o StrictHostKeyChecking=accept-new \
+              "$SERVER_USER@$SERVER_HOST:/tmp/page-snapshots.tar" \
+              /tmp/page-snapshots.tar 2>&1 || echo "(no tar to fetch)"
+          # Decode each base64 file back to its real extension.
+          mkdir -p /tmp/page-snapshots/decoded
+          if [ -f /tmp/page-snapshots.tar ]; then
+              tar -xf /tmp/page-snapshots.tar -C /tmp/page-snapshots/ 2>&1 || true
+              for b64 in /tmp/page-snapshots/_xfer_*.b64; do
+                  [ -f "$b64" ] || continue
+                  real_name=$(basename "$b64" .b64 | sed 's/^_xfer_//')
+                  base64 -d "$b64" > "/tmp/page-snapshots/decoded/${real_name}" 2>/dev/null || true
+              done
+              rm -f /tmp/page-snapshots/_xfer_*.b64
+              ls -la /tmp/page-snapshots/decoded/ || true
+          fi
+
           {
             echo "## ChatGPT proxy_api_unreachable evidence (read-only)"
             echo ""
@@ -437,6 +871,24 @@ jobs:
             head -2000 /tmp/chatgpt-proxy-evidence.txt
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload evidence dump as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chatgpt-proxy-evidence
+          path: /tmp/chatgpt-proxy-evidence.txt
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload captured page snapshots (HTML/PNG/JSON) as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chatgpt-page-snapshots
+          path: /tmp/page-snapshots/decoded/
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Post evidence as PR comment when PR context exists
         if: always()
